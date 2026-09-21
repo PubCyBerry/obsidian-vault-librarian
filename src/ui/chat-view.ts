@@ -151,6 +151,8 @@ export class LibrarianView extends ItemView {
 	private noticeEl!: HTMLElement;
 	private messagesEl!: HTMLElement;
 	private sessionsEl!: HTMLElement;
+	/** Auto-scroll follows new content only while the user is reading at the bottom. */
+	private followBottom = true;
 	private streamEl: HTMLElement | null = null;
 	private streamParts: {
 		thinking: HTMLElement;
@@ -209,6 +211,10 @@ export class LibrarianView extends ItemView {
 		this.bannerEl = root.createDiv({ cls: 'librarian-key-banner is-hidden' });
 		this.noticeEl = root.createDiv({ cls: 'librarian-notice is-hidden' });
 		this.messagesEl = root.createDiv({ cls: 'librarian-messages' });
+		this.messagesEl.addEventListener('scroll', () => {
+			const el = this.messagesEl;
+			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		});
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
 		this.buildComposer(root);
 		this.unsubscribe = this.controller.subscribe((e) => this.onControllerEvent(e));
@@ -548,6 +554,7 @@ export class LibrarianView extends ItemView {
 	async submit() {
 		let text = this.inputEl.value.trim();
 		if (!text && this.pendingImages.length === 0) return;
+		this.followBottom = true;
 		if (this.includeActiveNote) {
 			const file = this.app.workspace.getActiveFile();
 			if (file && file.extension === 'md') {
@@ -568,6 +575,7 @@ export class LibrarianView extends ItemView {
 
 	async newSession() {
 		if (this.historyMode) await this.toggleHistory();
+		this.followBottom = true;
 		await this.controller.newSession();
 		this.renderModelSelect();
 		this.inputEl.focus();
@@ -693,11 +701,7 @@ export class LibrarianView extends ItemView {
 	// Messages
 
 	private renderEvents(events: IndexedEvent[]) {
-		const atBottom =
-			this.messagesEl.scrollHeight -
-				this.messagesEl.scrollTop -
-				this.messagesEl.clientHeight <
-			80;
+		const atBottom = this.followBottom;
 		this.messagesEl.empty();
 		this.streamEl = null;
 		this.streamParts = null;
@@ -728,7 +732,7 @@ export class LibrarianView extends ItemView {
 		}
 		if (this.pendingStream) this.renderStream(this.pendingStream);
 		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
-		if (atBottom) this.scrollToBottom();
+		if (atBottom) this.scrollToBottom(true);
 	}
 
 	private renderStoredError(message: string) {
@@ -907,7 +911,9 @@ export class LibrarianView extends ItemView {
 		this.scrollToBottom();
 	}
 
-	private scrollToBottom() {
+	private scrollToBottom(force = false) {
+		if (!force && !this.followBottom) return;
+		this.followBottom = true;
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 	}
 
@@ -1029,6 +1035,7 @@ export class LibrarianView extends ItemView {
 		meta.createSpan({ text: `${session.providerId || '?'}/${session.modelId || '?'}` });
 		meta.createSpan({ text: new Date(session.updatedAt).toLocaleString() });
 		const open = async () => {
+			this.followBottom = true;
 			await this.controller.openSession(session.id);
 			await this.toggleHistory();
 			this.renderModelSelect();
