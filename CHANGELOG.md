@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.4.0...1.4.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* say when the MCP server rejected the saved sign-in and run its tools one at a time ([266f02c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/266f02c1102803c4963ef6dd07407afa9cb428f3))
+
 ## [1.4.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.3.0...1.4.0) (2026-09-21)
 
 
