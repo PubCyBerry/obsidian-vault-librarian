@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.2...1.0.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* use compatible dotted borders for source links ([9f07b04](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/9f07b04a7bd825099b862df6d53bb549d3038ab5))
+
 ## [1.0.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.1...1.0.2) (2026-09-21)
 
 
