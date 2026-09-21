@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.3.0...1.4.0) (2026-09-21)
+
+
+### Features
+
+* let write append parts so long notes survive servers that buffer tool calls ([a8ac28a](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a8ac28a608bff614b45561116b994dc61d4222ee))
+
 ## [1.3.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.2.0...1.3.0) (2026-09-21)
 
 
