@@ -1,6 +1,9 @@
 /* Librarian chat view. Colors come from Obsidian variables only. */
 
 .librarian {
+	/* The generic monospace family maps Hangul to GulimChe, so no generic appears before the text font. */
+	--librarian-font-mono:
+		"Cascadia Mono", Consolas, Menlo, "Roboto Mono", "Droid Sans Mono", var(--font-text);
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -97,6 +100,8 @@
 	flex: 1 1 auto;
 	overflow-y: auto;
 	padding: 0 var(--size-4-3);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
 	display: flex;
 	flex-direction: column;
 	gap: var(--size-4-3);
@@ -185,6 +190,19 @@
 	word-break: break-word;
 }
 
+.librarian-markdown code,
+.librarian-markdown pre,
+.librarian-tool pre,
+.librarian-approval pre,
+.librarian-tool-name,
+.librarian-source {
+	font-family: var(--librarian-font-mono);
+}
+
+.librarian-markdown code {
+	font-size: var(--font-small);
+}
+
 .librarian-markdown > :first-child {
 	margin-top: 0;
 }
@@ -194,20 +212,38 @@
 }
 
 .librarian-thinking {
-	font-size: var(--font-ui-smaller);
+	font-size: var(--font-small);
 	color: var(--text-muted);
+}
+
+.librarian-thinking > summary {
+	cursor: pointer;
 }
 
 .librarian-thinking pre {
 	white-space: pre-wrap;
-	max-height: 200px;
-	overflow: auto;
+	word-break: break-word;
+	font-family: inherit;
+	font-size: inherit;
+	line-height: var(--line-height-normal);
+	background: transparent;
+	padding: var(--size-2-2) 0 0;
+	margin: 0;
+	border-left: 2px solid var(--background-modifier-border);
+	padding-left: var(--size-4-3);
 }
 
 .librarian-source {
 	cursor: pointer;
-	border-bottom: 1px dotted currentColor;
-	color: var(--text-accent);
+	color: var(--link-color);
+	text-decoration: none;
+	border-bottom: 1px solid color-mix(in srgb, var(--link-color) 50%, transparent);
+}
+
+.librarian-source:hover,
+.librarian-source:focus-visible {
+	color: var(--link-color-hover);
+	border-bottom-color: currentColor;
 }
 
 .librarian-compaction {
@@ -223,7 +259,7 @@
 .librarian-tool {
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-m);
-	font-size: var(--font-ui-small);
+	font-size: var(--font-small);
 	overflow: hidden;
 }
 
@@ -303,7 +339,7 @@
 	max-height: 320px;
 	overflow: auto;
 	margin: var(--size-2-1) 0;
-	font-size: var(--font-ui-smaller);
+	font-size: var(--font-smaller);
 }
 
 .librarian-tool-label {
