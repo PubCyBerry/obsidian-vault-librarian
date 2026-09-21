@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.1.1...1.2.0) (2026-09-21)
+
+
+### Features
+
+* connect remote MCP servers with OAuth or API key under the same tool permissions ([a563304](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a5633049781c01fa8c7c8a9ee88c6a8a4bddfbae))
+
 ## [1.1.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.1.0...1.1.1) (2026-09-21)
 
 
