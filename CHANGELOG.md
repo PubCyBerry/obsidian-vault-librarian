@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.1...1.0.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* address community review findings ([1fd9381](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1fd9381861f82ce1f5c4951e680ddc9ef3faf2a9))
+
 ## 1.0.1 (2026-09-21)
 
 ### Bug fixes
