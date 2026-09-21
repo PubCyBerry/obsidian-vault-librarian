@@ -60,7 +60,7 @@ export default class LibrarianPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'open',
-			name: 'Open Librarian',
+			name: 'Open chat',
 			callback: () => void this.activateView(),
 		});
 		this.addCommand({

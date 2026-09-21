@@ -185,7 +185,7 @@ export class LibrarianView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return 'Librarian';
+		return this.plugin.manifest.name;
 	}
 
 	getIcon(): string {

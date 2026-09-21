@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 (2026-09-21)
+
+### Bug fixes
+
+* Use the unique name Vault Librarian for the community directory, keeping the plugin ID unchanged.
+* Match the chat view title to the plugin name and simplify the open command to Open chat.
+
 ## 1.0.0 (2026-09-21)
 
 

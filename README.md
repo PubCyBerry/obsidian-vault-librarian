@@ -1,6 +1,6 @@
-# Librarian
+# Vault Librarian
 
-Librarian is an agent that lives inside Obsidian. You ask in plain language, it searches your vault with small tools (`ls`, `find`, `grep`, `read`), reads what it finds, and, with your approval, creates or edits notes. It works the same on desktop and on the phone, and it talks to any OpenAI-compatible endpoint you point it at: a local server, a company gateway, or a commercial API.
+Vault Librarian is an agent that lives inside Obsidian. You ask in plain language, it searches your vault with small tools (`ls`, `find`, `grep`, `read`), reads what it finds, and, with your approval, creates or edits notes. It works the same on desktop and on the phone, and it talks to any OpenAI-compatible endpoint you point it at: a local server, a company gateway, or a commercial API.
 
 There is no index to build. The agent explores the vault the way a coding agent explores a repository, so nothing has to be synced or rebuilt when notes change.
 
@@ -20,7 +20,7 @@ There is no index to build. The agent explores the vault the way a coding agent 
 ## Setup
 
 1. Install the plugin and enable it.
-2. **Settings → Librarian → Providers → Add provider.** Enter the base URL of an OpenAI-compatible server (the part before `/chat/completions`), your API key, and add at least one model with tool calling enabled. **Test connection** checks the `/models` endpoint before you save.
+2. **Settings → Vault Librarian → Providers → Add provider.** Enter the base URL of an OpenAI-compatible server (the part before `/chat/completions`), your API key, and add at least one model with tool calling enabled. **Test connection** checks the `/models` endpoint before you save.
 3. Open the chat from the ribbon icon or the **Open chat** command and ask something.
 
 API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key; nothing is sent until it is set. Keys never enter `data.json` or the session files.
