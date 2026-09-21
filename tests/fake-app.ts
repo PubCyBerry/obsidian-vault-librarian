@@ -195,6 +195,11 @@ export class FakeVault {
 		this.setText(file.path, data);
 	}
 
+	async append(file: TFile, data: string): Promise<void> {
+		this.writes++;
+		this.setText(file.path, (await this.read(file)) + data);
+	}
+
 	async process(file: TFile, fn: (data: string) => string): Promise<string> {
 		this.writes++;
 		const next = fn(await this.read(file));
