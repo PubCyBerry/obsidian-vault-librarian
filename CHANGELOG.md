@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.2.0...1.3.0) (2026-09-21)
+
+
+### Features
+
+* add slash commands, [@path](https://github.com/path) note references, main-area chat and selectable text ([3c73b02](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/3c73b02917bdf95c9210ebe485693b8873868835))
+
 ## [1.2.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.1.1...1.2.0) (2026-09-21)
 
 
