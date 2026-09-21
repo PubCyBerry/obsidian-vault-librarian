@@ -1,92 +1,64 @@
-# Obsidian Sample Plugin
+# Librarian
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Librarian is an agent that lives inside Obsidian. You ask in plain language, it searches your vault with small tools (`ls`, `find`, `grep`, `read`), reads what it finds, and, with your approval, creates or edits notes. It works the same on desktop and on the phone, and it talks to any OpenAI-compatible endpoint you point it at: a local server, a company gateway, or a commercial API.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+There is no index to build. The agent explores the vault the way a coding agent explores a repository, so nothing has to be synced or rebuilt when notes change.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+## What it does
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+- **Agentic search.** The model calls `find`, `grep`, `ls` and `read` as many times as it needs, then answers from what it actually read. Sources are shown as `path/to/note.md:12-20` and clicking one opens the note at those lines.
+- **Create and edit notes.** `write` creates a note (or replaces one only when told to). `edit` replaces exact text and refuses when the text is ambiguous or has changed since it was read.
+- **Permissions per tool.** Every tool starts as **Ask first**. You can set each tool, or the read-only and write groups, to **Always allow** or **Blocked**. Blocked tools are removed from the model's tool list and refused again at execution time. Changing the vault root `AGENTS.md` always asks.
+- **Approval cards.** A write shows the full content it will create, an edit shows before and after. Approve, reject, or allow that tool from now on.
+- **Rewind.** Go back to any earlier message. The conversation after it collapses and the notes the agent created or changed in that span are restored. Notes you edited yourself since then are left alone and listed.
+- **Sessions.** Every conversation is an append-only JSONL file in the plugin folder, so it syncs with the vault and survives conflicts as a separate copy. Reopen, rename, and delete from the history view.
+- **Context management.** Usage is estimated with a Hangul-aware token count, corrected from provider usage, and shown as a ring next to the send button. Older turns are summarized automatically before the window fills.
+- **Vault-local instructions.** If `AGENTS.md` exists at the vault root it is included as instructions, above your own custom system prompt and below the built-in rules.
+- **Images.** Paste a screenshot or attach a vault image when the model accepts images. Only the path is stored in the session.
+- **Streaming.** Answers stream through `fetch`. If the server does not allow Obsidian's origin, the plugin falls back to Obsidian's `requestUrl` and tells you that streaming is unavailable.
 
-## First time developing plugins?
+## Setup
 
-Quick starting guide for new plugin devs:
+1. Install the plugin and enable it.
+2. **Settings → Librarian → Providers → Add provider.** Enter the base URL of an OpenAI-compatible server (the part before `/chat/completions`), your API key, and add at least one model with tool calling enabled. **Test connection** checks the `/models` endpoint before you save.
+3. Open the chat from the ribbon icon or the **Open chat** command and ask something.
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key; nothing is sent until it is set. Keys never enter `data.json` or the session files.
 
-## Releasing new releases
+### Streaming and CORS
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+`fetch` streaming needs the server to allow the origins Obsidian uses: `app://obsidian.md` on desktop, `capacitor://localhost` on iOS, `http://localhost` on Android. If it does not, keep the transport on **Auto**: the first failed request switches the provider to `requestUrl` for the rest of the session, or set the transport to **requestUrl** permanently.
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+### Compatibility settings
 
-## Adding your plugin to the community plugin list
+OpenAI-compatible servers differ in the details. The provider and model editors expose the same compatibility flags as Pi's `models.json` (`supportsReasoningEffort`, `maxTokensField`, `thinkingFormat`, and so on). Model-level values override provider-level ones.
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## Commands
 
-## How to use
+| Command | What it does |
+| --- | --- |
+| Open chat | Opens the chat in the right sidebar (full screen on phones) |
+| New session | Starts a new conversation |
+| Open session history | Lists past conversations |
+| Compact context | Summarizes the older part of the current conversation now |
+| Add active note to prompt | Attaches the note you are viewing to your next message |
 
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+## Privacy
 
-## Manually installing the plugin
+The plugin only talks to the endpoint you configure. Note contents reach that endpoint when the agent reads them with a tool you approved, or when you attach a note or an image yourself. There is no telemetry.
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+## Development
 
-## Improve code quality with eslint
-
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-	"fundingUrl": "https://buymeacoffee.com"
-}
+```bash
+npm install
+npm run dev      # watch build
+npm run build    # type check and production bundle
+npm run lint     # Biome and ESLint (eslint-plugin-obsidianmd)
+npm test         # vitest
 ```
 
-If you have multiple URLs, you can also do:
+The agent loop is `@earendil-works/pi-agent-core`; the OpenAI-compatible adapter is `@earendil-works/pi-ai`. Both are pinned. Commits follow Conventional Commits (enforced by commitlint through prek) and releases are cut by release-please.
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
-```
+## License
 
-## API Documentation
-
-See https://docs.obsidian.md
+MIT

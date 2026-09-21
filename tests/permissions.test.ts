@@ -1,0 +1,79 @@
+import { describe, expect, it } from 'vitest';
+import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
+import { DEFAULT_SETTINGS, mergeSettings, TOOL_NAMES } from '../src/types';
+
+function manager() {
+	const settings = mergeSettings({});
+	let saves = 0;
+	const perms = new ToolPermissionManager(
+		() => settings,
+		async () => {
+			saves++;
+		},
+	);
+	return { perms, settings, saves: () => saves };
+}
+
+describe('tool permissions', () => {
+	it('LIB-TEST-001: every tool starts as approval_required', () => {
+		const { perms } = manager();
+		for (const tool of TOOL_NAMES) expect(perms.get(tool)).toBe('approval_required');
+		expect(DEFAULT_SETTINGS.toolPermissions.byTool.read).toBe('approval_required');
+	});
+
+	it('LIB-TEST-002: a group change is a bulk edit and a differing child shows Mixed', async () => {
+		const { perms, settings } = manager();
+		await perms.setGroup('read', 'always_allow');
+		for (const tool of ['ls', 'find', 'grep', 'read', 'get_active_note'] as const) {
+			expect(perms.get(tool)).toBe('always_allow');
+		}
+		await perms.setTool('read', 'approval_required');
+		expect(perms.getGroupDisplay('read')).toBe('mixed');
+		expect(Object.values(settings.toolPermissions.byTool)).not.toContain('mixed');
+	});
+
+	it('LIB-TEST-003: one tool can change alone', async () => {
+		const { perms } = manager();
+		await perms.setTool('grep', 'always_allow');
+		for (const tool of TOOL_NAMES) {
+			expect(perms.get(tool)).toBe(tool === 'grep' ? 'always_allow' : 'approval_required');
+		}
+	});
+
+	it('LIB-TEST-004: blocked tools leave the exposed list', async () => {
+		const { perms } = manager();
+		await perms.setTool('edit', 'blocked');
+		const exposed = perms.getExposedTools(TOOL_NAMES.map((name) => ({ name })));
+		expect(exposed.map((t) => t.name)).toEqual([
+			'ls',
+			'find',
+			'grep',
+			'read',
+			'get_active_note',
+			'write',
+		]);
+	});
+
+	it('LIB-TEST-005: the executor refuses a blocked tool again', async () => {
+		const { perms } = manager();
+		await perms.setTool('edit', 'blocked');
+		expect(() => perms.assertExecutable('edit')).toThrow('Tool blocked by settings');
+		expect(perms.resolve('edit', { path: 'a.md' })).toBe('blocked');
+	});
+
+	it('LIB-FEAT-011: writing the root AGENTS.md always asks even when always allowed', async () => {
+		const { perms } = manager();
+		await perms.setGroup('write', 'always_allow');
+		expect(perms.resolve('write', { path: 'notes/a.md' })).toBe('always_allow');
+		expect(perms.resolve('write', { path: 'AGENTS.md' })).toBe('approval_required');
+		expect(perms.resolve('edit', { path: 'agents.md' })).toBe('approval_required');
+		expect(perms.resolve('read', { path: 'AGENTS.md' })).toBe('approval_required');
+	});
+
+	it('LIB-TEST-013: changes are persisted through the save callback', async () => {
+		const { perms, saves } = manager();
+		await perms.setTool('ls', 'blocked');
+		await perms.setGroup('write', 'always_allow');
+		expect(saves()).toBe(2);
+	});
+});

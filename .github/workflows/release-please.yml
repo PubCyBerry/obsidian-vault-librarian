@@ -1,0 +1,52 @@
+name: Release Obsidian plugin
+
+on:
+    push:
+        branches:
+            - master
+
+permissions:
+    contents: write
+    pull-requests: write
+    id-token: write
+    attestations: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Open or merge the release PR
+              id: release
+              uses: googleapis/release-please-action@v4
+
+            - uses: actions/checkout@v6
+              if: ${{ steps.release.outputs.release_created }}
+
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              if: ${{ steps.release.outputs.release_created }}
+              with:
+                  node-version: 24
+                  cache: 'npm'
+
+            - name: Build plugin
+              if: ${{ steps.release.outputs.release_created }}
+              run: |
+                  npm ci
+                  npm run build
+
+            - name: Attest build provenance
+              if: ${{ steps.release.outputs.release_created }}
+              uses: actions/attest@v4
+              with:
+                  subject-path: |
+                      main.js
+                      styles.css
+
+            - name: Attach release assets
+              if: ${{ steps.release.outputs.release_created }}
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  gh release upload "${{ steps.release.outputs.tag_name }}" \
+                    main.js manifest.json styles.css --clobber

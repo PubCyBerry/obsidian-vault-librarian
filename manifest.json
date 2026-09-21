@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"id": "vault-librarian",
+	"name": "Librarian",
+	"version": "0.0.0",
+	"minAppVersion": "1.11.5",
+	"description": "Chat with an agent that finds, reads, creates and edits your notes with tool calling. Bring your own OpenAI-compatible model.",
+	"author": "PubCyBerry",
+	"authorUrl": "https://github.com/PubCyBerry",
+	"fundingUrl": "https://buymeacoffee.com/pubcyberry",
 	"isDesktopOnly": false
 }

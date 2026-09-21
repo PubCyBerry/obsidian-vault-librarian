@@ -1,0 +1,29 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		// main.js is the bundle and package-lock.json is written by npm.
+		"includes": ["**", "!main.js", "!package-lock.json"]
+	},
+	"formatter": {
+		// Indentation and line endings follow .editorconfig.
+		"useEditorconfig": true,
+		"lineWidth": 100
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "single"
+		}
+	},
+	"linter": {
+		"rules": {
+			"style": {
+				"noNonNullAssertion": "off"
+			}
+		}
+	}
+}

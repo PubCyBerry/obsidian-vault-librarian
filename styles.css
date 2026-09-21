@@ -1,8 +1,722 @@
-/*
+/* Librarian chat view. Colors come from Obsidian variables only. */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.librarian {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+	gap: var(--size-4-2);
+}
 
-If your plugin does not need CSS, delete this file.
+.librarian .is-hidden {
+	display: none;
+}
 
-*/
+/* Header */
+
+.librarian-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3) 0;
+}
+
+.librarian-model-select {
+	flex: 1 1 160px;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.librarian-thinking-select {
+	flex: 0 1 auto;
+}
+
+.librarian-header-actions {
+	display: flex;
+	gap: var(--size-2-2);
+	margin-left: auto;
+}
+
+/* Banners and notices */
+
+.librarian-key-banner,
+.librarian-notice,
+.librarian-error {
+	margin: 0 var(--size-4-3);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	font-size: var(--font-ui-small);
+}
+
+.librarian-key-banner {
+	background: var(--background-modifier-error-hover);
+	color: var(--text-normal);
+}
+
+.librarian-key-banner-title {
+	font-weight: var(--font-semibold);
+	margin-bottom: var(--size-4-2);
+}
+
+.librarian-key-banner-row {
+	display: flex;
+	gap: var(--size-4-2);
+	flex-wrap: wrap;
+}
+
+.librarian-key-banner-row input {
+	flex: 1 1 200px;
+}
+
+.librarian-notice {
+	background: var(--background-secondary);
+	color: var(--text-muted);
+}
+
+.librarian-error {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+	margin-top: var(--size-4-2);
+}
+
+.librarian-error.is-stored {
+	background: var(--background-secondary);
+	color: var(--text-error);
+}
+
+.librarian-error-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+/* Messages */
+
+.librarian-messages {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: 0 var(--size-4-3);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+	min-height: 0;
+}
+
+.librarian-msg {
+	position: relative;
+	max-width: 100%;
+}
+
+.librarian-msg-user {
+	display: flex;
+	align-items: flex-start;
+	justify-content: flex-end;
+	gap: var(--size-2-2);
+}
+
+.librarian-bubble {
+	background: var(--background-secondary);
+	border-radius: var(--radius-l);
+	padding: var(--size-4-2) var(--size-4-3);
+	max-width: 85%;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.librarian-rewind {
+	flex: 0 0 auto;
+	opacity: 0.6;
+}
+
+.librarian-rewind:hover,
+.librarian-rewind:focus-visible {
+	opacity: 1;
+}
+
+.librarian-attached,
+.librarian-active-note {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-top: var(--size-2-2);
+}
+
+.librarian-msg-images,
+.librarian-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	margin-top: var(--size-2-2);
+}
+
+.librarian-msg-images img,
+.librarian-image-chip img {
+	max-height: 96px;
+	max-width: 100%;
+	border-radius: var(--radius-s);
+}
+
+.librarian-image-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	padding: var(--size-2-1);
+}
+
+.librarian-image-missing {
+	color: var(--text-error);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-msg-assistant {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.librarian-markdown {
+	word-break: break-word;
+}
+
+.librarian-markdown > :first-child {
+	margin-top: 0;
+}
+
+.librarian-stream-text {
+	white-space: pre-wrap;
+}
+
+.librarian-thinking {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.librarian-thinking pre {
+	white-space: pre-wrap;
+	max-height: 200px;
+	overflow: auto;
+}
+
+.librarian-source {
+	cursor: pointer;
+	text-decoration: underline;
+	text-decoration-style: dotted;
+	color: var(--text-accent);
+}
+
+.librarian-compaction {
+	text-align: center;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: var(--size-2-2);
+}
+
+/* Tool cards */
+
+.librarian-tool {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	font-size: var(--font-ui-small);
+	overflow: hidden;
+}
+
+.librarian-tool-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-2-2) var(--size-4-2);
+	cursor: pointer;
+	min-height: 44px;
+}
+
+.librarian-tool-icon {
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+.librarian-tool-name {
+	font-family: var(--font-monospace);
+	font-weight: var(--font-semibold);
+}
+
+.librarian-tool-summary {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-muted);
+}
+
+.librarian-tool-status {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+}
+
+.librarian-tool.is-running .librarian-tool-status,
+.librarian-tool.is-pending .librarian-tool-status {
+	color: var(--text-accent);
+}
+
+.librarian-tool.is-awaiting-approval .librarian-tool-status {
+	color: var(--text-warning);
+}
+
+.librarian-tool.is-ok .librarian-tool-status {
+	color: var(--text-success);
+}
+
+.librarian-tool.is-failed .librarian-tool-status,
+.librarian-tool.is-rejected .librarian-tool-status,
+.librarian-tool.is-blocked .librarian-tool-status,
+.librarian-tool.is-expired .librarian-tool-status {
+	color: var(--text-error);
+}
+
+.librarian-tool.is-blocked,
+.librarian-tool.is-expired {
+	opacity: 0.7;
+}
+
+.librarian-tool-body {
+	padding: var(--size-2-2) var(--size-4-2) var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.librarian-tool-body pre,
+.librarian-approval-body pre,
+.librarian-change-body pre,
+.librarian-diff pre {
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 320px;
+	overflow: auto;
+	margin: var(--size-2-1) 0;
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-tool-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-top: var(--size-2-2);
+}
+
+.librarian-tool-note,
+.librarian-approval-note,
+.librarian-diff-note,
+.librarian-modal-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Change preview and diff */
+
+.librarian-change-title {
+	font-weight: var(--font-semibold);
+	margin-bottom: var(--size-2-2);
+}
+
+.librarian-change-warning {
+	color: var(--text-warning);
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	margin-bottom: var(--size-2-2);
+}
+
+.librarian-diff {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+}
+
+.librarian-diff-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.librarian-diff-before pre {
+	background: color-mix(in srgb, var(--color-red) 12%, var(--background-primary));
+}
+
+.librarian-diff-after pre {
+	background: color-mix(in srgb, var(--color-green) 12%, var(--background-primary));
+}
+
+/* Approval card */
+
+.librarian-approval {
+	border: 1px solid var(--interactive-accent);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2) var(--size-4-3);
+	background: var(--background-primary-alt);
+}
+
+.librarian-approval-title {
+	font-weight: var(--font-semibold);
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	margin-bottom: var(--size-2-2);
+}
+
+.librarian-approval-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+.librarian-approval-buttons button {
+	min-height: 44px;
+}
+
+/* Composer */
+
+.librarian-composer,
+.librarian-pick-model {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	padding: var(--size-4-2) var(--size-4-3) var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.librarian-pick-model {
+	align-items: flex-start;
+}
+
+.librarian-activity {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-spinner {
+	width: 12px;
+	height: 12px;
+	border: 2px solid var(--background-modifier-border);
+	border-top-color: var(--interactive-accent);
+	border-radius: 50%;
+	animation: librarian-spin 0.8s linear infinite;
+}
+
+@keyframes librarian-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.librarian-input {
+	width: 100%;
+	resize: vertical;
+	min-height: 64px;
+	font-family: inherit;
+}
+
+.librarian-image-notice {
+	color: var(--text-warning);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-composer-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	position: relative;
+}
+
+.librarian-composer-row button {
+	min-height: 44px;
+	min-width: 44px;
+}
+
+.librarian-composer-spacer {
+	flex: 1 1 auto;
+}
+
+/* Context ring */
+
+.librarian-composer-row .librarian-context-indicator {
+	width: 28px;
+	height: 28px;
+	min-width: 28px;
+	min-height: 28px;
+	padding: 0;
+	border-radius: 50%;
+	border: none;
+	background:
+		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		conic-gradient(
+			var(--interactive-accent) var(--librarian-usage, 0%),
+			var(--background-modifier-border) 0
+		);
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.librarian-context-indicator.is-warning {
+	background:
+		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		conic-gradient(
+			var(--color-orange) var(--librarian-usage, 0%),
+			var(--background-modifier-border) 0
+		);
+}
+
+.librarian-context-indicator.is-critical {
+	background:
+		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		conic-gradient(
+			var(--color-red) var(--librarian-usage, 0%),
+			var(--background-modifier-border) 0
+		);
+}
+
+.librarian-context-popover {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + var(--size-2-2));
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-s);
+	padding: var(--size-4-2) var(--size-4-3);
+	font-size: var(--font-ui-small);
+	z-index: var(--layer-popover);
+	min-width: 200px;
+}
+
+.librarian-popover-title {
+	font-weight: var(--font-semibold);
+}
+
+.librarian-popover-detail {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Sessions */
+
+.librarian-sessions {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: 0 var(--size-4-3);
+}
+
+.librarian-session-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-4-2) 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.librarian-session-row.is-current .librarian-session-title {
+	color: var(--text-accent);
+}
+
+.librarian-session-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	cursor: pointer;
+}
+
+.librarian-session-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.librarian-session-meta {
+	display: flex;
+	gap: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	flex-wrap: wrap;
+}
+
+.librarian-session-actions {
+	display: flex;
+	gap: var(--size-2-1);
+}
+
+.librarian-sessions-empty {
+	color: var(--text-muted);
+	padding: var(--size-4-3) 0;
+}
+
+/* Modals */
+
+.librarian-modal-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+	margin-top: var(--size-4-3);
+}
+
+.librarian-modal-input {
+	width: 100%;
+}
+
+.librarian-modal .modal-content {
+	max-height: 70vh;
+	overflow-y: auto;
+}
+
+/* Settings */
+
+.librarian-settings-details {
+	margin: var(--size-4-2) 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: 0 var(--size-4-3);
+}
+
+.librarian-settings-details > summary {
+	cursor: pointer;
+	padding: var(--size-4-2) 0;
+	font-weight: var(--font-semibold);
+}
+
+.librarian-tool-permission-group {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: 0 var(--size-4-3);
+	margin-bottom: var(--size-4-2);
+}
+
+.librarian-tool-permission-group > summary {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-4-2) 0;
+	cursor: pointer;
+	list-style: none;
+}
+
+.librarian-group-label {
+	font-weight: var(--font-semibold);
+}
+
+.librarian-group-count {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	padding: 0 var(--size-2-2);
+}
+
+.librarian-tool-permission-group > summary select {
+	margin-left: auto;
+}
+
+.librarian-tool-permission-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-2-2) 0;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.librarian-tool-permission-name {
+	font-family: var(--font-monospace);
+	flex: 1 1 auto;
+}
+
+.librarian-segmented {
+	display: inline-flex;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	overflow: hidden;
+}
+
+.librarian-segmented button {
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	background: transparent;
+	min-height: 36px;
+	padding: 0 var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-segmented button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.librarian-prompt-order ol {
+	margin: var(--size-2-1) 0 0;
+	padding-left: var(--size-4-4);
+}
+
+.librarian-model-list {
+	margin-bottom: var(--size-4-3);
+}
+
+/* Narrow layouts and phones */
+
+@media (max-width: 480px) {
+	.librarian-bubble {
+		max-width: 100%;
+	}
+
+	.librarian-tool-permission-row {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.librarian-segmented {
+		display: flex;
+	}
+
+	.librarian-segmented button {
+		flex: 1 1 0;
+		min-height: 44px;
+	}
+
+	.librarian-tool-permission-group > summary {
+		flex-wrap: wrap;
+	}
+
+	.librarian-tool-permission-group > summary select {
+		margin-left: 0;
+		width: 100%;
+	}
+
+	.librarian-composer-row {
+		flex-wrap: wrap;
+	}
+
+	.librarian-send {
+		flex: 1 1 100%;
+	}
+
+	.librarian-modal .setting-item {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.librarian-modal .setting-item-control {
+		justify-content: flex-start;
+	}
+}
+
+.librarian.is-mobile .librarian-tool-header {
+	min-height: 48px;
+}

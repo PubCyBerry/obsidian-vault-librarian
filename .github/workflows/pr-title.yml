@@ -1,0 +1,29 @@
+name: Pull request title
+
+# A squash merge takes its commit message from the PR title. That message is written on GitHub,
+# so the local commit-msg hook never sees it, and it is exactly the commit release-please reads.
+# The convention is therefore checked once more on the server.
+on:
+    pull_request_target:
+        types:
+            - opened
+            - reopened
+            - edited
+            - synchronize
+
+permissions:
+    pull-requests: read
+
+jobs:
+    title:
+        name: Validate the title as a Conventional Commit
+        runs-on: ubuntu-latest
+        steps:
+            # No explicit type list: the default matches @commitlint/config-conventional, and
+            # copying it here would let the two drift apart.
+            - uses: amannn/action-semantic-pull-request@v6.1.1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  # A single-commit PR squashes to that commit's message instead of the title.
+                  validateSingleCommit: true
