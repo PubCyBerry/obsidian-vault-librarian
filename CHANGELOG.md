@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.1.0...1.1.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* stop yanking the chat scroll to the bottom while streaming ([4d9e9c8](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/4d9e9c808725b7735088215fc91ed164a5baa2f3))
+
 ## [1.1.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.4...1.1.0) (2026-09-21)
 
 
