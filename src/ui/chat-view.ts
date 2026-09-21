@@ -31,6 +31,7 @@ import {
 	toolIcon,
 } from './cards';
 import { linkSources, openSource } from './sources';
+import { appendStreamDelta } from './stream-text';
 
 export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
@@ -151,6 +152,13 @@ export class LibrarianView extends ItemView {
 	private messagesEl!: HTMLElement;
 	private sessionsEl!: HTMLElement;
 	private streamEl: HTMLElement | null = null;
+	private streamParts: {
+		thinking: HTMLElement;
+		text: HTMLElement;
+		tools: HTMLElement;
+		shownThinking: string;
+		shownText: string;
+	} | null = null;
 	private approvalEl: HTMLElement | null = null;
 	private composerEl!: HTMLElement;
 	private activeNoteEl!: HTMLElement;
@@ -330,6 +338,7 @@ export class LibrarianView extends ItemView {
 			cls: 'librarian-input',
 			attr: { placeholder: 'Ask a question...', rows: '3', 'aria-label': 'Message' },
 		});
+		this.inputEl.addEventListener('input', () => this.updateSendEnabled());
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter' && !e.shiftKey && !Platform.isMobile && !e.isComposing) {
 				e.preventDefault();
@@ -524,7 +533,8 @@ export class LibrarianView extends ItemView {
 			state !== 'no-key' &&
 			state !== 'model-unavailable' &&
 			state !== 'awaiting-approval' &&
-			!blockedByImages;
+			!blockedByImages &&
+			(this.inputEl.value.trim().length > 0 || this.pendingImages.length > 0);
 		this.sendButton.setText(running ? 'Stop' : 'Send');
 		this.sendButton.toggleClass('mod-warning', running);
 		this.sendButton.toggleClass('mod-cta', !running);
@@ -549,8 +559,8 @@ export class LibrarianView extends ItemView {
 		}
 		const images = [...this.pendingImages];
 		this.pendingImages = [];
-		this.renderImages();
 		this.inputEl.value = '';
+		this.renderImages();
 		this.hideNotice();
 		if (this.historyMode) await this.toggleHistory();
 		await this.controller.send(text, images);
@@ -690,6 +700,7 @@ export class LibrarianView extends ItemView {
 			80;
 		this.messagesEl.empty();
 		this.streamEl = null;
+		this.streamParts = null;
 		this.approvalEl = null;
 		const results = new Map<string, Extract<SessionEvent, { type: 'tool_result' }>>();
 		for (const { event } of events)
@@ -810,6 +821,7 @@ export class LibrarianView extends ItemView {
 			}
 			this.streamEl?.remove();
 			this.streamEl = null;
+			this.streamParts = null;
 			return;
 		}
 		if (this.streamTimer !== null) return;
@@ -820,32 +832,41 @@ export class LibrarianView extends ItemView {
 	}
 
 	private renderStream(message: AssistantMessage) {
-		if (!this.streamEl) {
-			this.streamEl = this.messagesEl.createDiv({
+		if (!this.streamEl || !this.streamParts) {
+			const el = this.messagesEl.createDiv({
 				cls: 'librarian-msg librarian-msg-assistant is-streaming',
 			});
+			this.streamEl = el;
+			const details = el.createEl('details', { cls: 'librarian-thinking is-hidden' });
+			details.open = true;
+			details.createEl('summary', { text: 'Thinking' });
+			this.streamParts = {
+				thinking: details.createEl('pre'),
+				text: el.createDiv({ cls: 'librarian-markdown librarian-stream-text is-hidden' }),
+				tools: el.createDiv(),
+				shownThinking: '',
+				shownText: '',
+			};
 		}
-		const el = this.streamEl;
-		el.empty();
+		// Already shown text stays in place; only the new tail is appended so it can animate in.
+		const parts = this.streamParts;
 		const thinking = message.content
 			.filter((c) => c.type === 'thinking')
 			.map((c) => (c as { thinking: string }).thinking)
 			.join('');
-		if (thinking) {
-			const details = el.createEl('details', { cls: 'librarian-thinking' });
-			details.open = true;
-			details.createEl('summary', { text: 'Thinking' });
-			details.createEl('pre', { text: thinking });
-		}
+		parts.thinking.parentElement?.toggleClass('is-hidden', !thinking);
+		parts.shownThinking = appendStreamDelta(parts.thinking, parts.shownThinking, thinking);
 		const text = message.content
 			.filter((c) => c.type === 'text')
 			.map((c) => (c as { text: string }).text)
 			.join('');
-		if (text) el.createDiv({ cls: 'librarian-markdown librarian-stream-text', text });
+		parts.text.toggleClass('is-hidden', !text);
+		parts.shownText = appendStreamDelta(parts.text, parts.shownText, text);
+		parts.tools.empty();
 		for (const block of message.content) {
 			if (block.type !== 'toolCall') continue;
 			const status: ToolCardStatus = this.controller.toolStatusOf(block.id) ?? 'pending';
-			const card = el.createDiv({ cls: `librarian-tool is-${status}` });
+			const card = parts.tools.createDiv({ cls: `librarian-tool is-${status}` });
 			const header = card.createDiv({ cls: 'librarian-tool-header' });
 			setIcon(header.createSpan({ cls: 'librarian-tool-icon' }), toolIcon(block.name));
 			header.createSpan({ cls: 'librarian-tool-name', text: block.name || '…' });

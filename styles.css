@@ -480,6 +480,37 @@
 	min-width: 44px;
 }
 
+.librarian-send:disabled {
+	background: var(--interactive-normal);
+	color: var(--text-faint);
+	box-shadow: none;
+	cursor: default;
+}
+
+/* Streamed text: only the newly appended piece fades in (LIB-FEAT-099). */
+
+.librarian-reveal {
+	animation: librarian-reveal 280ms ease-out both;
+}
+
+@keyframes librarian-reveal {
+	from {
+		opacity: 0;
+		filter: blur(3px);
+	}
+
+	to {
+		opacity: 1;
+		filter: blur(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.librarian-reveal {
+		animation: none;
+	}
+}
+
 .librarian-composer-spacer {
 	flex: 1 1 auto;
 }
