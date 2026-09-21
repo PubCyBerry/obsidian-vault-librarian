@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.4...1.1.0) (2026-09-21)
+
+
+### Features
+
+* dim Send with nothing to send and fade in streamed text ([1cdfbc2](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1cdfbc2f53c1fa39215fc6b26ee0a8e1951bd7c4))
+
 ## [1.0.4](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.3...1.0.4) (2026-09-21)
 
 
