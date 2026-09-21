@@ -238,7 +238,7 @@ export class SessionManager {
 				await this.append(id, {
 					type: 'approval',
 					toolCallId: event.toolCallId,
-					name: event.name as never,
+					name: event.name,
 					decision: 'expired',
 				});
 				await this.append(id, {

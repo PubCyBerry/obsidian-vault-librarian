@@ -8,11 +8,15 @@ import {
 	type SettingDefinitionItem,
 } from 'obsidian';
 import type LibrarianPlugin from '../main';
+import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
 import { PERMISSION_LABELS, TOOL_GROUPS } from '../permissions/tool-permission-manager';
 import { testConnection } from '../provider/transport';
 import { isValidSecretId } from '../storage/secret-store';
 import {
+	MCP_SERVER_ID_PATTERN,
+	type McpServerConfig,
 	type ModelConfig,
+	newMcpServer,
 	newModel,
 	newProvider,
 	type ProviderCompat,
@@ -23,6 +27,87 @@ import {
 } from '../types';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
+
+const MCP_STATUS_LABELS: Record<McpStatus, string> = {
+	disabled: 'Disabled',
+	disconnected: 'Not connected',
+	connecting: 'Connecting...',
+	ready: 'Connected',
+	'needs-sign-in': 'Sign-in needed',
+	error: 'Error',
+};
+
+class McpServerEditorModal extends Modal {
+	private draft: McpServerConfig;
+
+	constructor(
+		app: App,
+		private readonly plugin: LibrarianPlugin,
+		private readonly existing: McpServerConfig | null,
+		private readonly onSaved: (server: McpServerConfig) => Promise<void>,
+	) {
+		super(app);
+		this.draft = existing ? { ...existing } : newMcpServer('');
+	}
+
+	onOpen() {
+		const el = this.contentEl;
+		el.empty();
+		this.titleEl.setText(this.existing ? 'Edit MCP server' : 'Add MCP server');
+		new Setting(el).setName('Name').addText((t) =>
+			t.setValue(this.draft.name).onChange((v) => {
+				this.draft.name = v;
+				if (!this.existing) this.draft.id = newMcpServer(v).id;
+			}),
+		);
+		new Setting(el)
+			.setName('URL')
+			.setDesc('Endpoint of the server. For Outline it ends in /mcp.')
+			.addText((t) =>
+				t.setValue(this.draft.url).onChange((v) => {
+					this.draft.url = v.trim();
+				}),
+			);
+		new Setting(el)
+			.setName('Authentication')
+			.setDesc('Sign in through the browser, or paste an API key once per device.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ oauth: 'OAuth (sign in)', apiKey: 'API key', none: 'None' })
+					.setValue(this.draft.auth)
+					.onChange((v) => {
+						this.draft.auth = v as McpServerConfig['auth'];
+					}),
+			);
+		const note = el.createDiv({ cls: 'librarian-modal-note' });
+		const buttons = el.createDiv({ cls: 'librarian-modal-buttons' });
+		const cancel = buttons.createEl('button', { text: 'Cancel' });
+		cancel.addEventListener('click', () => this.close());
+		const save = buttons.createEl('button', { cls: 'mod-cta', text: 'Save' });
+		save.addEventListener(
+			'click',
+			() =>
+				void (async () => {
+					const name = this.draft.name.trim();
+					if (!name) return note.setText('Name is required.');
+					if (!/^https?:\/\//.test(this.draft.url))
+						return note.setText('The URL must start with http or https.');
+					if (!MCP_SERVER_ID_PATTERN.test(this.draft.id))
+						return note.setText('Name must contain a letter or digit.');
+					const taken = this.plugin.settings.mcpServers.some(
+						(s) => s.id === this.draft.id && s !== this.existing,
+					);
+					if (taken) return note.setText('This name is already used.');
+					await this.onSaved({ ...this.draft, name });
+					this.close();
+				})(),
+		);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
 
 const COMPAT_FIELDS: { key: keyof ProviderCompat; label: string }[] = [
 	{ key: 'supportsStore', label: 'Supports store' },
@@ -518,8 +603,17 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
+	private unsubscribeMcp: (() => void) | null = null;
+
 	display(): void {
 		this.renderLegacy();
+		this.unsubscribeMcp?.();
+		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.refreshSettings());
+	}
+
+	hide(): void {
+		this.unsubscribeMcp?.();
+		this.unsubscribeMcp = null;
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
@@ -547,6 +641,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					'Custom system prompt',
 				],
 				render: (el: HTMLElement) => this.renderAgent(el),
+			},
+			{
+				name: 'MCP servers',
+				aliases: ['MCP', 'Outline', 'OAuth', 'Sign in', 'Remote tools'],
+				render: (el: HTMLElement) => this.renderMcpServers(el),
 			},
 			{
 				name: 'Tool permissions',
@@ -598,6 +697,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		containerEl.addClass('librarian-settings');
 		this.renderProviders(containerEl);
 		this.renderAgent(containerEl);
+		this.renderMcpServers(containerEl);
 		this.renderToolPermissions(containerEl);
 		this.renderContext(containerEl);
 		this.renderSessions(containerEl);
@@ -774,6 +874,108 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		list.createEl('li', { text: 'Your custom system prompt' });
 	}
 
+	private renderMcpServers(el: HTMLElement) {
+		new Setting(el)
+			.setName('MCP servers')
+			.setHeading()
+			.setDesc(
+				'Remote servers over streamable HTTP. Their tools ask first and their results are marked untrusted.',
+			)
+			.addButton((b) =>
+				b.setButtonText('Add server').onClick(() => {
+					new McpServerEditorModal(this.app, this.plugin, null, async (server) => {
+						this.plugin.settings.mcpServers.push(server);
+						await this.save();
+						await this.plugin.mcp.connect(server.id);
+						this.refreshSettings();
+					}).open();
+				}),
+			);
+		const mcp = this.plugin.mcp;
+		for (const server of this.plugin.settings.mcpServers) {
+			const state = mcp.state(server.id);
+			const status = MCP_STATUS_LABELS[state.status];
+			const detail =
+				state.status === 'ready' ? `${state.tools.length} tools` : (state.message ?? '');
+			const row = new Setting(el)
+				.setName(server.name)
+				.setDesc(`${server.url} · ${status}${detail ? ` · ${detail}` : ''}`);
+			row.addToggle((t) =>
+				t
+					.setTooltip('Enabled')
+					.setValue(server.enabled)
+					.onChange(async (v) => {
+						server.enabled = v;
+						await this.save();
+						await mcp.connect(server.id);
+						this.refreshSettings();
+					}),
+			);
+			if (server.auth === 'apiKey') {
+				const has = !!this.plugin.secrets.get(apiKeySecretId(server.id));
+				let pendingKey = '';
+				row.addText((t) => {
+					t.inputEl.type = 'password';
+					t.setPlaceholder(has ? 'API key saved on this device' : 'API key');
+					t.onChange((v) => {
+						pendingKey = v;
+					});
+				});
+				row.addButton((b) =>
+					b.setButtonText('Save key').onClick(async () => {
+						const key = pendingKey.trim();
+						if (!key) return;
+						this.plugin.secrets.set(apiKeySecretId(server.id), key);
+						await mcp.connect(server.id);
+						this.refreshSettings();
+					}),
+				);
+			} else if (server.auth === 'oauth') {
+				row.addButton((b) =>
+					b
+						.setButtonText(state.status === 'ready' ? 'Sign out' : 'Sign in')
+						.onClick(async () => {
+							if (state.status === 'ready') await mcp.signOut(server.id);
+							else await mcp.signIn(server.id);
+							this.refreshSettings();
+						}),
+				);
+			} else {
+				row.addButton((b) =>
+					b.setButtonText('Reconnect').onClick(async () => {
+						await mcp.connect(server.id);
+						this.refreshSettings();
+					}),
+				);
+			}
+			row.addExtraButton((b) =>
+				b
+					.setIcon('pencil')
+					.setTooltip('Edit')
+					.onClick(() => {
+						new McpServerEditorModal(this.app, this.plugin, server, async (updated) => {
+							Object.assign(server, updated);
+							await this.save();
+							await mcp.connect(server.id);
+							this.refreshSettings();
+						}).open();
+					}),
+			);
+			row.addExtraButton((b) =>
+				b
+					.setIcon('trash')
+					.setTooltip('Remove')
+					.onClick(async () => {
+						await mcp.remove(server.id);
+						await this.plugin.controller.recalculateUsage();
+						this.refreshSettings();
+					}),
+			);
+		}
+		if (this.plugin.settings.mcpServers.length === 0)
+			el.createDiv({ cls: 'librarian-modal-note', text: 'No MCP servers yet.' });
+	}
+
 	private renderToolPermissions(el: HTMLElement) {
 		new Setting(el)
 			.setName('Tool permissions')
@@ -783,7 +985,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			);
 		const perms = this.plugin.permissions;
 		const wrap = el.createDiv({ cls: 'librarian-tool-permissions' });
-		for (const group of TOOL_GROUPS) {
+		for (const group of perms.groups()) {
 			const groupEl = wrap.createEl('details', { cls: 'librarian-tool-permission-group' });
 			groupEl.open = true;
 			const summary = groupEl.createEl('summary');
@@ -836,6 +1038,10 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						text: PERMISSION_LABELS[p],
 						attr: { role: 'radio' },
 					});
+					if (p === 'always_allow' && !perms.canAlwaysAllow(tool)) {
+						b.disabled = true;
+						b.setAttr('title', 'The server marks this tool destructive.');
+					}
 					b.addEventListener(
 						'click',
 						() =>

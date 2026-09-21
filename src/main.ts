@@ -2,6 +2,8 @@ import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
 import { AgentController } from './agent/agent-controller';
 import { PromptManager } from './agent/prompt';
 import { ContextManager } from './context/context-manager';
+import { McpManager } from './mcp/mcp-manager';
+import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import { ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
@@ -19,6 +21,7 @@ export default class LibrarianPlugin extends Plugin {
 	permissions!: ToolPermissionManager;
 	providers!: ProviderManager;
 	transport!: TransportRouter;
+	mcp!: McpManager;
 	controller!: AgentController;
 
 	async onload() {
@@ -39,6 +42,20 @@ export default class LibrarianPlugin extends Plugin {
 					'Streaming is not available for this provider. Waiting for the full response.',
 				),
 		});
+		this.mcp = new McpManager({
+			settings: () => this.settings,
+			save: () => this.saveSettings(),
+			secrets: this.secrets,
+			permissions: this.permissions,
+			clientVersion: this.manifest.version,
+			open: (url) => window.open(url),
+			notice: (message) => new Notice(message),
+		});
+		this.permissions.attachExtras(
+			() => this.mcp.groups(),
+			() => this.mcp.destructiveTools(),
+		);
+		const vaultTools = createVaultTools({ app: this.app, settings: () => this.settings });
 		const context = new ContextManager(this.app, () => this.settings.context);
 		this.controller = new AgentController({
 			app: this.app,
@@ -51,8 +68,18 @@ export default class LibrarianPlugin extends Plugin {
 			transport: this.transport,
 			prompt: new PromptManager(this.app),
 			secrets: this.secrets,
-			tools: createVaultTools({ app: this.app, settings: () => this.settings }),
+			tools: () => [...vaultTools, ...this.mcp.tools()],
 		});
+		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
+			const id = serverIdFromState(params.state);
+			if (!id) return;
+			if (params.error) {
+				new Notice(`Sign-in failed: ${params.error_description ?? params.error}`);
+				return;
+			}
+			if (params.code) void this.mcp.finishAuth(id, params.code);
+		});
+		this.app.workspace.onLayoutReady(() => void this.mcp.connectAll());
 
 		this.registerView(VIEW_TYPE_LIBRARIAN, (leaf) => new LibrarianView(leaf, this));
 		this.addRibbonIcon('book-open', 'Open chat', () => void this.activateView());
@@ -103,6 +130,7 @@ export default class LibrarianPlugin extends Plugin {
 
 	onunload() {
 		this.controller.stop();
+		for (const server of this.settings.mcpServers) void this.mcp.disconnect(server.id);
 	}
 
 	async saveSettings() {

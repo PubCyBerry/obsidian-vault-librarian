@@ -27,6 +27,23 @@ const providerEnvStub = {
 	},
 };
 
+// The MCP SDK loads ajv for its default output validator. The plugin passes its own validator, so
+// ajv is swapped for a throwing stub: it keeps ~300 KB and ajv's inert require strings out.
+const ajvStub = {
+	name: 'ajv-stub',
+	setup(build) {
+		build.onResolve({ filter: /^ajv(\/.*)?$|^ajv-formats$/ }, (args) => ({
+			path: args.path,
+			namespace: 'ajv-stub',
+		}));
+		build.onLoad({ filter: /.*/, namespace: 'ajv-stub' }, () => ({
+			contents:
+				'function Ajv() { throw new Error("ajv is not bundled"); } export default Ajv; export { Ajv };',
+			loader: 'js',
+		}));
+	},
+};
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -50,7 +67,7 @@ const context = await esbuild.context({
 		'@lezer/lr',
 		...builtinModules,
 	],
-	plugins: [providerEnvStub],
+	plugins: [providerEnvStub, ajvStub],
 	define: { 'process.env.NODE_ENV': prod ? '"production"' : '"development"' },
 	format: 'cjs',
 	target: 'es2021',

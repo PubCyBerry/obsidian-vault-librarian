@@ -10,6 +10,7 @@ describe('settings search', () => {
 		expect(definitions.map((definition) => definition.name)).toEqual([
 			'Providers',
 			'Agent',
+			'MCP servers',
 			'Tool permissions',
 			'Context',
 			'Sessions',

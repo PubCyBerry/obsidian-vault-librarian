@@ -25,7 +25,7 @@ import type {
 	StoredUsage,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
-import type { LibrarianSettings, ThinkingLevel, ToolName } from '../types';
+import type { LibrarianSettings, ThinkingLevel } from '../types';
 import { BUILT_IN_SYSTEM_PROMPT, type PromptManager } from './prompt';
 
 export type AgentUiState =
@@ -53,8 +53,10 @@ export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'expired';
 
 export interface ApprovalRequest {
 	toolCallId: string;
-	name: ToolName;
+	name: string;
 	args: Record<string, unknown>;
+	/** False when settings never let this tool skip approval (destructive MCP tools). */
+	canAlways: boolean;
 	/** For write on an existing note: its current length. */
 	existingLength?: number;
 	resolve: (decision: ApprovalDecision) => void;
@@ -95,7 +97,8 @@ export interface ControllerDeps {
 	transport: TransportRouter;
 	prompt: PromptManager;
 	secrets: SecretStore;
-	tools: AgentTool[];
+	/** Vault tools plus whatever MCP servers currently offer; read fresh on every turn. */
+	tools: () => AgentTool[];
 }
 
 function textOf(content: readonly { type: string }[]): string {
@@ -265,7 +268,7 @@ export class AgentController {
 	}
 
 	private exposedTools(): AgentTool[] {
-		return this.deps.permissions.getExposedTools(this.deps.tools);
+		return this.deps.permissions.getExposedTools(this.deps.tools());
 	}
 
 	async systemPrompt(): Promise<string> {
@@ -471,7 +474,8 @@ export class AgentController {
 		signal?: AbortSignal,
 	) {
 		const perms = this.deps.permissions;
-		if (!perms.isKnownTool(name)) return { block: true, reason: `Tool ${name} not found` };
+		if (!this.deps.tools().some((t) => t.name === name))
+			return { block: true, reason: `Tool ${name} not found` };
 		const permission = perms.resolve(name, args);
 		if (permission === 'blocked') {
 			this.setToolStatus(toolCallId, 'blocked');
@@ -530,7 +534,7 @@ export class AgentController {
 
 	private askApproval(
 		toolCallId: string,
-		name: ToolName,
+		name: string,
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	) {
@@ -556,6 +560,7 @@ export class AgentController {
 				toolCallId,
 				name,
 				args,
+				canAlways: this.deps.permissions.canAlwaysAllow(name),
 				existingLength: existing?.stat.size,
 				resolve: finish,
 			};

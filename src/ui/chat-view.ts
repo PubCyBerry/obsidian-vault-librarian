@@ -148,6 +148,8 @@ export class LibrarianView extends ItemView {
 	private modelSelect!: HTMLSelectElement;
 	private thinkingSelect!: HTMLSelectElement;
 	private bannerEl!: HTMLElement;
+	private mcpBannerEl!: HTMLElement;
+	private unsubscribeMcp: (() => void) | null = null;
 	private noticeEl!: HTMLElement;
 	private messagesEl!: HTMLElement;
 	private sessionsEl!: HTMLElement;
@@ -209,6 +211,9 @@ export class LibrarianView extends ItemView {
 		if (Platform.isMobile) root.addClass('is-mobile');
 		this.buildHeader(root);
 		this.bannerEl = root.createDiv({ cls: 'librarian-key-banner is-hidden' });
+		this.mcpBannerEl = root.createDiv({
+			cls: 'librarian-key-banner librarian-mcp-banner is-hidden',
+		});
 		this.noticeEl = root.createDiv({ cls: 'librarian-notice is-hidden' });
 		this.messagesEl = root.createDiv({ cls: 'librarian-messages' });
 		this.messagesEl.addEventListener('scroll', () => {
@@ -218,6 +223,8 @@ export class LibrarianView extends ItemView {
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
 		this.buildComposer(root);
 		this.unsubscribe = this.controller.subscribe((e) => this.onControllerEvent(e));
+		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
+		this.renderMcpBanner();
 		this.registerDomEvent(document, 'click', (e) => {
 			if (
 				this.popoverPinned &&
@@ -236,6 +243,7 @@ export class LibrarianView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		this.unsubscribeMcp?.();
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		if (this.streamTimer !== null) window.clearTimeout(this.streamTimer);
@@ -671,6 +679,25 @@ export class LibrarianView extends ItemView {
 		);
 	}
 
+	/** One line per enabled MCP server that is waiting for a sign-in or an API key. */
+	private renderMcpBanner() {
+		const waiting = this.plugin.mcp.needingSignIn();
+		this.mcpBannerEl.toggleClass('is-hidden', waiting.length === 0);
+		this.mcpBannerEl.empty();
+		for (const server of waiting) {
+			const row = this.mcpBannerEl.createDiv({ cls: 'librarian-key-banner-row' });
+			row.createSpan({ text: `Sign in to "${server.name}" to use its tools.` });
+			const button = row.createEl('button', {
+				cls: 'mod-cta',
+				text: server.auth === 'apiKey' ? 'Open settings' : 'Sign in',
+			});
+			button.addEventListener('click', () => {
+				if (server.auth === 'apiKey') this.plugin.openSettings();
+				else void this.plugin.mcp.signIn(server.id);
+			});
+		}
+	}
+
 	private showNotice(message: string) {
 		this.noticeEl.setText(message);
 		this.noticeEl.removeClass('is-hidden');
@@ -907,6 +934,7 @@ export class LibrarianView extends ItemView {
 				reject: () => request.resolve('reject'),
 				always: () => request.resolve('always'),
 			},
+			request.canAlways,
 		);
 		this.scrollToBottom();
 	}

@@ -4,6 +4,19 @@ export type InputModality = 'text' | 'image';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ToolPermission = 'always_allow' | 'approval_required' | 'blocked';
 export type ToolName = 'ls' | 'find' | 'grep' | 'read' | 'get_active_note' | 'write' | 'edit';
+export type McpAuthMode = 'oauth' | 'apiKey' | 'none';
+
+/** A remote MCP server reached over Streamable HTTP. Credentials live in SecretStorage. */
+export interface McpServerConfig {
+	/** Lowercase letters, digits and hyphens; it prefixes every tool name and secret id. */
+	id: string;
+	name: string;
+	url: string;
+	auth: McpAuthMode;
+	enabled: boolean;
+	/** Fingerprint of each tool declaration as last seen, keyed by exposed tool name. */
+	toolHashes: Record<string, string>;
+}
 
 export const TOOL_NAMES: readonly ToolName[] = [
 	'ls',
@@ -100,7 +113,8 @@ export interface ContextSettings {
 }
 
 export interface ToolPermissionSettings {
-	byTool: Record<ToolName, ToolPermission>;
+	/** Keyed by tool name; MCP tools use `<server id>__<tool>`. Unknown names ask first. */
+	byTool: Record<string, ToolPermission>;
 }
 
 export interface LibrarianSettings {
@@ -109,6 +123,7 @@ export interface LibrarianSettings {
 	activeProviderId: string | null;
 	activeModelId: string | null;
 	toolPermissions: ToolPermissionSettings;
+	mcpServers: McpServerConfig[];
 	maxIterations: number;
 	repeatedFailureLimit: number;
 	useVaultAgentsMd: boolean;
@@ -145,6 +160,7 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	activeProviderId: null,
 	activeModelId: null,
 	toolPermissions: DEFAULT_TOOL_PERMISSIONS,
+	mcpServers: [],
 	maxIterations: 10,
 	repeatedFailureLimit: 3,
 	useVaultAgentsMd: true,
@@ -171,6 +187,7 @@ export function mergeSettings(stored: unknown): LibrarianSettings {
 		...s,
 		toolPermissions: { byTool },
 		context: { ...DEFAULT_SETTINGS.context, ...(s.context ?? {}) },
+		mcpServers: (s.mcpServers ?? []).map((m) => ({ ...m, toolHashes: m.toolHashes ?? {} })),
 		providers: (s.providers ?? []).map((p) => ({
 			...p,
 			compat: p.compat ?? {},
@@ -205,5 +222,24 @@ export function newModel(id: string): ModelConfig {
 		contextWindow: 128000,
 		maxTokens: 8192,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+}
+
+export const MCP_SERVER_ID_PATTERN = /^[a-z0-9-]{1,32}$/;
+
+export function newMcpServer(name: string): McpServerConfig {
+	const slug = name
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 24);
+	const suffix = Math.random().toString(36).slice(2, 6);
+	return {
+		id: slug ? `${slug}-${suffix}` : `mcp-${suffix}`,
+		name,
+		url: '',
+		auth: 'oauth',
+		enabled: true,
+		toolHashes: {},
 	};
 }

@@ -1,4 +1,4 @@
-import type { ThinkingLevel, ToolName } from '../types';
+import type { ThinkingLevel } from '../types';
 
 export interface SessionMetadata {
 	id: string;
@@ -51,7 +51,7 @@ export type SessionEvent =
 			t: string;
 			type: 'approval';
 			toolCallId: string;
-			name: ToolName;
+			name: string;
 			decision: 'approved' | 'rejected' | 'expired';
 	  }
 	| {

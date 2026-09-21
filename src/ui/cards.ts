@@ -200,6 +200,7 @@ export function renderApprovalCard(
 	args: Record<string, unknown>,
 	existingLength: number | undefined,
 	handlers: ApprovalCardHandlers,
+	canAlways = true,
 ): HTMLElement {
 	const card = container.createDiv({ cls: 'librarian-approval' });
 	const title = card.createDiv({ cls: 'librarian-approval-title' });
@@ -215,14 +216,19 @@ export function renderApprovalCard(
 	approve.addEventListener('click', handlers.approve);
 	const reject = buttons.createEl('button', { text: 'Reject' });
 	reject.addEventListener('click', handlers.reject);
-	if (!protectsAgentsMd) {
-		const always = buttons.createEl('button', { text: `Always allow ${name}` });
-		always.addEventListener('click', handlers.always);
-	} else {
+	if (protectsAgentsMd) {
 		card.createDiv({
 			cls: 'librarian-approval-note',
 			text: 'Changes to the vault root AGENTS.md always ask first.',
 		});
+	} else if (!canAlways) {
+		card.createDiv({
+			cls: 'librarian-approval-note',
+			text: 'The server marks this tool destructive, so it always asks first.',
+		});
+	} else {
+		const always = buttons.createEl('button', { text: `Always allow ${name}` });
+		always.addEventListener('click', handlers.always);
 	}
 	approve.focus();
 	return card;
