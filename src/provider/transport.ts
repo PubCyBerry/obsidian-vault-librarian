@@ -16,7 +16,7 @@ import {
 	resolveTranscript,
 	toToolDeclaration,
 } from '@earendil-works/pi-ai/utils/transcript';
-import { Platform, requestUrl } from 'obsidian';
+import { requestUrl } from 'obsidian';
 import type { ProviderConfig, ThinkingLevel, TransportMode } from '../types';
 import type { EffectiveRequestOptions, PiModel } from './provider-manager';
 
@@ -449,32 +449,15 @@ export class TransportRouter {
 export async function testConnection(
 	provider: ProviderConfig,
 	apiKey: string | null,
-	transportOverride?: TransportMode,
 ): Promise<{ ok: true; models: number } | { ok: false; message: string }> {
 	const url = `${provider.baseUrl.replace(/\/+$/, '')}/models`;
 	const headers = buildHeaders(apiKey, provider.authHeader);
-	const mode = transportOverride ?? provider.transport;
 	try {
-		let status: number;
-		let json: unknown;
-		if (mode === 'fetch' || (mode === 'auto' && !Platform.isMobile)) {
-			try {
-				const r = await fetch(url, { headers });
-				status = r.status;
-				json = status < 400 ? await r.json() : await r.text();
-			} catch (error) {
-				if (mode === 'fetch') throw error;
-				const r = await requestUrl({ url, headers, throw: false });
-				status = r.status;
-				json = r.json;
-			}
-		} else {
-			const r = await requestUrl({ url, headers, throw: false });
-			status = r.status;
-			json = r.json;
-		}
+		// Listing models does not stream; use Obsidian's CORS-independent transport.
+		const response = await requestUrl({ url, headers, throw: false });
+		const status = response.status;
 		if (status >= 400) return { ok: false, message: `HTTP ${status}` };
-		const data = (json as { data?: unknown[] } | undefined)?.data;
+		const data = (response.json as { data?: unknown[] } | undefined)?.data;
 		return { ok: true, models: Array.isArray(data) ? data.length : 0 };
 	} catch (error) {
 		return { ok: false, message: error instanceof Error ? error.message : String(error) };

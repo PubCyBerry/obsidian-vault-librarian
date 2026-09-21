@@ -47,6 +47,10 @@ OpenAI-compatible servers differ in the details. The provider and model editors 
 
 The plugin only talks to the endpoint you configure. Note contents reach that endpoint when the agent reads them with a tool you approved, or when you attach a note or an image yourself. There is no telemetry.
 
+The `find` and `grep` tools enumerate Markdown notes to search the vault; a folder restriction narrows the search results. They run only after the tool's permission check (Ask first by default). Opening the image picker enumerates vault file paths locally so you can choose an image. It sends only the image you attach, not the complete file list. Vault enumeration is necessary for these features and may be reported on the community scorecard.
+
+When enabled, the vault-root `AGENTS.md` is included in the system prompt sent to your configured endpoint. Approved search results can include note paths and excerpts. No files outside the vault are read.
+
 ## Development
 
 ```bash

@@ -328,7 +328,7 @@ export class LibrarianView extends ItemView {
 		this.imageNoticeEl = this.composerEl.createDiv({ cls: 'librarian-image-notice is-hidden' });
 		this.inputEl = this.composerEl.createEl('textarea', {
 			cls: 'librarian-input',
-			attr: { placeholder: 'Ask Librarian...', rows: '3', 'aria-label': 'Message' },
+			attr: { placeholder: 'Ask a question...', rows: '3', 'aria-label': 'Message' },
 		});
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter' && !e.shiftKey && !Platform.isMobile && !e.isComposing) {

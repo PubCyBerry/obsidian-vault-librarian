@@ -1,4 +1,12 @@
-import { type App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
+import {
+	type App,
+	Modal,
+	Notice,
+	PluginSettingTab,
+	requireApiVersion,
+	Setting,
+	type SettingDefinitionItem,
+} from 'obsidian';
 import type LibrarianPlugin from '../main';
 import { PERMISSION_LABELS, TOOL_GROUPS } from '../permissions/tool-permission-manager';
 import { testConnection } from '../provider/transport';
@@ -103,8 +111,8 @@ function renderCompat(container: HTMLElement, compat: ProviderCompat, title: str
 	}
 	new Setting(details).setName('Max tokens field').addDropdown((d) => {
 		d.addOption('default', 'Default');
-		d.addOption('max_tokens', 'max_tokens');
-		d.addOption('max_completion_tokens', 'max_completion_tokens');
+		d.addOption('max_tokens', 'Legacy token limit');
+		d.addOption('max_completion_tokens', 'Completion token limit');
 		d.setValue(compat.maxTokensField ?? 'default');
 		d.onChange((v) => {
 			if (v === 'default') delete compat.maxTokensField;
@@ -337,8 +345,8 @@ class ProviderEditorModal extends Modal {
 			.addToggle((t) => t.setValue(d.authHeader).onChange((v) => (d.authHeader = v)));
 		new Setting(el).setName('Transport').addDropdown((dd) => {
 			dd.addOption('auto', 'Auto');
-			dd.addOption('requestUrl', 'requestUrl');
-			dd.addOption('fetch', 'fetch');
+			dd.addOption('requestUrl', 'Non-streaming (Obsidian)');
+			dd.addOption('fetch', 'Streaming (browser)');
 			dd.setValue(d.transport);
 			dd.onChange((v) => (d.transport = v as ProviderConfig['transport']));
 		});
@@ -346,7 +354,7 @@ class ProviderEditorModal extends Modal {
 			b.setButtonText('Test').onClick(async () => {
 				const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
 				b.setDisabled(true);
-				const result = await testConnection(d, key, d.transport);
+				const result = await testConnection(d, key);
 				b.setDisabled(false);
 				new Notice(
 					result.ok
@@ -511,6 +519,80 @@ export class LibrarianSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
+		this.renderLegacy();
+	}
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		// Custom sections retain their existing controls while participating in settings search.
+		const sections = [
+			{
+				name: 'Providers',
+				aliases: [
+					'API key',
+					'Base URL',
+					'Default model',
+					'Transport',
+					'Models',
+					'Connection',
+					'Compatibility',
+				],
+				render: (el: HTMLElement) => this.renderProviders(el),
+			},
+			{
+				name: 'Agent',
+				aliases: [
+					'Max tool iterations',
+					'Repeated failure limit',
+					'AGENTS.md',
+					'Custom system prompt',
+				],
+				render: (el: HTMLElement) => this.renderAgent(el),
+			},
+			{
+				name: 'Tool permissions',
+				aliases: [
+					'Read',
+					'Write',
+					'Ask first',
+					'Blocked',
+					...TOOL_GROUPS.flatMap((group) => group.tools),
+				],
+				render: (el: HTMLElement) => this.renderToolPermissions(el),
+			},
+			{
+				name: 'Context',
+				aliases: [
+					'Warning at',
+					'Compact at',
+					'Preserve recent turns',
+					'Reserved output tokens',
+					'Safety margin tokens',
+				],
+				render: (el: HTMLElement) => this.renderContext(el),
+			},
+			{
+				name: 'Sessions',
+				aliases: ['Storage', 'History', 'Snapshots', 'Rewind'],
+				render: (el: HTMLElement) => this.renderSessions(el),
+			},
+		];
+		return sections.map((section) => ({
+			name: section.name,
+			aliases: section.aliases,
+			render: (setting: Setting) => {
+				setting.settingEl.empty();
+				setting.settingEl.addClass('librarian-settings-section');
+				section.render(setting.settingEl);
+			},
+		}));
+	}
+
+	private refreshSettings() {
+		if (requireApiVersion('1.13.0')) this.update();
+		else this.renderLegacy();
+	}
+
+	private renderLegacy(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 		containerEl.addClass('librarian-settings');
@@ -542,7 +624,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								this.plugin.settings.activeModelId = p.models[0].id;
 							}
 							await this.save();
-							this.display();
+							this.refreshSettings();
 						}).open();
 					}),
 			);
@@ -570,7 +652,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								async (updated) => {
 									s.providers[i] = updated;
 									await this.save();
-									this.display();
+									this.refreshSettings();
 								},
 							).open();
 						}),
@@ -604,7 +686,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 											s.activeModelId = null;
 										}
 										await this.save();
-										this.display();
+										this.refreshSettings();
 									})(),
 							);
 							row.createEl('button', { text: 'Cancel' }).addEventListener(

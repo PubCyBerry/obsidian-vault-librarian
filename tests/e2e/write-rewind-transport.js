@@ -92,7 +92,7 @@
 		};
 		app.setting.close();
 	} catch (error) {
-		out.error = String((error && error.stack) || error);
+		out.error = String(error?.stack || error);
 	} finally {
 		unsub();
 		out.running = false;

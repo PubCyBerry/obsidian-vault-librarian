@@ -8,11 +8,53 @@ import {
 	selectableThinkingLevels,
 	toPiModel,
 } from '../src/provider/provider-manager';
-import { buildRequestBody } from '../src/provider/transport';
+import { buildRequestBody, testConnection } from '../src/provider/transport';
 import { isValidSecretId, SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider } from '../src/types';
 import { FakeApp } from './fake-app';
+import { requestUrlMock } from './obsidian-stub';
+
+describe('connection check', () => {
+	it('uses requestUrl for every transport and reports HTTP and network errors', async () => {
+		try {
+			for (const transport of ['auto', 'fetch', 'requestUrl'] as const) {
+				const provider = {
+					...newProvider('p'),
+					baseUrl: 'https://llm.example/v1/',
+					transport,
+				};
+				requestUrlMock.impl = async (request) => {
+					expect(request).toMatchObject({
+						url: 'https://llm.example/v1/models',
+						throw: false,
+					});
+					return { status: 200, json: { data: [{ id: 'model' }] } };
+				};
+				expect(await testConnection(provider, 'key')).toEqual({ ok: true, models: 1 });
+				requestUrlMock.impl = async () => ({
+					status: 401,
+					get json() {
+						throw new Error('Not JSON');
+					},
+				});
+				expect(await testConnection(provider, 'key')).toEqual({
+					ok: false,
+					message: 'HTTP 401',
+				});
+			}
+			requestUrlMock.impl = async () => {
+				throw new Error('Offline');
+			};
+			expect(await testConnection(newProvider('p'), null)).toEqual({
+				ok: false,
+				message: 'Offline',
+			});
+		} finally {
+			requestUrlMock.impl = null;
+		}
+	});
+});
 
 const app = new FakeApp();
 const settings = mergeSettings({});

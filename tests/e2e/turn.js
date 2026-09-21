@@ -63,7 +63,7 @@
 			},
 		};
 	} catch (error) {
-		window.__e2e = { running: false, error: String((error && error.stack) || error), log };
+		window.__e2e = { running: false, error: String(error?.stack || error), log };
 	} finally {
 		unsub();
 	}
