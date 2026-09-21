@@ -303,13 +303,19 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 		name: 'write',
 		label: 'Write note',
 		description:
-			'Create a Markdown note or replace the full contents of an existing note. Prefer edit for localized changes.',
+			'Create a Markdown note, replace the full contents of an existing note, or append to it. Keep content under about 4,000 characters per call; for a longer note write the first part, then call write again with append set to true for each further part. Prefer edit for localized changes.',
 		parameters: Type.Object({
 			path: Type.String({ description: 'Vault-relative Markdown path ending in .md.' }),
-			content: Type.String({ description: 'Complete Markdown content.' }),
+			content: Type.String({ description: 'Markdown content for this call.' }),
 			overwrite: Type.Optional(
 				Type.Boolean({
 					description: 'Allow full replacement of an existing note. Default false.',
+				}),
+			),
+			append: Type.Optional(
+				Type.Boolean({
+					description:
+						'Add content to the end of the note instead of replacing it; creates the note when missing. Default false.',
 				}),
 			),
 		}),
@@ -322,6 +328,10 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 			});
 			const existing = deps.app.vault.getAbstractFileByPath(path);
 			if (existing instanceof TFolder) throw new Error(`A folder exists at ${path}`);
+			if (existing instanceof TFile && params.append) {
+				await deps.app.vault.append(existing, params.content);
+				return ok({ path, operation: 'appended', characters: params.content.length });
+			}
 			if (existing instanceof TFile) {
 				if (!params.overwrite)
 					throw new Error(

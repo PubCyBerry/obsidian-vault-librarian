@@ -902,5 +902,8 @@ export function rewriteProviderError(message: string): string {
 	) {
 		return 'This endpoint rejected tool calling. Check the provider settings.';
 	}
+	if (/^(network error|failed to fetch|fetch failed|load failed)$/i.test(message.trim())) {
+		return 'The connection dropped while the model was still answering. Long tool calls are the usual cause: ask for the note in smaller parts, or raise the timeout on the server.';
+	}
 	return message;
 }

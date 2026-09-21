@@ -109,7 +109,12 @@ export function renderChangePreview(
 	if (name === 'write') {
 		const path = str(args.path);
 		const content = str(args.content);
-		if (existingLength !== undefined || args.overwrite === true) {
+		if (args.append === true) {
+			el.createDiv({
+				cls: 'librarian-change-title',
+				text: `Append to ${path}${existingLength !== undefined ? ` (${existingLength} characters now)` : ''}`,
+			});
+		} else if (existingLength !== undefined || args.overwrite === true) {
 			const warn = el.createDiv({ cls: 'librarian-change-warning' });
 			setIcon(warn.createSpan(), 'alert-triangle');
 			warn.createSpan({

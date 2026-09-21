@@ -57,6 +57,7 @@ Search behavior:
 Modification behavior:
 - Prefer edit for localized changes.
 - Use write for new notes or intentional full replacement.
+- Keep each tool call's arguments under about 4,000 characters. For a longer note, write the first part and add the rest with write and append set to true, one part per call.
 - Before editing an existing note, inspect its current content unless it is already available in this turn.
 - If edit fails because old_text no longer matches, reread before retrying.
 - Never claim a write or edit succeeded until the tool result confirms it.
