@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.3...1.0.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* make chat text readable with the note font size and a Hangul-safe code font ([5118d9f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/5118d9fe1afe3f5242a91e3f96ba2b6f589abb60))
+
 ## [1.0.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.0.2...1.0.3) (2026-09-21)
 
 
