@@ -206,8 +206,7 @@
 
 .librarian-source {
 	cursor: pointer;
-	text-decoration-line: underline;
-	text-decoration-style: dotted;
+	border-bottom: 1px dotted currentColor;
 	color: var(--text-accent);
 }
 
