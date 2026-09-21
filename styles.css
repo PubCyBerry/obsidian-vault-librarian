@@ -113,6 +113,19 @@
 	max-width: 100%;
 }
 
+/* Obsidian turns text selection off in views; chat text must be selectable and draggable. */
+.librarian-messages,
+.librarian-messages pre,
+.librarian-messages code {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+.librarian-messages img,
+.librarian-msg-user img {
+	-webkit-user-drag: element;
+}
+
 .librarian-msg-user {
 	display: flex;
 	align-items: flex-start;
@@ -461,6 +474,45 @@
 	resize: vertical;
 	min-height: 64px;
 	font-family: inherit;
+}
+
+/* Slash command list above the input */
+
+.librarian-slash {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-primary);
+	max-height: 200px;
+	overflow-y: auto;
+	font-size: var(--font-ui-small);
+}
+
+.librarian-slash-item {
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-2-2) var(--size-4-2);
+	cursor: pointer;
+	min-height: 36px;
+	align-items: center;
+}
+
+.librarian-slash-item.is-selected,
+.librarian-slash-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.librarian-slash-name {
+	font-family: var(--librarian-font-mono);
+	flex: 0 0 auto;
+}
+
+.librarian-slash-desc {
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .librarian-image-notice {

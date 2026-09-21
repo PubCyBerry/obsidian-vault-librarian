@@ -842,6 +842,29 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				await this.save();
 			},
 		);
+		new Setting(el)
+			.setName('Open chat in')
+			.setDesc('Where a new chat view opens. An open chat is reused wherever it is.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ sidebar: 'Right sidebar', tab: 'Main area' })
+					.setValue(s.chatLocation)
+					.onChange(async (v) => {
+						s.chatLocation = v === 'tab' ? 'tab' : 'sidebar';
+						await this.save();
+					}),
+			);
+		new Setting(el)
+			.setName('Commands folder')
+			.setDesc(
+				'Notes in this folder become /name commands. $ARGUMENTS takes the rest of the line.',
+			)
+			.addText((t) =>
+				t.setValue(s.commandsFolder).onChange(async (v) => {
+					s.commandsFolder = v.trim().replace(/^\/+|\/+$/g, '');
+					await this.save();
+				}),
+			);
 		const agentsMd = new Setting(el)
 			.setName('Use vault root AGENTS.md')
 			.setDesc('Read AGENTS.md at the vault root as vault-local instructions.');

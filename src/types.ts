@@ -124,6 +124,10 @@ export interface LibrarianSettings {
 	activeModelId: string | null;
 	toolPermissions: ToolPermissionSettings;
 	mcpServers: McpServerConfig[];
+	/** Where "Open chat" puts the view when none is open yet. */
+	chatLocation: 'sidebar' | 'tab';
+	/** Vault folder whose notes become `/<name>` prompt commands. */
+	commandsFolder: string;
 	maxIterations: number;
 	repeatedFailureLimit: number;
 	useVaultAgentsMd: boolean;
@@ -161,6 +165,8 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	activeModelId: null,
 	toolPermissions: DEFAULT_TOOL_PERMISSIONS,
 	mcpServers: [],
+	chatLocation: 'sidebar',
+	commandsFolder: 'Librarian/commands',
 	maxIterations: 10,
 	repeatedFailureLimit: 3,
 	useVaultAgentsMd: true,

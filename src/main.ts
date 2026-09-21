@@ -83,6 +83,11 @@ export default class LibrarianPlugin extends Plugin {
 
 		this.registerView(VIEW_TYPE_LIBRARIAN, (leaf) => new LibrarianView(leaf, this));
 		this.addRibbonIcon('book-open', 'Open chat', () => void this.activateView());
+		this.addCommand({
+			id: 'open-in-main',
+			name: 'Open chat in main area',
+			callback: () => void this.activateView('tab'),
+		});
 		this.addSettingTab(new LibrarianSettingTab(this.app, this));
 
 		this.addCommand({
@@ -137,12 +142,23 @@ export default class LibrarianPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	/** Reveals the chat in the right sidebar (a full-screen leaf on phones) and returns the view. */
-	async activateView(): Promise<LibrarianView | null> {
+	/**
+	 * Reveals the chat and returns the view. Without `location` an open chat is reused wherever
+	 * it is and a new one follows the setting; with it, a chat in the other place is moved.
+	 */
+	async activateView(location?: 'sidebar' | 'tab'): Promise<LibrarianView | null> {
 		const { workspace } = this.app;
 		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN)[0] ?? null;
+		if (leaf && location) {
+			const inMain = leaf.getRoot() === workspace.rootSplit;
+			if (inMain !== (location === 'tab')) {
+				leaf.detach();
+				leaf = null;
+			}
+		}
 		if (!leaf) {
-			leaf = workspace.getRightLeaf(false);
+			const wanted = location ?? this.settings.chatLocation;
+			leaf = wanted === 'tab' ? workspace.getLeaf('tab') : workspace.getRightLeaf(false);
 			if (!leaf) return null;
 			await leaf.setViewState({ type: VIEW_TYPE_LIBRARIAN, active: true });
 		}

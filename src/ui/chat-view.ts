@@ -17,6 +17,8 @@ import type {
 	ControllerEvent,
 	ToolCardStatus,
 } from '../agent/agent-controller';
+import { vaultReferenceReader } from '../agent/prompt';
+import { expandReferences } from '../agent/references';
 import type { ContextUsage } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
@@ -30,6 +32,7 @@ import {
 	type ToolCardData,
 	toolIcon,
 } from './cards';
+import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta } from './stream-text';
 
@@ -179,6 +182,9 @@ export class LibrarianView extends ItemView {
 
 	private historyMode = false;
 	private includeActiveNote = false;
+	private slashEl!: HTMLElement;
+	private slashMatches: SlashCommand[] = [];
+	private slashIndex = 0;
 	private pendingImages: string[] = [];
 	private popoverPinned = false;
 	private streamTimer: number | null = null;
@@ -348,12 +354,17 @@ export class LibrarianView extends ItemView {
 		this.activeNoteEl = this.composerEl.createDiv({ cls: 'librarian-active-note is-hidden' });
 		this.imagesEl = this.composerEl.createDiv({ cls: 'librarian-images is-hidden' });
 		this.imageNoticeEl = this.composerEl.createDiv({ cls: 'librarian-image-notice is-hidden' });
+		this.slashEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
 		this.inputEl = this.composerEl.createEl('textarea', {
 			cls: 'librarian-input',
 			attr: { placeholder: 'Ask a question...', rows: '3', 'aria-label': 'Message' },
 		});
-		this.inputEl.addEventListener('input', () => this.updateSendEnabled());
+		this.inputEl.addEventListener('input', () => {
+			this.updateSendEnabled();
+			this.renderSlash();
+		});
 		this.inputEl.addEventListener('keydown', (e) => {
+			if (this.slashMatches.length && !e.isComposing && this.handleSlashKey(e)) return;
 			if (e.key === 'Enter' && !e.shiftKey && !Platform.isMobile && !e.isComposing) {
 				e.preventDefault();
 				void this.submit();
@@ -560,8 +571,172 @@ export class LibrarianView extends ItemView {
 	}
 
 	async submit() {
-		let text = this.inputEl.value.trim();
-		if (!text && this.pendingImages.length === 0) return;
+		const typed = this.inputEl.value.trim();
+		if (!typed && this.pendingImages.length === 0) return;
+		const slash = parseSlash(typed);
+		if (slash && this.pendingImages.length === 0) {
+			const command = this.slashCommands().find((c) => c.name === slash.name);
+			if (!command) {
+				this.showNotice(`Unknown command: /${slash.name}`);
+				return;
+			}
+			this.inputEl.value = '';
+			this.renderSlash();
+			this.updateSendEnabled();
+			await command.run(slash.args);
+			return;
+		}
+		await this.sendText(typed);
+	}
+
+	/** Built-in actions plus one command per note in the commands folder. */
+	private slashCommands(): SlashCommand[] {
+		const builtIn: SlashCommand[] = [
+			{ name: 'new', description: 'Start a new session', run: () => this.newSession() },
+			{
+				name: 'history',
+				description: 'Open session history',
+				run: () => this.toggleHistory(),
+			},
+			{
+				name: 'compact',
+				description: 'Compact the context now',
+				run: async () => {
+					if (!this.controller.session) return this.showNotice('Open a session first.');
+					const done = await this.controller.compactNow();
+					this.showNotice(done ? 'Context compacted.' : 'Nothing to compact yet.');
+				},
+			},
+			{
+				name: 'note',
+				description: 'Attach the active note to the next message',
+				run: () => this.includeActiveNoteInPrompt(),
+			},
+			{
+				name: 'model',
+				description: 'Switch model: /model <part of its name>',
+				run: async (args) => {
+					const query = args.toLowerCase();
+					const hit = this.plugin.providers
+						.listSelectable()
+						.find(({ provider, model }) =>
+							`${provider.name} ${model.name} ${model.id}`
+								.toLowerCase()
+								.includes(query),
+						);
+					if (!hit || !query)
+						return this.showNotice('No model matches. Try /model <name>.');
+					await this.controller.setModel(hit.provider.id, hit.model.id);
+					this.renderModelSelect();
+				},
+			},
+			{
+				name: 'thinking',
+				description: 'Set the thinking level: /thinking off|low|medium|high',
+				run: async (args) => {
+					const model = this.controller.selection?.model;
+					const levels = model ? selectableThinkingLevels(model) : [];
+					const level = levels.find((l) => l === args.toLowerCase());
+					if (!level)
+						return this.showNotice(`Thinking levels: ${levels.join(', ') || 'off'}`);
+					await this.controller.setThinkingLevel(level);
+					this.renderModelSelect();
+				},
+			},
+			{
+				name: 'help',
+				description: 'List the commands',
+				run: () =>
+					this.showNotice(
+						this.slashCommands()
+							.map((c) => `/${c.name} — ${c.description}`)
+							.join('\n'),
+					),
+			},
+		];
+		const folder = this.plugin.settings.commandsFolder;
+		const custom: SlashCommand[] = folder
+			? this.app.vault
+					.getMarkdownFiles()
+					.filter((f) => f.path.startsWith(`${folder}/`))
+					.map((file) => {
+						const description = this.app.metadataCache.getFileCache(file)?.frontmatter
+							?.description as unknown;
+						return {
+							name: file.basename.toLowerCase().replace(/\s+/g, '-'),
+							description: typeof description === 'string' ? description : file.path,
+							run: async (args: string) => {
+								const raw = await this.app.vault.cachedRead(file);
+								const end =
+									this.app.metadataCache.getFileCache(file)?.frontmatterPosition
+										?.end.offset;
+								const body = (end ? raw.slice(end) : raw).trim();
+								await this.sendText(fillTemplate(body, args), file.path);
+							},
+						};
+					})
+			: [];
+		const names = new Set(builtIn.map((c) => c.name));
+		return [...builtIn, ...custom.filter((c) => !names.has(c.name))];
+	}
+
+	private renderSlash() {
+		this.slashMatches = matchCommands(this.slashCommands(), this.inputEl.value);
+		this.slashIndex = 0;
+		this.slashEl.empty();
+		this.slashEl.toggleClass('is-hidden', this.slashMatches.length === 0);
+		this.slashMatches.forEach((command, i) => {
+			const row = this.slashEl.createDiv({
+				cls: `librarian-slash-item${i === 0 ? ' is-selected' : ''}`,
+			});
+			row.createSpan({ cls: 'librarian-slash-name', text: `/${command.name}` });
+			row.createSpan({ cls: 'librarian-slash-desc', text: command.description });
+			row.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				this.slashIndex = i;
+				void this.acceptSlash(true);
+			});
+		});
+	}
+
+	/** Arrow keys move, Tab completes the name, Enter runs the highlighted command, Escape closes. */
+	private handleSlashKey(e: KeyboardEvent): boolean {
+		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			const n = this.slashMatches.length;
+			this.slashIndex = (this.slashIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+			this.slashEl.querySelectorAll('.librarian-slash-item').forEach((el, i) => {
+				el.toggleClass('is-selected', i === this.slashIndex);
+			});
+			e.preventDefault();
+			return true;
+		}
+		if (e.key === 'Tab' || e.key === 'Enter') {
+			e.preventDefault();
+			void this.acceptSlash(e.key === 'Enter');
+			return true;
+		}
+		if (e.key === 'Escape') {
+			this.slashMatches = [];
+			this.slashEl.addClass('is-hidden');
+			return true;
+		}
+		return false;
+	}
+
+	private async acceptSlash(run: boolean) {
+		const command = this.slashMatches[this.slashIndex];
+		if (!command) return;
+		this.inputEl.value = `/${command.name} `;
+		this.slashMatches = [];
+		this.slashEl.addClass('is-hidden');
+		this.updateSendEnabled();
+		if (run) await this.submit();
+		else this.inputEl.focus();
+	}
+
+	/** Sends a message: the attached note, then any `@path` notes the text refers to. */
+	private async sendText(typed: string, from = '') {
+		let text = typed;
 		this.followBottom = true;
 		if (this.includeActiveNote) {
 			const file = this.app.workspace.getActiveFile();
@@ -572,9 +747,12 @@ export class LibrarianView extends ItemView {
 			this.includeActiveNote = false;
 			this.renderActiveNote();
 		}
+		const expanded = await expandReferences(text, from, vaultReferenceReader(this.app));
+		text = expanded.text;
 		const images = [...this.pendingImages];
 		this.pendingImages = [];
 		this.inputEl.value = '';
+		this.renderSlash();
 		this.renderImages();
 		this.hideNotice();
 		if (this.historyMode) await this.toggleHistory();

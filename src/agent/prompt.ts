@@ -1,5 +1,23 @@
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
+import { expandReferences, type ReferenceReader } from './references';
+
+/** Resolves `@path` the way a wikilink would: exact vault path first, then the link resolver. */
+export function vaultReferenceReader(app: App): ReferenceReader {
+	return {
+		resolve(ref, from) {
+			const direct = app.vault.getFileByPath(ref) ?? app.vault.getFileByPath(`${ref}.md`);
+			const file =
+				direct ?? app.metadataCache.getFirstLinkpathDest(ref.replace(/\.md$/, ''), from);
+			return file instanceof TFile && file.extension === 'md' ? file.path : null;
+		},
+		read: (path) => {
+			const file = app.vault.getFileByPath(path);
+			if (!file) throw new Error(`Note not found: ${path}`);
+			return app.vault.cachedRead(file);
+		},
+	};
+}
 
 export const BUILT_IN_SYSTEM_PROMPT = `You are Librarian, an AI agent embedded in an Obsidian vault.
 
@@ -76,6 +94,8 @@ export const AGENTS_MD_READ_FAILED = 'AGENTS.md could not be read. Continuing wi
 /** Reads the vault root AGENTS.md and assembles the layered system prompt. */
 export class PromptManager {
 	lastStatus: AgentsMdStatus = 'disabled';
+	/** Notes inlined into AGENTS.md through `@path` references on the last load. */
+	lastImports: string[] = [];
 
 	constructor(private readonly app: App) {}
 
@@ -93,7 +113,14 @@ export class PromptManager {
 		try {
 			const text = (await this.app.vault.cachedRead(file)).trim();
 			this.lastStatus = text ? 'loaded' : 'empty';
-			return text || null;
+			if (!text) return null;
+			const expanded = await expandReferences(
+				text,
+				file.path,
+				vaultReferenceReader(this.app),
+			);
+			this.lastImports = expanded.imported;
+			return expanded.text;
 		} catch {
 			this.lastStatus = 'error';
 			return null;
