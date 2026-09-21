@@ -118,6 +118,8 @@ export class McpManager {
 	/** Transports parked mid sign-in, waiting for the authorization code to come back. */
 	private readonly pendingAuth = new Map<string, StreamableHTTPClientTransport>();
 	private readonly interactive = new Set<string>();
+	/** Servers whose saved tokens the authorization server refused on the last attempt. */
+	private readonly rejected = new Set<string>();
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly deps: McpManagerDeps) {}
@@ -186,6 +188,7 @@ export class McpManager {
 			this.connections.set(id, { client, transport });
 			await this.guardChangedTools(server, tools);
 			this.pendingAuth.delete(id);
+			this.rejected.delete(id);
 			this.setState(id, { status: 'ready', tools });
 		} catch (error) {
 			if (error instanceof UnauthorizedError) {
@@ -193,7 +196,9 @@ export class McpManager {
 				this.pendingAuth.set(id, transport);
 				this.setState(id, {
 					status: 'needs-sign-in',
-					message: 'Sign in to use this server.',
+					message: this.rejected.has(id)
+						? 'The server rejected the saved sign-in. Sign in again.'
+						: 'Sign in to use this server.',
 					authorizationUrl: this.state(id).authorizationUrl,
 					tools: [],
 				});
@@ -293,8 +298,8 @@ export class McpManager {
 					label: `${server.name}: ${tool.title ?? tool.name}`,
 					description: `[${server.name}] ${tool.description ?? tool.name}`,
 					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
-					executionMode:
-						tool.annotations?.readOnlyHint === true ? 'parallel' : 'sequential',
+					// Sequential even for read-only tools: parallel 401s would race the single refresh token.
+					executionMode: 'sequential',
 					execute: async (_toolCallId, args, signal) => {
 						const result = await connection.client.callTool(
 							{ name: tool.name, arguments: args as Record<string, unknown> },
@@ -330,6 +335,7 @@ export class McpManager {
 			secrets: this.deps.secrets,
 			interactive: () => this.interactive.has(id),
 			open: this.deps.open,
+			onTokensRejected: () => this.rejected.add(id),
 			onAuthorizationUrl: (url) => {
 				const current = this.state(id);
 				this.states.set(id, { ...current, authorizationUrl: url });

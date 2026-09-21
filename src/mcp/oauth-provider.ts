@@ -34,6 +34,8 @@ export interface OAuthProviderDeps {
 	open: (url: string) => void;
 	/** Called with the authorization URL whenever the server asks for a sign-in. */
 	onAuthorizationUrl: (url: string) => void;
+	/** Called when the server rejected the saved tokens (invalid_grant) and they were dropped. */
+	onTokensRejected?: () => void;
 }
 
 /**
@@ -103,7 +105,10 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 		}
 		const stored = this.read();
 		if (scope === 'client') stored.client = undefined;
-		if (scope === 'tokens') stored.tokens = undefined;
+		if (scope === 'tokens') {
+			if (stored.tokens) this.deps.onTokensRejected?.();
+			stored.tokens = undefined;
+		}
 		if (scope === 'verifier') stored.verifier = undefined;
 		this.write(stored);
 	}
