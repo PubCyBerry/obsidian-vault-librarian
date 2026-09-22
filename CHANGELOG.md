@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.1...1.10.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* apply the provider default effort when the chat opens without a session ([b18240f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/b18240f24c9abdb68533b904c4ff39d7282a826a))
+
 ## [1.10.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.0...1.10.1) (2026-09-22)
 
 
