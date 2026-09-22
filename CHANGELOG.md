@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.8](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.7...1.5.8) (2026-09-22)
+
+
+### Bug Fixes
+
+* phone layout of the permission rows and MCP server rows, tap shows the icon meaning ([4a6c62f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/4a6c62f8a33fad5f64225a98077e016c418f29f7))
+
 ## [1.5.7](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.6...1.5.7) (2026-09-22)
 
 
