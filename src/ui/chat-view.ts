@@ -352,15 +352,30 @@ export class LibrarianView extends ItemView {
 			this.registerDomEvent(window, 'keyboardWillShow' as keyof WindowEventMap, () => {
 				this.keyboardLog = `show K=${k().trim()} at ${new Date().toLocaleTimeString()}`;
 			});
+			const safe = () =>
+				getComputedStyle(document.documentElement)
+					.getPropertyValue('--safe-area-inset-bottom')
+					.trim();
 			this.registerDomEvent(window, 'keyboardWillHide' as keyof WindowEventMap, () => {
-				this.keyboardLog += `, hide K=${k().trim()}`;
+				this.keyboardLog += `, hide K=${k().trim()} safe=${safe()}`;
 			});
+			// The padding measured while the keyboard is closed; the closing animation keeps it
+			// (styles.css) so the composer does not drop behind the navbar and jump back.
+			const rememberClosed = () => {
+				if (parseFloat(k()) > 0 || document.body.hasClass('keyboard-animating')) return;
+				this.composerEl.style.setProperty(
+					'--librarian-closed-padding',
+					getComputedStyle(this.composerEl).paddingBottom,
+				);
+			};
+			requestAnimationFrame(rememberClosed);
 			const observer = new MutationObserver(() => {
 				const on = document.body.hasClass('keyboard-animating');
 				if (on && !this.animatingSince) this.animatingSince = Date.now();
 				if (!on && this.animatingSince) {
-					this.keyboardLog += `, animating ${Date.now() - this.animatingSince} ms`;
+					this.keyboardLog += `, animating ${Date.now() - this.animatingSince} ms, safe after=${safe()}`;
 					this.animatingSince = 0;
+					requestAnimationFrame(rememberClosed);
 				}
 			});
 			observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });

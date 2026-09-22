@@ -11,7 +11,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
 	{
 		id: 'read',
 		label: 'Read-only tools',
-		tools: ['ls', 'find', 'grep', 'read', 'get_active_note'],
+		tools: ['ls', 'find', 'grep', 'read', 'get_active_note', 'tool_search'],
 	},
 	{ id: 'write', label: 'Write tools', tools: ['write', 'edit'] },
 ];

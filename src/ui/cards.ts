@@ -21,6 +21,7 @@ const TOOL_ICONS: Record<string, string> = {
 	get_active_note: 'file-text',
 	write: 'file-plus',
 	edit: 'pencil',
+	tool_search: 'search',
 };
 
 export function toolIcon(name: string): string {
@@ -70,6 +71,10 @@ export function summarizeCall(
 			const lines = count('lines');
 			const end = lines !== null ? offset + lines - 1 : null;
 			return `${args.path as string}:${offset}${end !== null ? `-${end}` : ''}`;
+		}
+		case 'tool_search': {
+			const n = count('matches');
+			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'tool' : 'tools'}` : ''}`;
 		}
 		case 'get_active_note':
 			return parsed && typeof parsed.path === 'string'

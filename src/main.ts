@@ -12,6 +12,7 @@ import { LibrarianSettingTab } from './settings/settings-tab';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
 import { createVaultTools } from './tools/registry';
+import { ToolRegistry } from './tools/tool-registry';
 import { type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
 
@@ -24,6 +25,7 @@ export default class LibrarianPlugin extends Plugin {
 	transport!: TransportRouter;
 	mcp!: McpManager;
 	skills!: SkillManager;
+	registry!: ToolRegistry;
 	controller!: AgentController;
 
 	async onload() {
@@ -73,6 +75,18 @@ export default class LibrarianPlugin extends Plugin {
 				after: (id, path) => this.controller.afterMutation(id, path),
 			},
 		});
+		// Everything registered, with the execution policy from settings applied; the registry
+		// decides which of these the model sees (deferred tools wait for tool_search).
+		this.registry = new ToolRegistry({
+			registered: () =>
+				[...vaultTools, ...this.mcp.tools()].map((t) => ({
+					...t,
+					executionMode:
+						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
+				})),
+			sourceOf: (t) => this.mcpServerNameOf(t.name) ?? 'vault',
+			deferred: (t) => this.toolDeferredOf(t.name),
+		});
 		const context = new ContextManager(this.app, () => this.settings.context);
 		this.controller = new AgentController({
 			app: this.app,
@@ -85,13 +99,7 @@ export default class LibrarianPlugin extends Plugin {
 			transport: this.transport,
 			prompt: new PromptManager(this.app),
 			secrets: this.secrets,
-			// The per-tool execution policy from settings wins over a tool's own default.
-			tools: () =>
-				[...vaultTools, ...this.mcp.tools()].map((t) => ({
-					...t,
-					executionMode:
-						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
-				})),
+			tools: () => this.registry.visible(),
 			// Blocked skills stay out of the catalog; without read the model could not open one anyway.
 			skillCatalog: () =>
 				this.permissions.get('read') === 'blocked'
@@ -101,6 +109,9 @@ export default class LibrarianPlugin extends Plugin {
 								(s) => this.permissions.get(skillKey(s.name)) !== 'blocked',
 							),
 						),
+		});
+		this.controller.subscribe((e) => {
+			if (e.type === 'session') this.registry.reset();
 		});
 		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
 			const id = serverIdFromState(params.state);
@@ -177,11 +188,26 @@ export default class LibrarianPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	/** The MCP server a `<server id>__<tool>` name belongs to, by display name. */
+	mcpServerNameOf(toolName: string): string | null {
+		const sep = toolName.indexOf('__');
+		if (sep < 0) return null;
+		const id = toolName.slice(0, sep);
+		return this.settings.mcpServers.find((s) => s.id === id)?.name ?? id;
+	}
+
+	/** Deferred tools are not listed to the model until tool_search finds them. MCP tools default to deferred. */
+	toolDeferredOf(name: string): boolean {
+		const stored = this.settings.toolDeferredByTool[name];
+		if (stored !== undefined) return stored;
+		return name.includes('__');
+	}
+
 	/** Effective execution mode of one tool: the setting, else the tool's own default. */
 	toolExecutionOf(name: string): 'parallel' | 'sequential' {
 		const stored = this.settings.toolExecutionByTool[name];
 		if (stored) return stored;
-		const tool = this.controller.deps.tools().find((t) => t.name === name);
+		const tool = this.registry.entries().find((e) => e.tool.name === name)?.tool;
 		return tool?.executionMode ?? 'parallel';
 	}
 

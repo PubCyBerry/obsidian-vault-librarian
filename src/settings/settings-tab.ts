@@ -1126,6 +1126,20 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						exec.value === 'sequential' ? 'sequential' : 'parallel';
 					void this.save();
 				});
+				if (tool !== 'tool_search' && !tool.startsWith('skill:')) {
+					const deferred = row.createEl('select', {
+						cls: 'dropdown librarian-tool-deferred',
+						attr: { 'aria-label': `${tool} listing` },
+					});
+					deferred.createEl('option', { value: 'listed', text: 'Listed' });
+					deferred.createEl('option', { value: 'deferred', text: 'Deferred' });
+					deferred.value = this.plugin.toolDeferredOf(tool) ? 'deferred' : 'listed';
+					deferred.addEventListener('change', () => {
+						this.plugin.settings.toolDeferredByTool[tool] =
+							deferred.value === 'deferred';
+						void this.save();
+					});
+				}
 				const seg = row.createDiv({
 					cls: 'librarian-segmented',
 					attr: { role: 'radiogroup', 'aria-label': `${tool} permission` },

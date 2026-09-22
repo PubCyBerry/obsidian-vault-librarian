@@ -51,6 +51,7 @@ describe('tool permissions', () => {
 			'read',
 			'get_active_note',
 			'write',
+			'tool_search',
 		]);
 	});
 

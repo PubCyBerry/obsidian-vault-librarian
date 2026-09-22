@@ -5,7 +5,15 @@ export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhi
 export type ToolPermission = 'always_allow' | 'approval_required' | 'blocked';
 /** How a batch of tool calls runs; a batch with any sequential tool runs sequentially (Pi). */
 export type ToolExecutionMode = 'parallel' | 'sequential';
-export type ToolName = 'ls' | 'find' | 'grep' | 'read' | 'get_active_note' | 'write' | 'edit';
+export type ToolName =
+	| 'ls'
+	| 'find'
+	| 'grep'
+	| 'read'
+	| 'get_active_note'
+	| 'write'
+	| 'edit'
+	| 'tool_search';
 export type McpAuthMode = 'oauth' | 'apiKey' | 'none';
 
 /** A remote MCP server reached over Streamable HTTP. Credentials live in SecretStorage. */
@@ -28,6 +36,7 @@ export const TOOL_NAMES: readonly ToolName[] = [
 	'get_active_note',
 	'write',
 	'edit',
+	'tool_search',
 ];
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
@@ -128,6 +137,8 @@ export interface LibrarianSettings {
 	toolExecution: ToolExecutionMode;
 	/** Per tool; a tool absent here keeps its own default (write, edit and MCP tools: sequential). */
 	toolExecutionByTool: Record<string, ToolExecutionMode>;
+	/** Per tool; absent means the default: MCP tools deferred (found through tool_search), vault tools listed. */
+	toolDeferredByTool: Record<string, boolean>;
 	mcpServers: McpServerConfig[];
 	/** Where "Open chat" puts the view when none is open yet. */
 	chatLocation: 'sidebar' | 'tab';
@@ -153,6 +164,7 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		get_active_note: 'approval_required',
 		write: 'approval_required',
 		edit: 'approval_required',
+		tool_search: 'approval_required',
 	},
 };
 
@@ -170,6 +182,7 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	toolPermissions: DEFAULT_TOOL_PERMISSIONS,
 	toolExecution: 'parallel',
 	toolExecutionByTool: {},
+	toolDeferredByTool: {},
 	mcpServers: [],
 	chatLocation: 'sidebar',
 	commandsFolder: 'Librarian/commands',
@@ -205,6 +218,7 @@ export function mergeSettings(stored: unknown): LibrarianSettings {
 		...s,
 		toolExecution: s.toolExecution ?? (legacySequential ? 'sequential' : 'parallel'),
 		toolExecutionByTool: { ...(s.toolExecutionByTool ?? {}) },
+		toolDeferredByTool: { ...(s.toolDeferredByTool ?? {}) },
 		toolPermissions: { byTool },
 		context: { ...DEFAULT_SETTINGS.context, ...(s.context ?? {}) },
 		mcpServers: (s.mcpServers ?? []).map((m) => ({ ...m, toolHashes: m.toolHashes ?? {} })),

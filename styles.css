@@ -474,8 +474,14 @@ body.is-phone .librarian-composer {
  * so the composer rides up on its own padding with the keyboard's timing and lands where the
  * shrunken container puts it afterwards.
  */
+/* While the keyboard closes, --keyboard-height is already 0, so the first term is the plain margin
+   and the composer would drop behind the navbar; the padding the view measured while the keyboard
+   was closed keeps it in place instead. */
 body.is-phone.keyboard-animating .librarian-composer {
-	padding-bottom: calc(var(--keyboard-height, 0px) + var(--size-4-3));
+	padding-bottom: max(
+		calc(var(--keyboard-height, 0px) + var(--size-4-3)),
+		var(--librarian-closed-padding, var(--size-4-3))
+	);
 	transition: padding-bottom 350ms cubic-bezier(0.22, 0.25, 0, 1);
 }
 
@@ -647,18 +653,25 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	-webkit-tap-highlight-color: transparent;
 }
 
-/* No fill on the button itself: the disc is the whole visual, so a touch does not grey the row. */
-.librarian-composer-row .librarian-send:hover,
-.librarian-composer-row .librarian-send:active {
+/* No fill or focus ring on the button itself: the disc is the whole visual, so a touch does not
+   grey the row. Obsidian gives buttons a hover fill and a focus-visible shadow. */
+.librarian .librarian-composer-row .librarian-send:hover,
+.librarian .librarian-composer-row .librarian-send:active,
+.librarian .librarian-composer-row .librarian-send:focus,
+.librarian .librarian-composer-row .librarian-send:focus-visible {
 	background: transparent;
+	background-color: transparent;
+	box-shadow: none;
+	outline: none;
 	color: var(--text-on-accent);
 }
 
 .librarian-composer-row .librarian-send > svg {
-	width: 12px;
-	height: 12px;
+	--librarian-send-size: calc(var(--librarian-ring-size) + 4px);
+	width: 14px;
+	height: 14px;
 	box-sizing: content-box;
-	padding: calc((var(--librarian-ring-size) - 12px) / 2);
+	padding: calc((var(--librarian-send-size) - 14px) / 2);
 	border-radius: 50%;
 	background: var(--interactive-accent);
 }
@@ -1010,12 +1023,21 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 
 	/* Icon buttons are narrow, so the name and the control share one line; a column would turn the
 	   name's flex-basis into height. */
-	.librarian-tool-permission-row {
-		flex-wrap: nowrap;
+	/* Name on its own line, the three controls wrap below it; a nowrap row squeezed the name to
+	   one letter per line once the execution and listing selects joined the permission buttons. */
+	.librarian-tool-permission-name {
+		flex: 1 1 100%;
+		word-break: break-word;
 	}
 
-	.librarian-tool-permission-name {
-		flex: 1 1 auto;
+	.librarian-tool-permission-row .librarian-segmented {
+		margin-left: 0;
+	}
+
+	.librarian-tool-permission-row select.dropdown {
+		flex: 0 1 auto;
+		min-width: 0;
+		width: auto;
 	}
 
 	.librarian-segmented button {
