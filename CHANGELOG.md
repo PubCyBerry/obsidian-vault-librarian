@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.6.1...1.7.0) (2026-09-22)
+
+
+### Features
+
+* tools and mentions accept every file type, error blocks say when and how a request broke ([b975b70](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/b975b70f9ead4bc2a47bb01ddc2221fddf33cf26))
+
 ## [1.6.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.6.0...1.6.1) (2026-09-22)
 
 
