@@ -2,6 +2,7 @@ import {
 	type App,
 	Modal,
 	Notice,
+	Platform,
 	PluginSettingTab,
 	requireApiVersion,
 	Setting,
@@ -931,6 +932,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			const row = new Setting(el)
 				.setName(server.name)
 				.setDesc(`${server.url} · ${status}${detail ? ` · ${detail}` : ''}`);
+			row.settingEl.addClass('librarian-mcp-server');
 			row.addToggle((t) =>
 				t
 					.setTooltip('Enabled')
@@ -1089,6 +1091,9 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								await perms.setTool(tool, p);
 								refresh();
 								fill();
+								// No hover on a phone: the tap itself shows what the icon means.
+								if (Platform.isMobile)
+									new Notice(`${PERMISSION_LABELS[p]}: ${why}`);
 								await this.plugin.controller.recalculateUsage();
 							})(),
 					);

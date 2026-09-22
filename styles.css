@@ -949,18 +949,30 @@ body.is-phone .librarian-composer {
 		max-width: 100%;
 	}
 
+	/* Icon buttons are narrow, so the name and the control share one line; a column would turn the
+	   name's flex-basis into height. */
 	.librarian-tool-permission-row {
+		flex-wrap: nowrap;
+	}
+
+	.librarian-tool-permission-name {
+		flex: 1 1 auto;
+	}
+
+	.librarian-segmented button {
+		min-height: 44px;
+		min-width: 44px;
+	}
+
+	/* Name and URL on top, toggle and buttons below, instead of a squeezed info column. */
+	.librarian-mcp-server.setting-item {
 		flex-direction: column;
 		align-items: stretch;
 	}
 
-	.librarian-segmented {
-		display: flex;
-	}
-
-	.librarian-segmented button {
-		flex: 1 1 0;
-		min-height: 44px;
+	.librarian-mcp-server .setting-item-control {
+		justify-content: flex-start;
+		flex-wrap: wrap;
 	}
 
 	.librarian-tool-permission-group > summary {
