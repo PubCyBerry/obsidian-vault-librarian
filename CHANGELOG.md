@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.7.0...1.8.0) (2026-09-22)
+
+
+### Features
+
+* tool scheduler with a global and per-tool execution mode and a per-file mutation queue ([f015439](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f015439cf80fd2558058310b6b06f2d4c1f912c5))
+
 ## [1.7.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.6.1...1.7.0) (2026-09-22)
 
 
