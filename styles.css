@@ -646,9 +646,12 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 }
 
 /* The touch target stays a full button; only a small accent disc around the arrow is drawn, so the
-   send control weighs about as much as the + glyph and the ring next to it. */
-.librarian-composer-row .librarian-send {
+   send control weighs about as much as the + glyph and the ring next to it. Padding is pinned
+   because Obsidian gives every plain button 20px of side padding on tablets, which squeezed the
+   disc into a sliver. */
+.librarian .librarian-composer-row .librarian-send {
 	width: var(--librarian-tool-size);
+	padding: 0;
 	color: var(--text-on-accent);
 	-webkit-tap-highlight-color: transparent;
 }
@@ -1081,4 +1084,16 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 
 .librarian.is-mobile .librarian-composer-row {
 	--librarian-tool-size: 44px;
+}
+
+/* The Bookmarks core plugin adds a Bookmark action to every view header, and on mobile the Things
+   theme turns the second-to-last view action into a floating blue disc meant for the note edit
+   toggle. This view is not worth bookmarking, so the action goes and the disc with it. Selector
+   depth beats the theme rule (0,5,1). */
+body.is-mobile
+	.workspace-leaf-content[data-type="librarian-chat"]
+	.view-header
+	.view-actions
+	.view-action.mod-bookmark {
+	display: none;
 }
