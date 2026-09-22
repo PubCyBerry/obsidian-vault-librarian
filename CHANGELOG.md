@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.9](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.8...1.5.9) (2026-09-22)
+
+
+### Bug Fixes
+
+* drop the middle dot and em dash from UI strings ([04e3794](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/04e3794e7252c27c010e81318f44885eea151b96))
+
 ## [1.5.8](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.7...1.5.8) (2026-09-22)
 
 
