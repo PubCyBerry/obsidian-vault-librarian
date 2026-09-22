@@ -15,32 +15,6 @@
 	display: none;
 }
 
-/* Header */
-
-.librarian-header {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--size-4-2);
-	padding: var(--size-4-2) var(--size-4-3) 0;
-}
-
-.librarian-model-select {
-	flex: 1 1 160px;
-	min-width: 0;
-	max-width: 100%;
-}
-
-.librarian-thinking-select {
-	flex: 0 1 auto;
-}
-
-.librarian-header-actions {
-	display: flex;
-	gap: var(--size-2-2);
-	margin-left: auto;
-}
-
 /* Banners and notices */
 
 .librarian-key-banner,
@@ -438,8 +412,23 @@
 	display: flex;
 	flex-direction: column;
 	gap: var(--size-2-2);
-	padding: var(--size-4-2) var(--size-4-3) var(--size-4-3);
-	border-top: 1px solid var(--background-modifier-border);
+	padding: var(--size-2-2) var(--size-4-3) var(--size-4-3);
+}
+
+/* One rounded box holds the text, the chips and the icon row. */
+
+.librarian-composer-box {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-l);
+	padding: var(--size-4-2) var(--size-4-3) var(--size-2-2);
+}
+
+.librarian-composer-box:focus-within {
+	border-color: var(--background-modifier-border-focus);
 }
 
 .librarian-pick-model {
@@ -471,9 +460,19 @@
 
 .librarian-input {
 	width: 100%;
-	resize: vertical;
-	min-height: 64px;
+	resize: none;
+	min-height: 48px;
 	font-family: inherit;
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0;
+}
+
+.librarian-input:focus,
+.librarian-input:active {
+	box-shadow: none;
+	border: none;
 }
 
 /* Slash command list above the input */
@@ -523,20 +522,107 @@
 .librarian-composer-row {
 	display: flex;
 	align-items: center;
-	gap: var(--size-4-2);
+	gap: var(--size-2-2);
 	position: relative;
 }
 
 .librarian-composer-row button {
-	min-height: 44px;
-	min-width: 44px;
+	min-height: 36px;
+	min-width: 36px;
+	box-shadow: none;
 }
 
-.librarian-send:disabled {
-	background: var(--interactive-normal);
+.librarian-attach,
+.librarian-model-button {
+	background: transparent;
+	color: var(--text-muted);
+	border-radius: var(--radius-m);
+	padding: 0 var(--size-2-2);
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-1);
+}
+
+.librarian-attach:hover,
+.librarian-model-button:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.librarian-model-name,
+.librarian-model-effort {
+	font-size: var(--font-ui-smaller);
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.librarian-model-effort {
 	color: var(--text-faint);
-	box-shadow: none;
-	cursor: default;
+}
+
+.librarian-composer-row .librarian-send {
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	border-radius: 50%;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.librarian-composer-row .librarian-send:hover {
+	background: var(--interactive-accent-hover);
+}
+
+.librarian-composer-row .librarian-send.is-running {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+}
+
+/* Model picker modal */
+
+.librarian-picker-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+}
+
+.librarian-picker-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+	cursor: pointer;
+}
+
+.librarian-picker-row:hover,
+.librarian-picker-row:focus-visible {
+	background: var(--background-modifier-hover);
+}
+
+.librarian-picker-row.is-selected {
+	color: var(--text-accent);
+}
+
+.librarian-picker-text {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.librarian-picker-sub {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.librarian-picker-heading {
+	font-weight: var(--font-semibold);
+	margin: var(--size-4-3) 0 var(--size-2-2);
 }
 
 /* Streamed text: only the newly appended piece fades in (LIB-FEAT-099). */
@@ -822,14 +908,6 @@
 		width: 100%;
 	}
 
-	.librarian-composer-row {
-		flex-wrap: wrap;
-	}
-
-	.librarian-send {
-		flex: 1 1 100%;
-	}
-
 	.librarian-modal .setting-item {
 		flex-direction: column;
 		align-items: stretch;
@@ -842,4 +920,14 @@
 
 .librarian.is-mobile .librarian-tool-header {
 	min-height: 48px;
+}
+
+.librarian.is-mobile .librarian-composer-row button {
+	min-height: 44px;
+	min-width: 44px;
+}
+
+.librarian.is-mobile .librarian-send {
+	width: 44px;
+	height: 44px;
 }

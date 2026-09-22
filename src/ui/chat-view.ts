@@ -24,7 +24,6 @@ import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
 import type { IndexedEvent, SessionEvent, SessionSummary } from '../session/session-types';
-import type { ThinkingLevel } from '../types';
 import {
 	renderApprovalCard,
 	renderToolCard,
@@ -118,6 +117,91 @@ class TextPromptModal extends Modal {
 	}
 }
 
+/** Models on top, effort below: the same two choices the old header selects offered. */
+class ModelPickerModal extends Modal {
+	constructor(
+		app: LibrarianPlugin['app'],
+		private readonly plugin: LibrarianPlugin,
+		private readonly controller: AgentController,
+		private readonly onChange: () => void,
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText('Model');
+		this.modalEl.addClass('librarian-modal');
+		this.render();
+	}
+
+	private render() {
+		const el = this.contentEl;
+		el.empty();
+		const current = this.controller.selection;
+		const options = this.plugin.providers.listSelectable();
+		const list = el.createDiv({ cls: 'librarian-picker-list' });
+		for (const { provider, model } of options) {
+			const selected = current?.provider.id === provider.id && current.model.id === model.id;
+			const row = list.createDiv({
+				cls: `librarian-picker-row${selected ? ' is-selected' : ''}`,
+				attr: { role: 'button', tabindex: '0' },
+			});
+			const text = row.createDiv({ cls: 'librarian-picker-text' });
+			text.createDiv({ cls: 'librarian-picker-title', text: model.name });
+			text.createDiv({
+				cls: 'librarian-picker-sub',
+				text: `${provider.name}${model.input.includes('image') ? ' · images' : ''}`,
+			});
+			if (selected) setIcon(row.createSpan({ cls: 'librarian-picker-check' }), 'check');
+			const pick = () =>
+				void this.controller.setModel(provider.id, model.id).then(() => {
+					this.onChange();
+					this.render();
+				});
+			row.addEventListener('click', pick);
+			row.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter' || e.key === ' ') pick();
+			});
+		}
+		if (!options.length) {
+			el.createDiv({
+				cls: 'librarian-modal-note',
+				text: 'No tool-calling model is configured.',
+			});
+			const open = el.createEl('button', { text: 'Open settings' });
+			open.addEventListener('click', () => {
+				this.close();
+				this.plugin.openSettings();
+			});
+		}
+		const levels = current ? selectableThinkingLevels(current.model) : [];
+		if (levels.length > 1) {
+			el.createDiv({ cls: 'librarian-picker-heading', text: 'Effort' });
+			const seg = el.createDiv({
+				cls: 'librarian-segmented',
+				attr: { role: 'radiogroup', 'aria-label': 'Effort' },
+			});
+			for (const level of levels) {
+				const b = seg.createEl('button', { text: level, attr: { role: 'radio' } });
+				b.toggleClass('is-active', level === this.controller.thinkingLevel);
+				b.setAttr('aria-checked', String(level === this.controller.thinkingLevel));
+				b.addEventListener(
+					'click',
+					() =>
+						void this.controller.setThinkingLevel(level).then(() => {
+							this.onChange();
+							this.render();
+						}),
+				);
+			}
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 class VaultImageModal extends FuzzySuggestModal<TFile> {
 	constructor(
 		app: LibrarianPlugin['app'],
@@ -147,9 +231,9 @@ export class LibrarianView extends ItemView {
 	private unsubscribe: (() => void) | null = null;
 	private readonly expanded = new Set<string>();
 
-	private headerEl!: HTMLElement;
-	private modelSelect!: HTMLSelectElement;
-	private thinkingSelect!: HTMLSelectElement;
+	private modelButton!: HTMLButtonElement;
+	private attachButton!: HTMLButtonElement;
+	private cameraInput!: HTMLInputElement;
 	private bannerEl!: HTMLElement;
 	private mcpBannerEl!: HTMLElement;
 	private unsubscribeMcp: (() => void) | null = null;
@@ -172,7 +256,6 @@ export class LibrarianView extends ItemView {
 	private imagesEl!: HTMLElement;
 	private inputEl!: HTMLTextAreaElement;
 	private sendButton!: HTMLButtonElement;
-	private imageButton!: HTMLButtonElement;
 	private imageNoticeEl!: HTMLElement;
 	private ringEl!: HTMLElement;
 	private popoverEl!: HTMLElement;
@@ -215,7 +298,6 @@ export class LibrarianView extends ItemView {
 		root.empty();
 		root.addClass('librarian');
 		if (Platform.isMobile) root.addClass('is-mobile');
-		this.buildHeader(root);
 		this.bannerEl = root.createDiv({ cls: 'librarian-key-banner is-hidden' });
 		this.mcpBannerEl = root.createDiv({
 			cls: 'librarian-key-banner librarian-mcp-banner is-hidden',
@@ -255,71 +337,49 @@ export class LibrarianView extends ItemView {
 		if (this.streamTimer !== null) window.clearTimeout(this.streamTimer);
 	}
 
-	// Header
+	// The view header's "more options" menu holds what the old toolbar did.
 
-	private buildHeader(root: HTMLElement) {
-		this.headerEl = root.createDiv({ cls: 'librarian-header' });
-		this.modelSelect = this.headerEl.createEl('select', {
-			cls: 'dropdown librarian-model-select',
-		});
-		this.modelSelect.setAttr('aria-label', 'Model');
-		this.modelSelect.addEventListener('change', () => {
-			const [providerId, modelId] = this.modelSelect.value.split('\u0000');
-			if (providerId && modelId)
-				void this.controller
-					.setModel(providerId, modelId)
-					.then(() => this.renderModelSelect());
-		});
-		this.thinkingSelect = this.headerEl.createEl('select', {
-			cls: 'dropdown librarian-thinking-select',
-		});
-		this.thinkingSelect.setAttr('aria-label', 'Thinking level');
-		this.thinkingSelect.addEventListener('change', () => {
-			void this.controller.setThinkingLevel(this.thinkingSelect.value as ThinkingLevel);
-		});
-		const actions = this.headerEl.createDiv({ cls: 'librarian-header-actions' });
-		const newButton = actions.createEl('button', {
-			cls: 'clickable-icon',
-			attr: { 'aria-label': 'New session' },
-		});
-		setIcon(newButton, 'plus');
-		newButton.addEventListener('click', () => void this.newSession());
-		const historyButton = actions.createEl('button', {
-			cls: 'clickable-icon',
-			attr: { 'aria-label': 'Session history' },
-		});
-		setIcon(historyButton, 'history');
-		historyButton.addEventListener('click', () => void this.toggleHistory());
+	onPaneMenu(menu: Menu, source: string): void {
+		super.onPaneMenu(menu, source);
+		menu.addItem((item) =>
+			item
+				.setTitle('Session history')
+				.setIcon('history')
+				.onClick(() => void this.toggleHistory()),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle('New session')
+				.setIcon('plus')
+				.onClick(() => void this.newSession()),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle('Compact context')
+				.setIcon('shrink')
+				.onClick(() => void this.compactNow()),
+		);
 	}
 
+	private async compactNow() {
+		if (!this.controller.session) return this.showNotice('Open a session first.');
+		const done = await this.controller.compactNow();
+		this.showNotice(done ? 'Context compacted.' : 'Nothing to compact yet.');
+	}
+
+	/** Refreshes the model button in the composer and the pick-a-model block. */
 	renderModelSelect() {
 		const options = this.plugin.providers.listSelectable();
-		this.modelSelect.empty();
 		const current = this.controller.selection;
-		if (!current) {
-			this.modelSelect.createEl('option', {
-				value: '',
-				text: options.length ? 'Pick a model' : 'No model configured',
-			});
-		}
-		for (const { provider, model } of options) {
-			const option = this.modelSelect.createEl('option', {
-				value: `${provider.id}\u0000${model.id}`,
-				text: `${provider.name} / ${model.name}`,
-			});
-			if (current && current.provider.id === provider.id && current.model.id === model.id)
-				option.selected = true;
-		}
-		this.thinkingSelect.empty();
-		const levels = current ? selectableThinkingLevels(current.model) : ['off' as ThinkingLevel];
-		for (const level of levels) {
-			const option = this.thinkingSelect.createEl('option', {
-				value: level,
-				text: `Thinking: ${level}`,
-			});
-			if (level === this.controller.thinkingLevel) option.selected = true;
-		}
-		this.thinkingSelect.toggleClass('is-hidden', levels.length <= 1);
+		this.modelButton.empty();
+		setIcon(this.modelButton.createSpan({ cls: 'librarian-model-icon' }), 'cpu');
+		this.modelButton.createSpan({
+			cls: 'librarian-model-name',
+			text: current ? current.model.name : options.length ? 'Pick a model' : 'No model',
+		});
+		const level = this.controller.thinkingLevel;
+		if (current && level !== 'off')
+			this.modelButton.createSpan({ cls: 'librarian-model-effort', text: level });
 		this.pickModelEl?.empty();
 		if (this.pickModelEl) {
 			this.pickModelEl.createSpan({ text: 'Pick a model to continue' });
@@ -351,13 +411,14 @@ export class LibrarianView extends ItemView {
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
 		this.composerEl = root.createDiv({ cls: 'librarian-composer' });
 		this.activityEl = this.composerEl.createDiv({ cls: 'librarian-activity is-hidden' });
-		this.activeNoteEl = this.composerEl.createDiv({ cls: 'librarian-active-note is-hidden' });
-		this.imagesEl = this.composerEl.createDiv({ cls: 'librarian-images is-hidden' });
-		this.imageNoticeEl = this.composerEl.createDiv({ cls: 'librarian-image-notice is-hidden' });
 		this.slashEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
-		this.inputEl = this.composerEl.createEl('textarea', {
+		const box = this.composerEl.createDiv({ cls: 'librarian-composer-box' });
+		this.activeNoteEl = box.createDiv({ cls: 'librarian-active-note is-hidden' });
+		this.imagesEl = box.createDiv({ cls: 'librarian-images is-hidden' });
+		this.imageNoticeEl = box.createDiv({ cls: 'librarian-image-notice is-hidden' });
+		this.inputEl = box.createEl('textarea', {
 			cls: 'librarian-input',
-			attr: { placeholder: 'Ask a question...', rows: '3', 'aria-label': 'Message' },
+			attr: { placeholder: 'Ask a question...', rows: '2', 'aria-label': 'Message' },
 		});
 		this.inputEl.addEventListener('input', () => {
 			this.updateSendEnabled();
@@ -382,19 +443,13 @@ export class LibrarianView extends ItemView {
 				}
 			}
 		});
-		const row = this.composerEl.createDiv({ cls: 'librarian-composer-row' });
-		const addNote = row.createEl('button', {
-			cls: 'librarian-composer-button',
-			text: 'Add note',
+		const row = box.createDiv({ cls: 'librarian-composer-row' });
+		this.attachButton = row.createEl('button', {
+			cls: 'librarian-attach clickable-icon',
+			attr: { 'aria-label': 'Attach', 'aria-haspopup': 'true' },
 		});
-		addNote.setAttr('aria-label', 'Add active note to prompt');
-		addNote.addEventListener('click', () => this.toggleActiveNote());
-		this.imageButton = row.createEl('button', {
-			cls: 'librarian-composer-button clickable-icon',
-			attr: { 'aria-label': 'Attach image' },
-		});
-		setIcon(this.imageButton, 'image');
-		this.imageButton.addEventListener('click', (e) => this.showImageMenu(e));
+		setIcon(this.attachButton, 'plus');
+		this.attachButton.addEventListener('click', (e) => this.showAttachMenu(e));
 		this.fileInput = row.createEl('input', {
 			type: 'file',
 			cls: 'is-hidden',
@@ -404,8 +459,26 @@ export class LibrarianView extends ItemView {
 			for (const file of Array.from(this.fileInput.files ?? [])) void this.addImageFile(file);
 			this.fileInput.value = '';
 		});
-		const spacer = row.createDiv({ cls: 'librarian-composer-spacer' });
-		void spacer;
+		this.cameraInput = row.createEl('input', {
+			type: 'file',
+			cls: 'is-hidden',
+			attr: { accept: 'image/*', capture: 'environment' },
+		});
+		this.cameraInput.addEventListener('change', () => {
+			for (const file of Array.from(this.cameraInput.files ?? []))
+				void this.addImageFile(file);
+			this.cameraInput.value = '';
+		});
+		this.modelButton = row.createEl('button', {
+			cls: 'librarian-model-button',
+			attr: { 'aria-label': 'Model and effort', 'aria-haspopup': 'dialog' },
+		});
+		this.modelButton.addEventListener('click', () =>
+			new ModelPickerModal(this.app, this.plugin, this.controller, () =>
+				this.renderModelSelect(),
+			).open(),
+		);
+		row.createDiv({ cls: 'librarian-composer-spacer' });
 		this.ringEl = row.createEl('button', {
 			cls: 'librarian-context-indicator',
 			attr: { 'aria-label': 'Context usage', 'aria-haspopup': 'true' },
@@ -426,11 +499,57 @@ export class LibrarianView extends ItemView {
 			this.popoverPinned = !this.popoverPinned;
 			this.showPopover(this.popoverPinned);
 		});
-		this.sendButton = row.createEl('button', { cls: 'mod-cta librarian-send', text: 'Send' });
+		// Appears only when there is something to send; becomes Stop while the agent runs.
+		this.sendButton = row.createEl('button', {
+			cls: 'librarian-send is-hidden',
+			attr: { 'aria-label': 'Send' },
+		});
+		setIcon(this.sendButton, 'arrow-up');
 		this.sendButton.addEventListener('click', () => {
 			if (this.controller.isRunning) this.controller.stop();
 			else void this.submit();
 		});
+	}
+
+	/** The "+" menu: images from the camera, the device or the vault, and the active note. */
+	private showAttachMenu(e: MouseEvent) {
+		const menu = new Menu();
+		const images = this.modelAcceptsImages();
+		if (Platform.isMobile)
+			menu.addItem((item) =>
+				item
+					.setTitle('Camera')
+					.setIcon('camera')
+					.setDisabled(!images)
+					.onClick(() => this.cameraInput.click()),
+			);
+		menu.addItem((item) =>
+			item
+				.setTitle(Platform.isMobile ? 'Photos' : 'Choose an image')
+				.setIcon('image')
+				.setDisabled(!images)
+				.onClick(() => this.fileInput.click()),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle('Image from vault')
+				.setIcon('folder')
+				.setDisabled(!images)
+				.onClick(() =>
+					new VaultImageModal(this.app, (f) => this.addImagePath(f.path)).open(),
+				),
+		);
+		if (!images)
+			menu.addItem((item) =>
+				item.setTitle('This model does not accept images').setDisabled(true),
+			);
+		menu.addItem((item) =>
+			item
+				.setTitle(this.includeActiveNote ? 'Remove active note' : 'Attach active note')
+				.setIcon('file-text')
+				.onClick(() => this.toggleActiveNote()),
+		);
+		menu.showAtMouseEvent(e);
 	}
 
 	private showPopover(show: boolean) {
@@ -465,32 +584,6 @@ export class LibrarianView extends ItemView {
 		this.includeActiveNote = !this.includeActiveNote;
 		this.renderActiveNote();
 		void this.controller.recalculateUsage();
-	}
-
-	private showImageMenu(e: MouseEvent) {
-		if (!this.modelAcceptsImages()) {
-			this.imageNoticeEl.setText(
-				'This model does not accept images. Pick a model with image input.',
-			);
-			this.imageNoticeEl.removeClass('is-hidden');
-			return;
-		}
-		const menu = new Menu();
-		menu.addItem((item) =>
-			item
-				.setTitle('Choose a file')
-				.setIcon('upload')
-				.onClick(() => this.fileInput.click()),
-		);
-		menu.addItem((item) =>
-			item
-				.setTitle('Pick from vault')
-				.setIcon('folder')
-				.onClick(() =>
-					new VaultImageModal(this.app, (f) => this.addImagePath(f.path)).open(),
-				),
-		);
-		menu.showAtMouseEvent(e);
 	}
 
 	private modelAcceptsImages(): boolean {
@@ -560,14 +653,14 @@ export class LibrarianView extends ItemView {
 			state !== 'awaiting-approval' &&
 			!blockedByImages &&
 			(this.inputEl.value.trim().length > 0 || this.pendingImages.length > 0);
-		this.sendButton.setText(running ? 'Stop' : 'Send');
-		this.sendButton.toggleClass('mod-warning', running);
-		this.sendButton.toggleClass('mod-cta', !running);
-		this.sendButton.disabled = !running && !canSend;
+		const show = running || canSend;
+		this.sendButton.toggleClass('is-hidden', !show);
+		this.sendButton.toggleClass('is-running', running);
+		this.sendButton.empty();
+		setIcon(this.sendButton, running ? 'square' : 'arrow-up');
+		this.sendButton.setAttr('aria-label', running ? 'Stop' : 'Send');
 		this.inputEl.disabled =
 			state === 'no-key' || state === 'model-unavailable' || state === 'awaiting-approval';
-		this.imageButton.disabled = !this.modelAcceptsImages();
-		this.imageButton.toggleClass('is-disabled', !this.modelAcceptsImages());
 	}
 
 	async submit() {
@@ -806,6 +899,7 @@ export class LibrarianView extends ItemView {
 		this.bannerEl.toggleClass('is-hidden', state !== 'no-key');
 		if (state === 'no-key') this.renderKeyBanner();
 		this.pickModelEl.toggleClass('is-hidden', state !== 'model-unavailable');
+		this.renderModelSelect();
 		this.composerEl.toggleClass('is-hidden', state === 'model-unavailable');
 		const provider = this.controller.selection?.provider;
 		const nonStreaming = provider
@@ -992,7 +1086,7 @@ export class LibrarianView extends ItemView {
 			details.createEl('pre', { text: event.thinking });
 		}
 		if (event.content) {
-			const body = wrap.createDiv({ cls: 'librarian-markdown' });
+			const body = wrap.createDiv({ cls: 'librarian-markdown markdown-rendered' });
 			void MarkdownRenderer.render(this.app, event.content, body, '', this).then(() => {
 				linkSources(
 					body,
