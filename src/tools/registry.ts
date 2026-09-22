@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
-import { checkPath } from './path-policy';
+import { checkPath, isHiddenRoot } from './path-policy';
 
 export interface ToolDeps {
 	app: App;
@@ -95,7 +95,7 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 						!(
 							c instanceof TFolder &&
 							path === '' &&
-							/^\.(obsidian|trash)$/i.test(c.name)
+							isHiddenRoot(c.name, deps.app.vault.configDir)
 						),
 				)
 				.sort((a, b) => a.name.localeCompare(b.name))

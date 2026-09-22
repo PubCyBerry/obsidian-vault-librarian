@@ -1,3 +1,4 @@
+import { normalizePath } from 'obsidian';
 import type { LibrarianSettings, ToolPermission } from '../types';
 
 export interface ToolGroup {
@@ -36,8 +37,12 @@ export const PERMISSION_DESCRIPTIONS: Record<ToolPermission, string> = {
 	blocked: 'Hidden from the model.',
 };
 
+/** Same normalization as checkPath, so "./AGENTS.md " cannot slip past the forced approval. */
 export function isRootAgentsMd(path: string): boolean {
-	return path.replace(/^\/+/, '').toLowerCase() === 'agents.md';
+	const segments = normalizePath(path.trim())
+		.split('/')
+		.filter((s) => s.length > 0 && s !== '.');
+	return segments.length === 1 && segments[0]!.toLowerCase() === 'agents.md';
 }
 
 export class ToolPermissionManager {

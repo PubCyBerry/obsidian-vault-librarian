@@ -43,6 +43,8 @@ describe('path policy (LIB-TEST-040)', () => {
 		expect(() => checkPath('/etc/passwd', opts)).toThrow(/Absolute/);
 		expect(() => checkPath('.obsidian/app.json', opts)).toThrow(/not allowed/);
 		expect(() => checkPath('.trash/x.md', opts)).toThrow(/not allowed/);
+		// The rule follows the vault's config folder name, whatever it is.
+		expect(() => checkPath('config/app.json', { configDir: 'config' })).toThrow(/not allowed/);
 		expect(() => checkPath('notes/a.txt', { ...opts, markdown: true })).toThrow(/Markdown/);
 		expect(checkPath('notes//a.md', { ...opts, markdown: true })).toBe('notes/a.md');
 	});

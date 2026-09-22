@@ -67,6 +67,9 @@ describe('tool permissions', () => {
 		expect(perms.resolve('write', { path: 'notes/a.md' })).toBe('always_allow');
 		expect(perms.resolve('write', { path: 'AGENTS.md' })).toBe('approval_required');
 		expect(perms.resolve('edit', { path: 'agents.md' })).toBe('approval_required');
+		// The same normalization as checkPath: spelling tricks do not skip the approval.
+		expect(perms.resolve('write', { path: ' ./AGENTS.md ' })).toBe('approval_required');
+		expect(perms.resolve('write', { path: '/AGENTS.md' })).toBe('approval_required');
 		expect(perms.resolve('read', { path: 'AGENTS.md' })).toBe('approval_required');
 	});
 

@@ -531,7 +531,8 @@ class ProviderEditorModal extends Modal {
 						new Notice('The provider needs a name.');
 						return;
 					}
-					if (!isValidSecretId(d.secretId)) {
+					// The id prefixes the secret id, so both follow SecretStorage's character rule.
+					if (!isValidSecretId(d.id) || !isValidSecretId(d.secretId)) {
 						new Notice(
 							'The provider ID may only use lowercase letters, digits and dashes.',
 						);

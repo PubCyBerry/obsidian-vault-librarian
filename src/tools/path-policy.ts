@@ -1,5 +1,11 @@
 import { normalizePath } from 'obsidian';
 
+/** Top-level folders the tools never see: the vault's config folder (whatever its name) and `.trash`. */
+export function isHiddenRoot(name: string, configDir: string): boolean {
+	const n = name.toLowerCase();
+	return n === configDir.toLowerCase() || n === '.trash';
+}
+
 /** Vault-relative, normalized path with the vault boundary rules applied. */
 export function checkPath(
 	raw: string,
@@ -14,8 +20,7 @@ export function checkPath(
 	const segments = path.split('/').filter((s) => s.length > 0);
 	if (segments.some((s) => s === '..'))
 		throw new Error(`Parent traversal is not allowed: ${raw}`);
-	const first = segments[0]?.toLowerCase();
-	if (first === opts.configDir.toLowerCase() || first === '.trash') {
+	if (segments[0] !== undefined && isHiddenRoot(segments[0], opts.configDir)) {
 		throw new Error(`Access to ${segments[0]} is not allowed`);
 	}
 	if (segments.length === 0) {
