@@ -574,7 +574,7 @@ class ProviderEditorModal extends Modal {
 			new Setting(this.modelsEl)
 				.setName(model.name || model.id)
 				.setDesc(
-					`${model.id} · ${model.contextWindow.toLocaleString('en-US')} ctx · ${model.toolCalling ? 'tools' : 'no tools'}${model.input.includes('image') ? ' · images' : ''}`,
+					`${model.id}, ${model.contextWindow.toLocaleString('en-US')} ctx, ${model.toolCalling ? 'tools' : 'no tools'}${model.input.includes('image') ? ', images' : ''}`,
 				)
 				.addExtraButton((b) =>
 					b
@@ -747,7 +747,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			new Setting(el)
 				.setName(provider.name)
 				.setDesc(
-					`${provider.baseUrl || 'no URL'} · ${provider.models.length} ${provider.models.length === 1 ? 'model' : 'models'} · ${provider.transport}`,
+					`${provider.baseUrl || 'no URL'}, ${provider.models.length} ${provider.models.length === 1 ? 'model' : 'models'}, ${provider.transport}`,
 				)
 				.addExtraButton((b) =>
 					b
@@ -931,7 +931,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				state.status === 'ready' ? `${state.tools.length} tools` : (state.message ?? '');
 			const row = new Setting(el)
 				.setName(server.name)
-				.setDesc(`${server.url} · ${status}${detail ? ` · ${detail}` : ''}`);
+				.setDesc(`${server.url}, ${status}${detail ? `, ${detail}` : ''}`);
 			row.settingEl.addClass('librarian-mcp-server');
 			row.addToggle((t) =>
 				t

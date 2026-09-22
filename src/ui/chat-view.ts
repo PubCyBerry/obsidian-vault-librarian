@@ -150,7 +150,7 @@ class ModelPickerModal extends Modal {
 			text.createDiv({ cls: 'librarian-picker-title', text: model.name });
 			text.createDiv({
 				cls: 'librarian-picker-sub',
-				text: `${provider.name}${model.input.includes('image') ? ' · images' : ''}`,
+				text: `${provider.name}${model.input.includes('image') ? ', images' : ''}`,
 			});
 			if (selected) setIcon(row.createSpan({ cls: 'librarian-picker-check' }), 'check');
 			const pick = () =>
@@ -718,7 +718,7 @@ export class LibrarianView extends ItemView {
 				run: () =>
 					this.showNotice(
 						this.slashCommands()
-							.map((c) => `/${c.name} — ${c.description}`)
+							.map((c) => `/${c.name}: ${c.description}`)
 							.join('\n'),
 					),
 			},
