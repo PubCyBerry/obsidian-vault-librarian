@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.3...1.5.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* keep the composer text area flat on hover and focus ([701a36e](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/701a36e91800713114b2fcd32092b72ab0064920))
+
 ## [1.5.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.2...1.5.3) (2026-09-22)
 
 
