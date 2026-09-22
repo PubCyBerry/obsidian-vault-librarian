@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.2...1.5.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* give the model pill horizontal padding that the row-wide button rule was zeroing ([9ebc91b](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/9ebc91b3976bf2df0610e1ded1048c715a341f5b))
+
 ## [1.5.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.1...1.5.2) (2026-09-22)
 
 
