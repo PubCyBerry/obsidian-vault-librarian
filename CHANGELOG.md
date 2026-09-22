@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.10...1.6.0) (2026-09-22)
+
+
+### Features
+
+* agent skills from .agents/skills folders and [@mention](https://github.com/mention) autocomplete for notes and folders ([5d18150](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/5d181501c54c3061309567cd81a20c9b75ba9e9d))
+
 ## [1.5.10](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.9...1.5.10) (2026-09-22)
 
 
