@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.9.1...1.10.0) (2026-09-22)
+
+
+### Features
+
+* cache hit rate in the context popover, hidden folder access, delete session menu ([7ec35be](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7ec35be808f2bea6f8752ac085f5c348229e88c9))
+
+
+### Bug Fixes
+
+* retry once when the response body is cut mid-stream ([66408a8](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/66408a8a3605a617d56fbda7b47f3f2fadc8dcb4))
+
 ## [1.9.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.9.0...1.9.1) (2026-09-22)
 
 
