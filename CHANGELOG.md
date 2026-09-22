@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.6](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.5...1.5.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* show only the usage the provider reported for the last response ([f6715a5](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f6715a5e50f6cbc08e1245bd1a8cfcb8c9c4956e))
+
 ## [1.5.5](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.4...1.5.5) (2026-09-22)
 
 
