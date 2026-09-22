@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.7](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.6...1.5.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* normalize the root AGENTS.md check and follow the vault's config folder name ([d1bcefe](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/d1bcefe8a648a3412fe67153e1dfaa2b4bd014ee))
+
 ## [1.5.6](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.5...1.5.6) (2026-09-22)
 
 
