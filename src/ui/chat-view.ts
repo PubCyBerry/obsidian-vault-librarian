@@ -340,6 +340,17 @@ export class LibrarianView extends ItemView {
 		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
 		this.renderMcpBanner();
 		this.registerEvent(this.app.workspace.on('file-open', () => this.renderActiveNote()));
+		if (Platform.isPhone) {
+			// Obsidian dispatches these on window from the native keyboard; the class drops the
+			// hidden navbar's layout slot while the keyboard belongs to this chat (styles.css).
+			this.registerDomEvent(window, 'keyboardWillShow' as keyof WindowEventMap, () => {
+				if (root.contains(document.activeElement))
+					document.body.addClass('librarian-keyboard-open');
+			});
+			this.registerDomEvent(window, 'keyboardWillHide' as keyof WindowEventMap, () =>
+				document.body.removeClass('librarian-keyboard-open'),
+			);
+		}
 		this.renderModelSelect();
 		this.renderActiveNote();
 		if (this.controller.session) this.renderEvents(this.controller.events);
@@ -347,6 +358,7 @@ export class LibrarianView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		document.body.removeClass('librarian-keyboard-open');
 		this.unsubscribeMcp?.();
 		this.unsubscribe?.();
 		this.unsubscribe = null;

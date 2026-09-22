@@ -460,6 +460,27 @@ body.is-phone .librarian-composer {
 	padding-bottom: max(var(--size-4-3), var(--view-bottom-spacing, 0px));
 }
 
+/*
+ * Phone keyboard. Obsidian hides the navbar with a transform, so its slot stays in the layout and
+ * a view would stop a navbar height above the keyboard; the slot is dropped while this chat owns
+ * the keyboard. During Obsidian's keyboard-animating phase the app container is still full height,
+ * so the composer rides up on its own padding with the keyboard's timing and lands where the
+ * shrunken container puts it afterwards.
+ */
+body.is-phone.librarian-keyboard-open .mobile-navbar {
+	display: none;
+}
+
+body.is-phone.keyboard-animating .librarian-composer {
+	padding-bottom: calc(var(--keyboard-height, 0px) + var(--size-4-3));
+	transition: padding-bottom 350ms cubic-bezier(0.22, 0.25, 0, 1);
+}
+
+body.is-phone.is-ios.keyboard-animating .librarian-composer {
+	transition-duration: 300ms;
+	transition-timing-function: cubic-bezier(0.12, 0, 0.44, 0.99);
+}
+
 .librarian-activity {
 	display: flex;
 	align-items: center;
@@ -609,19 +630,29 @@ body.is-phone .librarian-composer {
 	color: var(--text-faint);
 }
 
+/* The touch target stays a full button; only a small accent disc around the arrow is drawn, so the
+   send control weighs about as much as the + glyph and the ring next to it. */
 .librarian-composer-row .librarian-send {
+	--librarian-send-size: 30px;
 	width: var(--librarian-tool-size);
-	background: var(--interactive-accent);
 	color: var(--text-on-accent);
 }
 
-.librarian-composer-row .librarian-send:hover {
+.librarian-composer-row .librarian-send > svg {
+	width: 16px;
+	height: 16px;
+	box-sizing: content-box;
+	padding: calc((var(--librarian-send-size) - 16px) / 2);
+	border-radius: 50%;
+	background: var(--interactive-accent);
+}
+
+.librarian-composer-row .librarian-send:hover > svg {
 	background: var(--interactive-accent-hover);
 }
 
-.librarian-composer-row .librarian-send.is-running {
+.librarian-composer-row .librarian-send.is-running > svg {
 	background: var(--background-modifier-error);
-	color: var(--text-on-accent);
 }
 
 /* Model picker modal */
@@ -1012,4 +1043,8 @@ body.is-phone .librarian-composer {
 
 .librarian.is-mobile .librarian-composer-row {
 	--librarian-tool-size: 44px;
+}
+
+.librarian.is-mobile .librarian-composer-row .librarian-send {
+	--librarian-send-size: 32px;
 }
