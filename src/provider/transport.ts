@@ -203,6 +203,7 @@ export function streamViaRequestUrl(
 		stopReason: 'pending',
 		timestamp: Date.now(),
 	};
+	const startedAt = Date.now();
 	void (async () => {
 		try {
 			const body = buildRequestBody(model, context, options);
@@ -310,12 +311,85 @@ export function streamViaRequestUrl(
 			stream.end();
 		} catch (error) {
 			output.stopReason = options.signal?.aborted ? 'aborted' : 'error';
-			output.errorMessage = error instanceof Error ? error.message : String(error);
+			const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+			output.errorMessage = `${describeError(error)} (requestUrl, after ${seconds} s)`;
 			stream.push({ type: 'error', reason: output.stopReason, error: output });
 			stream.end();
 		}
 	})();
 	return stream;
+}
+
+/**
+ * A fetch that remembers what happened to the last request, so a bare "network error" from the
+ * runtime can be reported with when it broke, whether a response had arrived and how much body.
+ */
+export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(window)) {
+	let startedAt = 0;
+	let status: number | null = null;
+	let bytes = 0;
+	let failure: string | null = null;
+	const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)} s`;
+	const wrapped: typeof fetch = async (input, init) => {
+		startedAt = Date.now();
+		status = null;
+		bytes = 0;
+		failure = null;
+		let response: Response;
+		try {
+			response = await base(input, init);
+		} catch (error) {
+			failure = describeError(error);
+			throw error;
+		}
+		status = response.status;
+		const body = response.body;
+		if (!body) return response;
+		const reader = body.getReader();
+		const counted = new ReadableStream<Uint8Array>({
+			async pull(controller) {
+				try {
+					const { done, value } = await reader.read();
+					if (done) controller.close();
+					else {
+						bytes += value.byteLength;
+						controller.enqueue(value);
+					}
+				} catch (error) {
+					failure = describeError(error);
+					controller.error(error);
+				}
+			},
+			cancel: (reason) => reader.cancel(reason),
+		});
+		return new Response(counted, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
+	};
+	return {
+		fetch: wrapped,
+		/** One parenthetical for the error block, empty before any request. */
+		describe(): string {
+			if (!startedAt) return '';
+			const parts = [`fetch, after ${elapsed()}`];
+			parts.push(
+				status === null
+					? 'no response'
+					: `HTTP ${status} received, body cut after ${bytes} bytes`,
+			);
+			if (failure) parts.push(failure);
+			return parts.join(', ');
+		},
+	};
+}
+
+function describeError(error: unknown): string {
+	if (!(error instanceof Error)) return String(error);
+	const cause = (error as { cause?: unknown }).cause;
+	const causeText = cause instanceof Error ? `; cause: ${cause.name}: ${cause.message}` : '';
+	return `${error.name}: ${error.message}${causeText}`;
 }
 
 function looksLikeHttpError(message: string | undefined): boolean {
@@ -375,9 +449,11 @@ export class TransportRouter {
 		if (allowFallback) return streamSimple(model, context, options);
 		// A fixed fetch transport reports network failures with the hint to switch transports.
 		const out = createAssistantMessageEventStream();
+		const diag = createDiagnosticFetch();
 		let gotResponse = false;
 		const inner = streamSimple(model, context, {
 			...options,
+			fetch: diag.fetch,
 			onResponse: async (r, m) => {
 				gotResponse = true;
 				await options.onResponse?.(r, m);
@@ -385,10 +461,12 @@ export class TransportRouter {
 		});
 		void (async () => {
 			for await (const ev of inner) {
-				if (ev.type === 'error' && !gotResponse && ev.reason === 'error') {
-					if (!looksLikeHttpError(ev.error.errorMessage)) {
-						ev.error.errorMessage = `${FETCH_FAILED_NOTICE} (${ev.error.errorMessage ?? ''})`;
-					}
+				if (ev.type === 'error' && ev.reason === 'error') {
+					const raw = ev.error.errorMessage ?? '';
+					ev.error.errorMessage =
+						!gotResponse && !looksLikeHttpError(raw)
+							? `${FETCH_FAILED_NOTICE} (${raw}; ${diag.describe()})`
+							: `${raw} (${diag.describe()})`;
 				}
 				out.push(ev);
 			}
@@ -406,9 +484,11 @@ export class TransportRouter {
 		auth: ResolvedRequest,
 	): AssistantMessageEventStream {
 		const out = createAssistantMessageEventStream();
+		const diag = createDiagnosticFetch();
 		let gotResponse = false;
 		const inner = streamSimple(model, context, {
 			...fetchOptions,
+			fetch: diag.fetch,
 			onResponse: async (r, m) => {
 				gotResponse = true;
 				await fetchOptions.onResponse?.(r, m);
@@ -422,6 +502,9 @@ export class TransportRouter {
 					!gotResponse &&
 					!urlOptions.signal?.aborted &&
 					!looksLikeHttpError(ev.error.errorMessage);
+				// The runtime's own text ("network error") says nothing; add when and how it broke.
+				if (ev.type === 'error' && ev.reason === 'error')
+					ev.error.errorMessage = `${ev.error.errorMessage ?? ''} (${diag.describe()})`;
 				if (networkFailure) {
 					this.fallenBack.add(provider.id);
 					this.events.onFallback?.(provider.id);

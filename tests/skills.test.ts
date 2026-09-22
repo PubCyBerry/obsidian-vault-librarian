@@ -143,7 +143,7 @@ describe('skills (LIB-TEST-123)', () => {
 		const ref = await run('.agents/skills/pdf-processing/references/REFERENCE.md');
 		expect((ref.lines as { text: string }[])[0]!.text).toBe('deep reference');
 		expect(ref.skillDir).toBeUndefined();
-		await expect(run('.agents/other/x.md')).rejects.toThrow('Note not found');
+		await expect(run('.agents/other/x.md')).rejects.toThrow('File not found');
 	});
 
 	it('wraps the body for /skill with the directory and the resource list', async () => {

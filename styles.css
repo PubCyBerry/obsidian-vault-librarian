@@ -535,7 +535,13 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	background: var(--background-primary);
 	max-height: 200px;
 	overflow-y: auto;
+	overscroll-behavior: contain;
+	touch-action: pan-y;
 	font-size: var(--font-ui-small);
+}
+
+.librarian.is-mobile .librarian-slash {
+	max-height: 40vh;
 }
 
 .librarian-slash-item {

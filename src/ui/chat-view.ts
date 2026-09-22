@@ -25,6 +25,7 @@ import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
 import type { IndexedEvent, SessionEvent, SessionSummary } from '../session/session-types';
 import { skillKey } from '../skills/skill-manager';
+import { isBinaryPath } from '../tools/path-policy';
 import {
 	renderApprovalCard,
 	renderToolCard,
@@ -50,9 +51,10 @@ const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
 /** Blocks the composer appends below the typed text; the bubble shows each as a chip instead. */
 const ATTACHED_BLOCK =
-	/\n*<(attached_note|attached_folder|skill_content) (?:path|name)="([^"]+)">[\s\S]*?<\/\1>/g;
+	/\n*<(attached_note|attached_file|attached_folder|skill_content) (?:path|name)="([^"]+)"(?: \/>|>[\s\S]*?<\/\1>)/g;
 const CHIP_ICONS: Record<string, string> = {
 	attached_note: 'file-text',
+	attached_file: 'file',
 	attached_folder: 'folder',
 	skill_content: 'sparkles',
 };
@@ -827,7 +829,8 @@ export class LibrarianView extends ItemView {
 				.map((s) => ({
 					name: s.name,
 					description: s.description,
-					accept: (run) => this.acceptText(`/skill ${s.name} `, run),
+					// Always insert: the user goes on to type the request after the name.
+					accept: () => this.acceptText(`/skill ${s.name} `, false),
 				}));
 		} else if (value.startsWith('/')) {
 			list = matchCommands(this.slashCommands(), value).map((c) => ({
@@ -868,7 +871,7 @@ export class LibrarianView extends ItemView {
 				.getAllFolders()
 				.map((f): MentionTarget => ({ path: f.path, kind: 'folder' })),
 			...this.app.vault
-				.getMarkdownFiles()
+				.getFiles()
 				.map((f): MentionTarget => ({ path: f.path, kind: 'file' })),
 		];
 	}
@@ -919,7 +922,10 @@ export class LibrarianView extends ItemView {
 		const next = applyMention(this.inputEl.value, query, caret, mentionLabel(target));
 		this.inputEl.value = next.text;
 		this.inputEl.setSelectionRange(next.caret, next.caret);
-		if (!this.pendingMentions.some((m) => m.path === target.path))
+		const ext = target.path.slice(target.path.lastIndexOf('.') + 1).toLowerCase();
+		// An image mention is an image attachment, with the same model check as the + menu.
+		if (target.kind === 'file' && IMAGE_EXTENSIONS.has(ext)) this.addImagePath(target.path);
+		else if (!this.pendingMentions.some((m) => m.path === target.path))
 			this.pendingMentions.push(target);
 		this.renderMentions();
 		this.closeSuggestions();
@@ -967,12 +973,17 @@ export class LibrarianView extends ItemView {
 			if (mention.kind === 'file') {
 				const file = this.app.vault.getFileByPath(mention.path);
 				if (!file || seen.has(file.path)) continue;
-				const content = await this.app.vault.cachedRead(file);
-				text = `${text}\n\n<attached_note path="${file.path}">\n${content}\n</attached_note>`;
+				if (isBinaryPath(file.path)) {
+					// Nothing to inline; the path tells the model the file exists.
+					text = `${text}\n\n<attached_file path="${file.path}" />`;
+				} else {
+					const content = await this.app.vault.cachedRead(file);
+					text = `${text}\n\n<attached_note path="${file.path}">\n${content}\n</attached_note>`;
+				}
 				seen.add(file.path);
 			} else {
 				const notes = this.app.vault
-					.getMarkdownFiles()
+					.getFiles()
 					.filter((f) => f.path.startsWith(`${mention.path}/`))
 					.map((f) => f.path)
 					.sort();

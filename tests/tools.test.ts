@@ -37,7 +37,7 @@ beforeEach(() => {
 
 describe('path policy (LIB-TEST-040)', () => {
 	const opts = { configDir: '.obsidian' };
-	it('rejects traversal, absolute paths, config folders and non-markdown', () => {
+	it('rejects traversal, absolute paths and config folders; any extension passes', () => {
 		expect(() => checkPath('../secret.md', opts)).toThrow(/traversal/);
 		expect(() => checkPath('C:/x.md', opts)).toThrow(/Absolute/);
 		expect(() => checkPath('/etc/passwd', opts)).toThrow(/Absolute/);
@@ -45,8 +45,7 @@ describe('path policy (LIB-TEST-040)', () => {
 		expect(() => checkPath('.trash/x.md', opts)).toThrow(/not allowed/);
 		// The rule follows the vault's config folder name, whatever it is.
 		expect(() => checkPath('config/app.json', { configDir: 'config' })).toThrow(/not allowed/);
-		expect(() => checkPath('notes/a.txt', { ...opts, markdown: true })).toThrow(/Markdown/);
-		expect(checkPath('notes//a.md', { ...opts, markdown: true })).toBe('notes/a.md');
+		expect(checkPath('notes//a.txt', opts)).toBe('notes/a.txt');
 	});
 
 	it('every tool refuses paths outside the vault without touching files', async () => {
@@ -150,7 +149,7 @@ describe('read-only tools', () => {
 		app.activeFile = app.vault.getFileByPath('00-inbox/inbox.md');
 		expect(await run('get_active_note', {})).toEqual({ path: '00-inbox/inbox.md' });
 		app.activeFile = app.vault.seedBinary('img.png', new ArrayBuffer(2));
-		expect(await run('get_active_note', {})).toMatchObject({ path: null });
+		expect(await run('get_active_note', {})).toEqual({ path: 'img.png' });
 	});
 });
 
@@ -208,5 +207,43 @@ describe('write tools', () => {
 				new_text: 'z',
 			}),
 		).rejects.toThrow(/not found/);
+	});
+});
+
+describe('any file type (LIB-TEST-129)', () => {
+	it('lists, finds, greps and reads non-Markdown text files; binaries are listed but not read', async () => {
+		app.vault.seed(
+			'10-projects/alpha/board.canvas',
+			'{"nodes":[{"id":"n1","text":"Node.js"}]}',
+		);
+		app.vault.seedBinary('10-projects/alpha/pic.png', new ArrayBuffer(4));
+		const listed = await run('ls', { path: '10-projects/alpha' });
+		expect((listed.entries as { path: string }[]).map((e) => e.path)).toEqual([
+			'10-projects/alpha/board.canvas',
+			'10-projects/alpha/meeting.md',
+			'10-projects/alpha/pic.png',
+			'10-projects/alpha/vault-structure.md',
+		]);
+		const found = await run('find', { query: 'board' });
+		expect((found.matches as { path: string }[])[0]?.path).toBe(
+			'10-projects/alpha/board.canvas',
+		);
+		const hits = await run('grep', { query: 'Node.js', path: '10-projects/alpha' });
+		expect((hits.matches as { path: string }[]).map((m) => m.path).sort()).toEqual([
+			'10-projects/alpha/board.canvas',
+			'10-projects/alpha/vault-structure.md',
+		]);
+		const read = await run('read', { path: '10-projects/alpha/board.canvas' });
+		expect((read.lines as { text: string }[])[0]!.text).toContain('"nodes"');
+		await expect(run('read', { path: '10-projects/alpha/pic.png' })).rejects.toThrow(
+			/Not a text file/,
+		);
+		await run('write', { path: '10-projects/alpha/notes.txt', content: 'plain' });
+		await run('edit', {
+			path: '10-projects/alpha/notes.txt',
+			old_text: 'plain',
+			new_text: 'edited',
+		});
+		expect(app.vault.text('10-projects/alpha/notes.txt')).toBe('edited');
 	});
 });

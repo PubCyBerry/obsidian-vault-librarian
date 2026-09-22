@@ -20,7 +20,7 @@ export function mentionQuery(text: string, caret: number): MentionQuery | null {
 	return { start: caret - m[2]!.length - 1, query: m[2]! };
 }
 
-/** The short handle left in the text; the chip keeps the full path. */
+/** The short handle left in the text; the chip keeps the full path. Only `.md` drops its extension. */
 export function mentionLabel(target: MentionTarget): string {
 	const name = target.path.slice(target.path.lastIndexOf('/') + 1);
 	return target.kind === 'folder' ? `${name}/` : name.replace(/\.md$/i, '');

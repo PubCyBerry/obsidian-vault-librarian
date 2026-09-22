@@ -6,11 +6,48 @@ export function isHiddenRoot(name: string, configDir: string): boolean {
 	return n === configDir.toLowerCase() || n === '.trash';
 }
 
+/** Files that are not text: read and grep skip them, mentions attach them by path or as images. */
+const BINARY_EXTENSIONS = new Set([
+	'png',
+	'jpg',
+	'jpeg',
+	'gif',
+	'webp',
+	'bmp',
+	'ico',
+	'heic',
+	'avif',
+	'pdf',
+	'mp3',
+	'wav',
+	'm4a',
+	'ogg',
+	'flac',
+	'mp4',
+	'mov',
+	'webm',
+	'mkv',
+	'zip',
+	'gz',
+	'7z',
+	'rar',
+	'exe',
+	'dll',
+	'woff',
+	'woff2',
+	'ttf',
+	'otf',
+	'db',
+	'sqlite',
+]);
+
+export function isBinaryPath(path: string): boolean {
+	const dot = path.lastIndexOf('.');
+	return dot >= 0 && BINARY_EXTENSIONS.has(path.slice(dot + 1).toLowerCase());
+}
+
 /** Vault-relative, normalized path with the vault boundary rules applied. */
-export function checkPath(
-	raw: string,
-	opts: { markdown?: boolean; allowRoot?: boolean; configDir: string },
-): string {
+export function checkPath(raw: string, opts: { allowRoot?: boolean; configDir: string }): string {
 	if (typeof raw !== 'string') throw new Error('path must be a string');
 	const trimmed = raw.trim();
 	if (/^[a-zA-Z]:[\\/]/.test(trimmed) || /^[\\/]/.test(trimmed) || /^~/.test(trimmed)) {
@@ -26,9 +63,6 @@ export function checkPath(
 	if (segments.length === 0) {
 		if (opts.allowRoot) return '';
 		throw new Error('path must not be empty');
-	}
-	if (opts.markdown && !path.toLowerCase().endsWith('.md')) {
-		throw new Error(`Only Markdown (.md) files are allowed: ${raw}`);
 	}
 	return path;
 }

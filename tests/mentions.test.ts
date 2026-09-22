@@ -39,6 +39,7 @@ describe('@mentions (LIB-TEST-127)', () => {
 		expect(next.text).toBe('compare @Obsidian Dashboard/  with the plan');
 		expect(next.caret).toBe('compare @Obsidian Dashboard/ '.length);
 		expect(mentionLabel(targets[3]!)).toBe('TODO');
+		expect(mentionLabel({ path: 'a/board.canvas', kind: 'file' })).toBe('board.canvas');
 	});
 
 	it('lists a folder as note paths with a cap', () => {

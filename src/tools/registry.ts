@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
-import { checkPath, isHiddenRoot } from './path-policy';
+import { checkPath, isBinaryPath, isHiddenRoot } from './path-policy';
 
 /** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
 export interface HiddenReader {
@@ -30,23 +30,20 @@ function throwIfAborted(signal?: AbortSignal) {
 
 const yieldToUi = () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
-function mdFile(app: App, path: string): TFile {
+function vaultFile(app: App, path: string): TFile {
 	const file = app.vault.getFileByPath(path);
-	if (!file) throw new Error(`Note not found: ${path}`);
+	if (!file) throw new Error(`File not found: ${path}`);
 	return file;
 }
 
+/** Every file of any type under a folder, or the one file a path names. */
 function filesUnder(app: App, folderPath: string | undefined): TFile[] {
-	if (!folderPath) return app.vault.getMarkdownFiles();
+	if (!folderPath) return app.vault.getFiles();
 	const abstract = app.vault.getAbstractFileByPath(folderPath);
-	if (abstract instanceof TFile) {
-		if (abstract.extension !== 'md')
-			throw new Error(`Only Markdown (.md) files are allowed: ${folderPath}`);
-		return [abstract];
-	}
+	if (abstract instanceof TFile) return [abstract];
 	if (!(abstract instanceof TFolder)) throw new Error(`Folder not found: ${folderPath}`);
 	const prefix = `${abstract.path}/`;
-	return app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix));
+	return app.vault.getFiles().filter((f) => f.path.startsWith(prefix));
 }
 
 function escapeRegExp(s: string): string {
@@ -67,7 +64,7 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 		name: 'ls',
 		label: 'List folder',
 		description:
-			'List Markdown notes and folders in the Obsidian vault. Use this to inspect vault structure or a folder.',
+			'List files and folders in the Obsidian vault. Use this to inspect vault structure or a folder.',
 		parameters: Type.Object({
 			path: Type.Optional(
 				Type.String({
@@ -95,7 +92,7 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				path === '' ? deps.app.vault.getRoot() : deps.app.vault.getFolderByPath(path);
 			if (!folder) throw new Error(`Folder not found: ${params.path}`);
 			const entries = folder.children
-				.filter((c) => c instanceof TFolder || (c instanceof TFile && c.extension === 'md'))
+				.filter((c) => c instanceof TFolder || c instanceof TFile)
 				.filter(
 					(c) =>
 						!(
@@ -126,7 +123,7 @@ export function createFindTool(deps: ToolDeps): AgentTool {
 		name: 'find',
 		label: 'Find note',
 		description:
-			'Find Markdown notes by filename, path, title, or alias. Use this when the user names or approximately names a note.',
+			'Find files by filename, path, title, or alias. Use this when the user names or approximately names a note or file.',
 		parameters: Type.Object({
 			query: Type.String({ minLength: 1 }),
 			path: Type.Optional(Type.String({ description: 'Optional folder restriction.' })),
@@ -172,11 +169,11 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 		name: 'grep',
 		label: 'Search contents',
 		description:
-			'Search Markdown note contents in the vault and return matching lines with paths and line numbers. Use this when the relevant note is not already known.',
+			'Search text file contents in the vault and return matching lines with paths and line numbers. Use this when the relevant note is not already known.',
 		parameters: Type.Object({
 			query: Type.String({ minLength: 1 }),
 			path: Type.Optional(
-				Type.String({ description: 'Optional folder or Markdown file restriction.' }),
+				Type.String({ description: 'Optional folder or file restriction.' }),
 			),
 			mode: Type.Optional(
 				Type.Union([Type.Literal('literal'), Type.Literal('regex')], {
@@ -214,7 +211,9 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 				after?: string[];
 			}[] = [];
 			let truncated = false;
-			const files = filesUnder(deps.app, scope || undefined);
+			const files = filesUnder(deps.app, scope || undefined).filter(
+				(f) => !isBinaryPath(f.path),
+			);
 			let batch = 0;
 			// ponytail: full scan with a yield every 20 files; add an index if real vaults measure slow.
 			for (const file of files) {
@@ -247,9 +246,9 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 		name: 'read',
 		label: 'Read note',
 		description:
-			'Read a range of lines from a Markdown note. Use this after find or grep to inspect the actual source text.',
+			'Read a range of lines from a text file. Use this after find or grep to inspect the actual source text.',
 		parameters: Type.Object({
-			path: Type.String({ description: 'Vault-relative Markdown path ending in .md.' }),
+			path: Type.String({ description: 'Vault-relative file path.' }),
 			offset: Type.Optional(
 				Type.Integer({ minimum: 1, description: '1-based first line. Default 1.' }),
 			),
@@ -263,17 +262,15 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 		}),
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
-			const path = checkPath(params.path, {
-				markdown: true,
-				configDir: deps.app.vault.configDir,
-			});
+			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
+			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
 			const file = deps.app.vault.getFileByPath(path);
 			let text: string;
 			let extra: Record<string, unknown> = {};
 			if (file) text = await deps.app.vault.cachedRead(file);
 			else {
 				const hidden = await deps.hidden?.read(path);
-				if (!hidden) throw new Error(`Note not found: ${path}`);
+				if (!hidden) throw new Error(`File not found: ${path}`);
 				text = hidden.text;
 				extra = hidden.extra ?? {};
 			}
@@ -301,14 +298,12 @@ export function createActiveNoteTool(deps: ToolDeps): AgentTool {
 		name: 'get_active_note',
 		label: 'Active note',
 		description:
-			'Return the Markdown note currently active in Obsidian. Use when the user refers to this note or the current document.',
+			'Return the file currently active in Obsidian. Use when the user refers to this note or the current document.',
 		parameters: Type.Object({}),
 		async execute(_id, _params, signal) {
 			throwIfAborted(signal);
 			const file = deps.app.workspace.getActiveFile();
 			if (!file) return ok({ path: null, reason: 'No file is open.' });
-			if (file.extension !== 'md')
-				return ok({ path: null, reason: `The active file is not Markdown: ${file.path}` });
 			return ok({ path: file.path });
 		},
 	});
@@ -319,10 +314,10 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 		name: 'write',
 		label: 'Write note',
 		description:
-			'Create a Markdown note or replace the full contents of an existing note. Prefer edit for localized changes.',
+			'Create a file or replace the full contents of an existing file. Prefer edit for localized changes.',
 		parameters: Type.Object({
-			path: Type.String({ description: 'Vault-relative Markdown path ending in .md.' }),
-			content: Type.String({ description: 'Complete Markdown content.' }),
+			path: Type.String({ description: 'Vault-relative file path.' }),
+			content: Type.String({ description: 'Complete file content.' }),
 			overwrite: Type.Optional(
 				Type.Boolean({
 					description: 'Allow full replacement of an existing note. Default false.',
@@ -332,16 +327,13 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 		executionMode: 'sequential',
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
-			const path = checkPath(params.path, {
-				markdown: true,
-				configDir: deps.app.vault.configDir,
-			});
+			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
 			const existing = deps.app.vault.getAbstractFileByPath(path);
 			if (existing instanceof TFolder) throw new Error(`A folder exists at ${path}`);
 			if (existing instanceof TFile) {
 				if (!params.overwrite)
 					throw new Error(
-						`Note already exists: ${path}. Set overwrite to true to replace it.`,
+						`File already exists: ${path}. Set overwrite to true to replace it.`,
 					);
 				await deps.app.vault.modify(existing, params.content);
 				return ok({ path, operation: 'overwritten', characters: params.content.length });
@@ -359,9 +351,9 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 		name: 'edit',
 		label: 'Edit note',
 		description:
-			'Modify part of an existing Markdown note by replacing exact text. Read the current note first unless its current content is already available.',
+			'Modify part of an existing text file by replacing exact text. Read the file first unless its current content is already available.',
 		parameters: Type.Object({
-			path: Type.String({ description: 'Vault-relative Markdown path ending in .md.' }),
+			path: Type.String({ description: 'Vault-relative file path.' }),
 			old_text: Type.String({ minLength: 1, description: 'Exact existing text.' }),
 			new_text: Type.String({ description: 'Replacement text.' }),
 			replace_all: Type.Optional(
@@ -371,11 +363,9 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 		executionMode: 'sequential',
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
-			const path = checkPath(params.path, {
-				markdown: true,
-				configDir: deps.app.vault.configDir,
-			});
-			const file = mdFile(deps.app, path);
+			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
+			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
+			const file = vaultFile(deps.app, path);
 			let replacements = 0;
 			let failure: string | null = null;
 			// The match is re-checked inside process() so a note edited after it was read is left alone.
