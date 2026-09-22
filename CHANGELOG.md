@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.8.0...1.8.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* phone composer keeps only its own margin above the open keyboard ([4b79a3c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/4b79a3c09b8df032394a4e79f7c992e672005ad4))
+
 ## [1.8.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.7.0...1.8.0) (2026-09-22)
 
 
