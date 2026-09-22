@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.1...1.5.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* let long tool names wrap their permission controls and size the model pill to its text ([50161c0](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/50161c008f156076bd51ddcdcdabcb831ce6b805))
+
 ## [1.5.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.0...1.5.1) (2026-09-22)
 
 
