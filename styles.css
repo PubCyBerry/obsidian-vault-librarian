@@ -555,7 +555,7 @@ body.is-phone .librarian-composer {
 	border: none;
 	box-shadow: none;
 	border-radius: calc(var(--librarian-tool-size) / 2);
-	background: var(--background-modifier-hover);
+	background: transparent;
 	color: var(--text-muted);
 	display: inline-flex;
 	align-items: center;
@@ -564,8 +564,10 @@ body.is-phone .librarian-composer {
 	cursor: pointer;
 }
 
-.librarian-composer-row button:hover {
-	background: var(--background-modifier-border);
+/* Text only at rest; the fill appears under the pointer or a touch. */
+.librarian-composer-row button:hover,
+.librarian-composer-row button:active {
+	background: var(--background-modifier-hover);
 	color: var(--text-normal);
 }
 
@@ -680,29 +682,30 @@ body.is-phone .librarian-composer {
 	flex: 1 1 auto;
 }
 
-/* Context ring */
+/* Context ring: smaller than the buttons, hover-only information, nothing to press. */
+
+.librarian-composer-row {
+	--librarian-ring-size: 22px;
+}
 
 .librarian-composer-row .librarian-context-indicator {
-	width: var(--librarian-tool-size);
-	height: var(--librarian-tool-size);
-	min-width: var(--librarian-tool-size);
-	min-height: var(--librarian-tool-size);
-	padding: 0;
+	width: var(--librarian-ring-size);
+	height: var(--librarian-ring-size);
+	flex: 0 0 auto;
+	margin: 0 calc((var(--librarian-tool-size) - var(--librarian-ring-size)) / 2);
 	border-radius: 50%;
-	border: none;
 	background:
-		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
+		radial-gradient(closest-side, var(--background-secondary) 64%, transparent 65%),
 		conic-gradient(
 			var(--interactive-accent) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
 		);
-	box-shadow: none;
-	cursor: pointer;
+	cursor: default;
 }
 
 .librarian-context-indicator.is-warning {
 	background:
-		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
+		radial-gradient(closest-side, var(--background-secondary) 64%, transparent 65%),
 		conic-gradient(
 			var(--color-orange) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
@@ -711,7 +714,7 @@ body.is-phone .librarian-composer {
 
 .librarian-context-indicator.is-critical {
 	background:
-		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
+		radial-gradient(closest-side, var(--background-secondary) 64%, transparent 65%),
 		conic-gradient(
 			var(--color-red) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
@@ -890,19 +893,44 @@ body.is-phone .librarian-composer {
 	overflow: hidden;
 }
 
+/* Icon-only radio buttons; the label and meaning are in the hover tooltip. */
 .librarian-segmented button {
 	border: none;
 	border-radius: 0;
 	box-shadow: none;
 	background: transparent;
 	min-height: 36px;
+	min-width: 36px;
 	padding: 0 var(--size-4-2);
-	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.librarian-segmented button .svg-icon {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.librarian-segmented button:hover:not(:disabled) {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
 }
 
 .librarian-segmented button.is-active {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
+}
+
+.librarian-segmented button:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.tooltip.librarian-tooltip {
+	white-space: pre-line;
+	text-align: left;
 }
 
 .librarian-prompt-order ol {

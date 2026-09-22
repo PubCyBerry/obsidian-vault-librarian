@@ -6,10 +6,17 @@ import {
 	requireApiVersion,
 	Setting,
 	type SettingDefinitionItem,
+	setIcon,
+	setTooltip,
 } from 'obsidian';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
-import { PERMISSION_LABELS, TOOL_GROUPS } from '../permissions/tool-permission-manager';
+import {
+	PERMISSION_DESCRIPTIONS,
+	PERMISSION_ICONS,
+	PERMISSION_LABELS,
+	TOOL_GROUPS,
+} from '../permissions/tool-permission-manager';
 import { testConnection } from '../provider/transport';
 import { isValidSecretId } from '../storage/secret-store';
 import {
@@ -1057,13 +1064,22 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					attr: { role: 'radiogroup', 'aria-label': `${tool} permission` },
 				});
 				const buttons = PERMISSIONS.map((p) => {
+					// Icon only; the label and its meaning live in the hover tooltip.
 					const b = seg.createEl('button', {
-						text: PERMISSION_LABELS[p],
-						attr: { role: 'radio' },
+						attr: { role: 'radio', 'aria-label': PERMISSION_LABELS[p] },
+					});
+					setIcon(b, PERMISSION_ICONS[p]);
+					const why =
+						p === 'always_allow' && !perms.canAlwaysAllow(tool)
+							? 'The server marks this tool destructive.'
+							: PERMISSION_DESCRIPTIONS[p];
+					setTooltip(b, `${PERMISSION_LABELS[p]}\n${why}`, {
+						classes: ['librarian-tooltip'],
 					});
 					if (p === 'always_allow' && !perms.canAlwaysAllow(tool)) {
+						// A disabled button gets no mouse events, so the native title carries the reason.
 						b.disabled = true;
-						b.setAttr('title', 'The server marks this tool destructive.');
+						b.setAttr('title', why);
 					}
 					b.addEventListener(
 						'click',

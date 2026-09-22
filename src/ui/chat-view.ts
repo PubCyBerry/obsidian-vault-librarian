@@ -269,7 +269,6 @@ export class LibrarianView extends ItemView {
 	private slashMatches: SlashCommand[] = [];
 	private slashIndex = 0;
 	private pendingImages: string[] = [];
-	private popoverPinned = false;
 	private streamTimer: number | null = null;
 	private pendingStream: AssistantMessage | null = null;
 
@@ -313,16 +312,6 @@ export class LibrarianView extends ItemView {
 		this.unsubscribe = this.controller.subscribe((e) => this.onControllerEvent(e));
 		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
 		this.renderMcpBanner();
-		this.registerDomEvent(document, 'click', (e) => {
-			if (
-				this.popoverPinned &&
-				!this.popoverEl.contains(e.target as Node) &&
-				e.target !== this.ringEl
-			) {
-				this.popoverPinned = false;
-				this.popoverEl.addClass('is-hidden');
-			}
-		});
 		this.registerEvent(this.app.workspace.on('file-open', () => this.renderActiveNote()));
 		this.renderModelSelect();
 		this.renderActiveNote();
@@ -478,26 +467,14 @@ export class LibrarianView extends ItemView {
 			).open(),
 		);
 		row.createDiv({ cls: 'librarian-composer-spacer' });
-		this.ringEl = row.createEl('button', {
+		// Not a button: hovering (or a tap, which fires mouseenter) shows the popover; nothing to click.
+		this.ringEl = row.createDiv({
 			cls: 'librarian-context-indicator',
-			attr: { 'aria-label': 'Context usage', 'aria-haspopup': 'true' },
+			attr: { role: 'img', 'aria-label': 'Context usage' },
 		});
 		this.popoverEl = row.createDiv({ cls: 'librarian-context-popover is-hidden' });
-		this.ringEl.addEventListener(
-			'mouseenter',
-			() => !Platform.isMobile && this.showPopover(true),
-		);
-		this.ringEl.addEventListener(
-			'mouseleave',
-			() => !Platform.isMobile && !this.popoverPinned && this.showPopover(false),
-		);
-		this.ringEl.addEventListener('focus', () => this.showPopover(true));
-		this.ringEl.addEventListener('blur', () => !this.popoverPinned && this.showPopover(false));
-		this.ringEl.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this.popoverPinned = !this.popoverPinned;
-			this.showPopover(this.popoverPinned);
-		});
+		this.ringEl.addEventListener('mouseenter', () => this.showPopover(true));
+		this.ringEl.addEventListener('mouseleave', () => this.showPopover(false));
 		// Appears only when there is something to send; becomes Stop while the agent runs.
 		this.sendButton = row.createEl('button', {
 			cls: 'librarian-send is-hidden',

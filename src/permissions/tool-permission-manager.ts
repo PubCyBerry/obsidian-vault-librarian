@@ -23,6 +23,19 @@ export const PERMISSION_LABELS: Record<ToolPermission, string> = {
 	blocked: 'Blocked',
 };
 
+/** Lucide icon and the tooltip line shown under the label in the settings control. */
+export const PERMISSION_ICONS: Record<ToolPermission, string> = {
+	always_allow: 'circle-check',
+	approval_required: 'hand',
+	blocked: 'ban',
+};
+
+export const PERMISSION_DESCRIPTIONS: Record<ToolPermission, string> = {
+	always_allow: 'Runs without asking.',
+	approval_required: 'Asks you before every call.',
+	blocked: 'Hidden from the model.',
+};
+
 export function isRootAgentsMd(path: string): boolean {
 	return path.replace(/^\/+/, '').toLowerCase() === 'agents.md';
 }
