@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.4.1...1.5.0) (2026-09-22)
+
+
+### Features
+
+* rebuild the composer with an attach menu, model picker and an arrow send button ([87238a3](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/87238a3ed808070fc4ba340d3974b6712b5a2aa8))
+
 ## [1.4.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.4.0...1.4.1) (2026-09-21)
 
 
