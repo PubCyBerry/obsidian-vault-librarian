@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.0...1.5.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* keep the composer above the phone keyboard and navbar, unclip the input, unify the icon row ([04791b9](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/04791b9310ef36bf5955073f6f33429cfae2affa))
+
 ## [1.5.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.4.1...1.5.0) (2026-09-22)
 
 

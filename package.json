@@ -1,6 +1,6 @@
 {
 	"name": "vault-librarian",
-	"version": "1.5.0",
+	"version": "1.5.1",
 	"description": "A Pi-style vault agent for Obsidian that finds, reads, creates and edits your notes with tool calling, on desktop and mobile.",
 	"main": "main.js",
 	"type": "module",
