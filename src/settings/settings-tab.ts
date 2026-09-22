@@ -495,11 +495,6 @@ class ProviderEditorModal extends Modal {
 			r.maxRetries,
 			(v) => (r.maxRetries = v ?? 2),
 		);
-		new Setting(req)
-			.setName('Parallel read tools')
-			.addToggle((t) =>
-				t.setValue(r.parallelReadTools).onChange((v) => (r.parallelReadTools = v)),
-			);
 		let extraText = r.extraBody ? JSON.stringify(r.extraBody) : '';
 		new Setting(req)
 			.setName('Extra request body')
@@ -861,6 +856,20 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 		);
 		new Setting(el)
+			.setName('Tool execution')
+			.setDesc(
+				'How the calls of one response run. A batch that holds a sequential tool runs one call at a time either way; each tool has its own mode in its permission row.',
+			)
+			.addDropdown((d) =>
+				d
+					.addOptions({ parallel: 'Parallel', sequential: 'Sequential' })
+					.setValue(s.toolExecution)
+					.onChange(async (v) => {
+						s.toolExecution = v === 'sequential' ? 'sequential' : 'parallel';
+						await this.save();
+					}),
+			);
+		new Setting(el)
 			.setName('Open chat in')
 			.setDesc('Where a new chat view opens. An open chat is reused wherever it is.')
 			.addDropdown((d) =>
@@ -1105,6 +1114,18 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			for (const tool of group.tools) {
 				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
 				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
+				const exec = row.createEl('select', {
+					cls: 'dropdown librarian-tool-execution',
+					attr: { 'aria-label': `${tool} execution` },
+				});
+				exec.createEl('option', { value: 'parallel', text: 'Parallel' });
+				exec.createEl('option', { value: 'sequential', text: 'Sequential' });
+				exec.value = this.plugin.toolExecutionOf(tool);
+				exec.addEventListener('change', () => {
+					this.plugin.settings.toolExecutionByTool[tool] =
+						exec.value === 'sequential' ? 'sequential' : 'parallel';
+					void this.save();
+				});
 				const seg = row.createDiv({
 					cls: 'librarian-segmented',
 					attr: { role: 'radiogroup', 'aria-label': `${tool} permission` },

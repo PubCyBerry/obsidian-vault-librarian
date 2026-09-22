@@ -3,6 +3,8 @@ export type TransportMode = 'auto' | 'requestUrl' | 'fetch';
 export type InputModality = 'text' | 'image';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ToolPermission = 'always_allow' | 'approval_required' | 'blocked';
+/** How a batch of tool calls runs; a batch with any sequential tool runs sequentially (Pi). */
+export type ToolExecutionMode = 'parallel' | 'sequential';
 export type ToolName = 'ls' | 'find' | 'grep' | 'read' | 'get_active_note' | 'write' | 'edit';
 export type McpAuthMode = 'oauth' | 'apiKey' | 'none';
 
@@ -87,7 +89,6 @@ export interface RequestDefaults {
 	stream?: boolean;
 	timeoutMs: number;
 	maxRetries: number;
-	parallelReadTools: boolean;
 	extraBody?: Record<string, unknown>;
 }
 
@@ -123,6 +124,10 @@ export interface LibrarianSettings {
 	activeProviderId: string | null;
 	activeModelId: string | null;
 	toolPermissions: ToolPermissionSettings;
+	/** Default for a batch of tool calls. */
+	toolExecution: ToolExecutionMode;
+	/** Per tool; a tool absent here keeps its own default (write, edit and MCP tools: sequential). */
+	toolExecutionByTool: Record<string, ToolExecutionMode>;
 	mcpServers: McpServerConfig[];
 	/** Where "Open chat" puts the view when none is open yet. */
 	chatLocation: 'sidebar' | 'tab';
@@ -155,7 +160,6 @@ export const DEFAULT_REQUEST_DEFAULTS: RequestDefaults = {
 	stream: true,
 	timeoutMs: 120000,
 	maxRetries: 2,
-	parallelReadTools: true,
 };
 
 export const DEFAULT_SETTINGS: LibrarianSettings = {
@@ -164,6 +168,8 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	activeProviderId: null,
 	activeModelId: null,
 	toolPermissions: DEFAULT_TOOL_PERMISSIONS,
+	toolExecution: 'parallel',
+	toolExecutionByTool: {},
 	mcpServers: [],
 	chatLocation: 'sidebar',
 	commandsFolder: 'Librarian/commands',
@@ -188,9 +194,17 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 export function mergeSettings(stored: unknown): LibrarianSettings {
 	const s = (stored ?? {}) as Partial<LibrarianSettings>;
 	const byTool = { ...DEFAULT_TOOL_PERMISSIONS.byTool, ...(s.toolPermissions?.byTool ?? {}) };
+	// Settings written before 1.8.0 kept this choice per provider as `parallelReadTools`.
+	const legacySequential = (s.providers ?? []).some(
+		(p) =>
+			(p.requestDefaults as { parallelReadTools?: boolean } | undefined)
+				?.parallelReadTools === false,
+	);
 	return {
 		...DEFAULT_SETTINGS,
 		...s,
+		toolExecution: s.toolExecution ?? (legacySequential ? 'sequential' : 'parallel'),
+		toolExecutionByTool: { ...(s.toolExecutionByTool ?? {}) },
 		toolPermissions: { byTool },
 		context: { ...DEFAULT_SETTINGS.context, ...(s.context ?? {}) },
 		mcpServers: (s.mcpServers ?? []).map((m) => ({ ...m, toolHashes: m.toolHashes ?? {} })),

@@ -297,6 +297,8 @@ export class LibrarianView extends ItemView {
 	private suggestIndex = 0;
 	private mentionsEl!: HTMLElement;
 	private pendingMentions: MentionTarget[] = [];
+	private keyboardLog = 'none yet';
+	private animatingSince = 0;
 	private pendingImages: string[] = [];
 	private streamTimer: number | null = null;
 	private pendingStream: AssistantMessage | null = null;
@@ -343,15 +345,26 @@ export class LibrarianView extends ItemView {
 		this.renderMcpBanner();
 		this.registerEvent(this.app.workspace.on('file-open', () => this.renderActiveNote()));
 		if (Platform.isPhone) {
-			// Obsidian dispatches these on window from the native keyboard; the class drops the
-			// hidden navbar's layout slot while the keyboard belongs to this chat (styles.css).
+			// Obsidian dispatches these on window from the native keyboard. What is recorded here
+			// is only for the /layout command, which reports the phone layout numbers.
+			const k = () =>
+				getComputedStyle(document.documentElement).getPropertyValue('--keyboard-height');
 			this.registerDomEvent(window, 'keyboardWillShow' as keyof WindowEventMap, () => {
-				if (root.contains(document.activeElement))
-					document.body.addClass('librarian-keyboard-open');
+				this.keyboardLog = `show K=${k().trim()} at ${new Date().toLocaleTimeString()}`;
 			});
-			this.registerDomEvent(window, 'keyboardWillHide' as keyof WindowEventMap, () =>
-				document.body.removeClass('librarian-keyboard-open'),
-			);
+			this.registerDomEvent(window, 'keyboardWillHide' as keyof WindowEventMap, () => {
+				this.keyboardLog += `, hide K=${k().trim()}`;
+			});
+			const observer = new MutationObserver(() => {
+				const on = document.body.hasClass('keyboard-animating');
+				if (on && !this.animatingSince) this.animatingSince = Date.now();
+				if (!on && this.animatingSince) {
+					this.keyboardLog += `, animating ${Date.now() - this.animatingSince} ms`;
+					this.animatingSince = 0;
+				}
+			});
+			observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+			this.register(() => observer.disconnect());
 		}
 		this.renderModelSelect();
 		this.renderActiveNote();
@@ -360,7 +373,6 @@ export class LibrarianView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
-		document.body.removeClass('librarian-keyboard-open');
 		this.unsubscribeMcp?.();
 		this.unsubscribe?.();
 		this.unsubscribe = null;
@@ -774,6 +786,34 @@ export class LibrarianView extends ItemView {
 						`${request || `Use the ${skill.name} skill.`}\n\n${await this.plugin.skills.activation(skill)}`,
 						skill.location,
 					);
+				},
+			},
+			{
+				name: 'layout',
+				description: 'Show the layout numbers of this view (debugging)',
+				run: () => {
+					const css = (el: Element, prop: string) =>
+						getComputedStyle(el).getPropertyValue(prop).trim();
+					const rect = (selector: string) => {
+						const el = document.querySelector(selector);
+						if (!el) return 'none';
+						const r = el.getBoundingClientRect();
+						return `${Math.round(r.top)}-${Math.round(r.bottom)}`;
+					};
+					const html = document.documentElement;
+					const body = document.body;
+					const lines = [
+						`inner ${window.innerHeight}, visual ${Math.round(window.visualViewport?.height ?? 0)}, screen ${window.screen.height}`,
+						`keyboard-height ${css(html, '--keyboard-height')}, navbar-height ${css(body, '--navbar-height')}, safe-bottom ${css(html, '--safe-area-inset-bottom')}`,
+						`view-bottom-spacing ${css(this.composerEl, '--view-bottom-spacing')}, composer padding-bottom ${css(this.composerEl, 'padding-bottom')}`,
+						`body: ${Array.from(body.classList)
+							.filter((c) => /phone|mobile|nav|keyboard|screen|ios|android/.test(c))
+							.join(' ')}`,
+						`app-container ${rect('.app-container')}, workspace ${rect('.workspace')}, leaf ${rect('.workspace-leaf.mod-active')}, view ${rect('.workspace-leaf.mod-active .view-content')}`,
+						`composer ${rect('.librarian-composer')}, box ${rect('.librarian-composer-box')}, navbar ${rect('.mobile-navbar')}, toolbar ${rect('.mobile-toolbar')}`,
+						`keyboard: ${this.keyboardLog}`,
+					];
+					new Notice(lines.join('\n'), 0);
 				},
 			},
 			{

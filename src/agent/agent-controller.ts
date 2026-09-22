@@ -131,7 +131,7 @@ export class AgentController {
 	private iterations = 0;
 	private stopReason: string | null = null;
 
-	constructor(private readonly deps: ControllerDeps) {}
+	constructor(readonly deps: ControllerDeps) {}
 
 	subscribe(listener: (event: ControllerEvent) => void): () => void {
 		this.listeners.add(listener);
@@ -356,7 +356,6 @@ export class AgentController {
 		this.iterations = 0;
 		this.failures = new Map();
 		this.stopReason = null;
-		const sel = this.selection;
 		const agent = new Agent({
 			initialState: {
 				model,
@@ -365,9 +364,7 @@ export class AgentController {
 				messages: prepared.messages,
 			},
 			streamFn,
-			toolExecution: sel.provider.requestDefaults.parallelReadTools
-				? 'parallel'
-				: 'sequential',
+			toolExecution: this.deps.settings().toolExecution,
 			beforeToolCall: (ctx, signal) =>
 				this.beforeToolCall(ctx.toolCall.id, ctx.toolCall.name, ctx.args, signal),
 			afterToolCall: (ctx) =>
@@ -523,11 +520,6 @@ export class AgentController {
 			this.setToolStatus(toolCallId, 'blocked');
 			return { block: true, reason: error instanceof Error ? error.message : String(error) };
 		}
-		if ((name === 'write' || name === 'edit') && typeof record.path === 'string') {
-			const file = this.deps.app.vault.getFileByPath(record.path);
-			const content = file ? await this.deps.app.vault.read(file) : null;
-			this.pendingSnapshots.set(toolCallId, { path: file?.path ?? record.path, content });
-		}
 		this.setToolStatus(toolCallId, 'running');
 		return undefined;
 	}
@@ -589,34 +581,42 @@ export class AgentController {
 		if (isError) this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
 		else this.failures.delete(key);
 
+		this.pendingSnapshots.delete(toolCallId);
+		return { content: [{ type: 'text' as const, text }], isError };
+	}
+
+	// Rewind snapshots. Both run inside the tool's per-file mutation queue, so a parallel batch
+	// cannot read a note between another call's snapshot and its change.
+
+	async beforeMutation(toolCallId: string, path: string): Promise<void> {
+		const file = this.deps.app.vault.getFileByPath(path);
+		const content = file ? await this.deps.app.vault.read(file) : null;
+		this.pendingSnapshots.set(toolCallId, { path: file?.path ?? path, content });
+	}
+
+	async afterMutation(toolCallId: string, path: string): Promise<void> {
 		const snapshot = this.pendingSnapshots.get(toolCallId);
 		this.pendingSnapshots.delete(toolCallId);
-		if (snapshot && !isError && this.session) {
-			const file = this.deps.app.vault.getFileByPath(snapshot.path);
-			if (file) {
-				const after = await this.deps.app.vault.read(file);
-				const index = this.events.length
-					? this.events[this.events.length - 1]!.index + 1
-					: 0;
-				const ref =
-					snapshot.content === null
-						? null
-						: await this.deps.sessions.writeSnapshot(
-								this.session.id,
-								index,
-								snapshot.path,
-								snapshot.content,
-							);
-				await this.deps.sessions.append(this.session.id, {
-					type: 'snapshot',
-					toolCallId,
-					path: file.path,
-					ref,
-					afterHash: contentHash(after),
-				});
-			}
-		}
-		return { content: [{ type: 'text' as const, text }], isError };
+		const file = this.deps.app.vault.getFileByPath(path);
+		if (!snapshot || !file || !this.session) return;
+		const after = await this.deps.app.vault.read(file);
+		const index = this.events.length ? this.events[this.events.length - 1]!.index + 1 : 0;
+		const ref =
+			snapshot.content === null
+				? null
+				: await this.deps.sessions.writeSnapshot(
+						this.session.id,
+						index,
+						snapshot.path,
+						snapshot.content,
+					);
+		await this.deps.sessions.append(this.session.id, {
+			type: 'snapshot',
+			toolCallId,
+			path: file.path,
+			ref,
+			afterHash: contentHash(after),
+		});
 	}
 
 	private shouldStopAfterTurn(toolResultCount: number): boolean {

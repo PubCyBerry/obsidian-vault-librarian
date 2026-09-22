@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
+import { withFileMutationQueue } from './mutation-queue';
 import { checkPath, isBinaryPath, isHiddenRoot } from './path-policy';
 
 /** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
@@ -9,10 +10,17 @@ export interface HiddenReader {
 	read(path: string): Promise<{ text: string; extra?: Record<string, unknown> } | null>;
 }
 
+/** Runs inside the per-file mutation queue, around the change: the rewind snapshot lives here. */
+export interface MutationHooks {
+	before(toolCallId: string, path: string): Promise<void>;
+	after(toolCallId: string, path: string): Promise<void>;
+}
+
 export interface ToolDeps {
 	app: App;
 	settings: () => LibrarianSettings;
 	hidden?: HiddenReader;
+	mutation?: MutationHooks;
 }
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
@@ -325,23 +333,31 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 			),
 		}),
 		executionMode: 'sequential',
-		async execute(_id, params, signal) {
+		async execute(id, params, signal) {
 			throwIfAborted(signal);
 			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
-			const existing = deps.app.vault.getAbstractFileByPath(path);
-			if (existing instanceof TFolder) throw new Error(`A folder exists at ${path}`);
-			if (existing instanceof TFile) {
-				if (!params.overwrite)
-					throw new Error(
-						`File already exists: ${path}. Set overwrite to true to replace it.`,
-					);
-				await deps.app.vault.modify(existing, params.content);
-				return ok({ path, operation: 'overwritten', characters: params.content.length });
-			}
-			const slash = path.lastIndexOf('/');
-			if (slash > 0) await ensureFolder(deps.app, path.slice(0, slash));
-			await deps.app.vault.create(path, params.content);
-			return ok({ path, operation: 'created', characters: params.content.length });
+			return withFileMutationQueue(path, async () => {
+				throwIfAborted(signal);
+				await deps.mutation?.before(id, path);
+				const existing = deps.app.vault.getAbstractFileByPath(path);
+				if (existing instanceof TFolder) throw new Error(`A folder exists at ${path}`);
+				let operation: 'created' | 'overwritten';
+				if (existing instanceof TFile) {
+					if (!params.overwrite)
+						throw new Error(
+							`File already exists: ${path}. Set overwrite to true to replace it.`,
+						);
+					await deps.app.vault.modify(existing, params.content);
+					operation = 'overwritten';
+				} else {
+					const slash = path.lastIndexOf('/');
+					if (slash > 0) await ensureFolder(deps.app, path.slice(0, slash));
+					await deps.app.vault.create(path, params.content);
+					operation = 'created';
+				}
+				await deps.mutation?.after(id, path);
+				return ok({ path, operation, characters: params.content.length });
+			});
 		},
 	});
 }
@@ -361,31 +377,36 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 			),
 		}),
 		executionMode: 'sequential',
-		async execute(_id, params, signal) {
+		async execute(id, params, signal) {
 			throwIfAborted(signal);
 			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
 			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
-			const file = vaultFile(deps.app, path);
-			let replacements = 0;
-			let failure: string | null = null;
-			// The match is re-checked inside process() so a note edited after it was read is left alone.
-			await deps.app.vault.process(file, (data) => {
-				const count = data.split(params.old_text).length - 1;
-				if (count === 0) {
-					failure = 'old_text was not found in the note. Reread the note and retry.';
-					return data;
-				}
-				if (count > 1 && !params.replace_all) {
-					failure = `old_text matches ${count} places. Make it unique or set replace_all.`;
-					return data;
-				}
-				replacements = params.replace_all ? count : 1;
-				return params.replace_all
-					? data.split(params.old_text).join(params.new_text)
-					: data.replace(params.old_text, () => params.new_text);
+			return withFileMutationQueue(path, async () => {
+				throwIfAborted(signal);
+				const file = vaultFile(deps.app, path);
+				await deps.mutation?.before(id, path);
+				let replacements = 0;
+				let failure: string | null = null;
+				// The match is re-checked inside process() so a note edited after it was read is left alone.
+				await deps.app.vault.process(file, (data) => {
+					const count = data.split(params.old_text).length - 1;
+					if (count === 0) {
+						failure = 'old_text was not found in the note. Reread the note and retry.';
+						return data;
+					}
+					if (count > 1 && !params.replace_all) {
+						failure = `old_text matches ${count} places. Make it unique or set replace_all.`;
+						return data;
+					}
+					replacements = params.replace_all ? count : 1;
+					return params.replace_all
+						? data.split(params.old_text).join(params.new_text)
+						: data.replace(params.old_text, () => params.new_text);
+				});
+				if (failure) throw new Error(failure);
+				await deps.mutation?.after(id, path);
+				return ok({ path, replacements, changed: true });
 			});
-			if (failure) throw new Error(failure);
-			return ok({ path, replacements, changed: true });
 		},
 	});
 }

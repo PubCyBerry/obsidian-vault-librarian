@@ -68,6 +68,10 @@ export default class LibrarianPlugin extends Plugin {
 			app: this.app,
 			settings: () => this.settings,
 			hidden: this.skills.hiddenReader(),
+			mutation: {
+				before: (id, path) => this.controller.beforeMutation(id, path),
+				after: (id, path) => this.controller.afterMutation(id, path),
+			},
 		});
 		const context = new ContextManager(this.app, () => this.settings.context);
 		this.controller = new AgentController({
@@ -81,7 +85,13 @@ export default class LibrarianPlugin extends Plugin {
 			transport: this.transport,
 			prompt: new PromptManager(this.app),
 			secrets: this.secrets,
-			tools: () => [...vaultTools, ...this.mcp.tools()],
+			// The per-tool execution policy from settings wins over a tool's own default.
+			tools: () =>
+				[...vaultTools, ...this.mcp.tools()].map((t) => ({
+					...t,
+					executionMode:
+						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
+				})),
 			// Blocked skills stay out of the catalog; without read the model could not open one anyway.
 			skillCatalog: () =>
 				this.permissions.get('read') === 'blocked'
@@ -165,6 +175,14 @@ export default class LibrarianPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/** Effective execution mode of one tool: the setting, else the tool's own default. */
+	toolExecutionOf(name: string): 'parallel' | 'sequential' {
+		const stored = this.settings.toolExecutionByTool[name];
+		if (stored) return stored;
+		const tool = this.controller.deps.tools().find((t) => t.name === name);
+		return tool?.executionMode ?? 'parallel';
 	}
 
 	/**

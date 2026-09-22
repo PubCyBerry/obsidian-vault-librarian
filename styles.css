@@ -461,16 +461,10 @@ body.is-phone .librarian-composer {
 }
 
 /*
- * Phone keyboard. Obsidian hides the navbar with a transform, so its slot stays in the layout and
- * a view would stop a navbar height above the keyboard; the slot is dropped while this chat owns
- * the keyboard. During Obsidian's keyboard-animating phase the app container is still full height,
+ * Phone keyboard. During Obsidian's keyboard-animating phase the app container is still full height,
  * so the composer rides up on its own padding with the keyboard's timing and lands where the
  * shrunken container puts it afterwards.
  */
-body.is-phone.librarian-keyboard-open .mobile-navbar {
-	display: none;
-}
-
 body.is-phone.keyboard-animating .librarian-composer {
 	padding-bottom: calc(var(--keyboard-height, 0px) + var(--size-4-3));
 	transition: padding-bottom 350ms cubic-bezier(0.22, 0.25, 0, 1);
@@ -639,16 +633,23 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 /* The touch target stays a full button; only a small accent disc around the arrow is drawn, so the
    send control weighs about as much as the + glyph and the ring next to it. */
 .librarian-composer-row .librarian-send {
-	--librarian-send-size: 30px;
 	width: var(--librarian-tool-size);
+	color: var(--text-on-accent);
+	-webkit-tap-highlight-color: transparent;
+}
+
+/* No fill on the button itself: the disc is the whole visual, so a touch does not grey the row. */
+.librarian-composer-row .librarian-send:hover,
+.librarian-composer-row .librarian-send:active {
+	background: transparent;
 	color: var(--text-on-accent);
 }
 
 .librarian-composer-row .librarian-send > svg {
-	width: 16px;
-	height: 16px;
+	width: 12px;
+	height: 12px;
 	box-sizing: content-box;
-	padding: calc((var(--librarian-send-size) - 16px) / 2);
+	padding: calc((var(--librarian-ring-size) - 12px) / 2);
 	border-radius: 50%;
 	background: var(--interactive-accent);
 }
@@ -1049,8 +1050,4 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 
 .librarian.is-mobile .librarian-composer-row {
 	--librarian-tool-size: 44px;
-}
-
-.librarian.is-mobile .librarian-composer-row .librarian-send {
-	--librarian-send-size: 32px;
 }
