@@ -3,7 +3,7 @@ import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
 import { withFileMutationQueue } from './mutation-queue';
-import { checkPath, isBinaryPath, isHiddenRoot } from './path-policy';
+import { checkPath, isBinaryPath, isHiddenPath } from './path-policy';
 
 /** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
 export interface HiddenReader {
@@ -44,14 +44,60 @@ function vaultFile(app: App, path: string): TFile {
 	return file;
 }
 
+/** A file the tools can read: indexed ones carry their TFile, hidden ones only a path. */
+interface Entry {
+	path: string;
+	file: TFile | null;
+}
+
+function basenameOf(path: string): string {
+	const name = path.slice(path.lastIndexOf('/') + 1);
+	const dot = name.lastIndexOf('.');
+	return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** Every file under a hidden folder, read from disk because the index does not hold them. */
+async function hiddenFilesUnder(app: App, path: string, signal?: AbortSignal): Promise<Entry[]> {
+	const stat = await app.vault.adapter.stat(path);
+	if (stat?.type === 'file') return [{ path, file: null }];
+	if (!stat) throw new Error(`Folder not found: ${path}`);
+	const out: Entry[] = [];
+	const pending = [path];
+	let batch = 0;
+	while (pending.length) {
+		throwIfAborted(signal);
+		if (++batch % 20 === 0) await yieldToUi();
+		const listing = await app.vault.adapter.list(pending.pop()!);
+		for (const f of listing.files) out.push({ path: f, file: null });
+		pending.push(...listing.folders);
+	}
+	return out;
+}
+
 /** Every file of any type under a folder, or the one file a path names. */
-function filesUnder(app: App, folderPath: string | undefined): TFile[] {
-	if (!folderPath) return app.vault.getFiles();
+async function filesUnder(
+	app: App,
+	folderPath: string | undefined,
+	signal?: AbortSignal,
+): Promise<Entry[]> {
+	const indexed = (files: TFile[]) => files.map((file) => ({ path: file.path, file }));
+	if (!folderPath) return indexed(app.vault.getFiles());
+	if (isHiddenPath(folderPath, app.vault.configDir))
+		return hiddenFilesUnder(app, folderPath, signal);
 	const abstract = app.vault.getAbstractFileByPath(folderPath);
-	if (abstract instanceof TFile) return [abstract];
+	if (abstract instanceof TFile) return indexed([abstract]);
 	if (!(abstract instanceof TFolder)) throw new Error(`Folder not found: ${folderPath}`);
 	const prefix = `${abstract.path}/`;
-	return app.vault.getFiles().filter((f) => f.path.startsWith(prefix));
+	return indexed(app.vault.getFiles().filter((f) => f.path.startsWith(prefix)));
+}
+
+async function readEntry(app: App, entry: Entry): Promise<string> {
+	return entry.file ? app.vault.cachedRead(entry.file) : app.vault.adapter.read(entry.path);
+}
+
+function rejectHiddenWrite(app: App, path: string): void {
+	if (isHiddenPath(path, app.vault.configDir))
+		throw new Error(`Hidden paths are read-only: ${path}`);
 }
 
 function escapeRegExp(s: string): string {
@@ -72,7 +118,7 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 		name: 'ls',
 		label: 'List folder',
 		description:
-			'List files and folders in the Obsidian vault. Use this to inspect vault structure or a folder.',
+			'List files and folders in the Obsidian vault, including hidden folders such as the config folder. Use this to inspect vault structure or a folder.',
 		parameters: Type.Object({
 			path: Type.Optional(
 				Type.String({
@@ -96,21 +142,15 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				allowRoot: true,
 				configDir: deps.app.vault.configDir,
 			});
-			const folder =
-				path === '' ? deps.app.vault.getRoot() : deps.app.vault.getFolderByPath(path);
-			if (!folder) throw new Error(`Folder not found: ${params.path}`);
-			const entries = folder.children
-				.filter((c) => c instanceof TFolder || c instanceof TFile)
-				.filter(
-					(c) =>
-						!(
-							c instanceof TFolder &&
-							path === '' &&
-							isHiddenRoot(c.name, deps.app.vault.configDir)
-						),
-				)
-				.sort((a, b) => a.name.localeCompare(b.name))
-				.map((c) => ({ type: c instanceof TFolder ? 'folder' : 'file', path: c.path }));
+			// The adapter, not the index: the index leaves out dot folders and the config folder.
+			const stat = path === '' ? null : await deps.app.vault.adapter.stat(path);
+			if (path !== '' && stat?.type !== 'folder')
+				throw new Error(`Folder not found: ${params.path}`);
+			const listing = await deps.app.vault.adapter.list(path);
+			const entries = [
+				...listing.folders.map((p) => ({ type: 'folder' as const, path: p })),
+				...listing.files.map((p) => ({ type: 'file' as const, path: p })),
+			].sort((a, b) => a.path.localeCompare(b.path));
 			const offset = params.offset ?? 0;
 			const limit = params.limit ?? deps.settings().listLimit;
 			const page = entries.slice(offset, offset + limit);
@@ -148,18 +188,20 @@ export function createFindTool(deps: ToolDeps): AgentTool {
 			const limit = params.limit ?? 20;
 			const scored: { score: number; path: string; title?: string; aliases?: string[] }[] =
 				[];
-			for (const file of filesUnder(deps.app, folder || undefined)) {
-				const fm = deps.app.metadataCache.getFileCache(file)?.frontmatter;
+			for (const { path, file } of await filesUnder(deps.app, folder || undefined, signal)) {
+				const fm = file
+					? deps.app.metadataCache.getFileCache(file)?.frontmatter
+					: undefined;
 				const title = typeof fm?.title === 'string' ? fm.title : undefined;
 				const aliases = parseFrontMatterAliases(fm) ?? undefined;
-				const base = file.basename.toLowerCase();
+				const base = basenameOf(path).toLowerCase();
 				let score = 0;
 				if (base === q) score = 4;
 				else if (base.includes(q)) score = 3;
 				else if (title?.toLowerCase().includes(q)) score = 2;
 				else if (aliases?.some((a) => a.toLowerCase().includes(q))) score = 2;
-				else if (file.path.toLowerCase().includes(q)) score = 1;
-				if (score > 0) scored.push({ score, path: file.path, title, aliases });
+				else if (path.toLowerCase().includes(q)) score = 1;
+				if (score > 0) scored.push({ score, path, title, aliases });
 			}
 			scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
 			const matches = scored.slice(0, limit).map(({ path, title, aliases }) => ({
@@ -223,7 +265,7 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 				after?: string[];
 			}[] = [];
 			let truncated = false;
-			const files = filesUnder(deps.app, scope || undefined).filter(
+			const files = (await filesUnder(deps.app, scope || undefined, signal)).filter(
 				(f) => !isBinaryPath(f.path),
 			);
 			let batch = 0;
@@ -231,7 +273,7 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 			for (const file of files) {
 				throwIfAborted(signal);
 				if (++batch % 20 === 0) await yieldToUi();
-				const lines = (await deps.app.vault.cachedRead(file)).split('\n');
+				const lines = (await readEntry(deps.app, file)).split('\n');
 				for (let i = 0; i < lines.length; i++) {
 					if (!re.test(lines[i]!)) continue;
 					if (matches.length >= limit) {
@@ -281,10 +323,14 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 			let extra: Record<string, unknown> = {};
 			if (file) text = await deps.app.vault.cachedRead(file);
 			else {
+				// Off the index: a skill file (with its resources) or any other hidden file on disk.
 				const hidden = await deps.hidden?.read(path);
-				if (!hidden) throw new Error(`File not found: ${path}`);
-				text = hidden.text;
-				extra = hidden.extra ?? {};
+				if (hidden) {
+					text = hidden.text;
+					extra = hidden.extra ?? {};
+				} else if ((await deps.app.vault.adapter.stat(path))?.type === 'file') {
+					text = await deps.app.vault.adapter.read(path);
+				} else throw new Error(`File not found: ${path}`);
 			}
 			const all = text.split('\n');
 			const offset = params.offset ?? 1;
@@ -340,6 +386,7 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 		async execute(id, params, signal) {
 			throwIfAborted(signal);
 			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
+			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
 				await deps.mutation?.before(id, path);
@@ -385,6 +432,7 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 			throwIfAborted(signal);
 			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
 			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
+			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
 				const file = vaultFile(deps.app, path);

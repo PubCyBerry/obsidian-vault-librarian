@@ -1,5 +1,5 @@
 import { type App, normalizePath, parseYaml } from 'obsidian';
-import { isHiddenRoot } from '../tools/path-policy';
+import { isHiddenPath } from '../tools/path-policy';
 import type { HiddenReader } from '../tools/registry';
 
 /** Folder name that holds skills, at the vault root and inside any folder up to MAX_SCAN_DEPTH. */
@@ -154,9 +154,7 @@ export class SkillManager {
 		const candidates = ['', ...vault.getAllFolders().map((f) => f.path)]
 			.filter(
 				(p) =>
-					p === '' ||
-					(depth(p) <= MAX_SCAN_DEPTH &&
-						!isHiddenRoot(p.split('/')[0]!, vault.configDir)),
+					p === '' || (depth(p) <= MAX_SCAN_DEPTH && !isHiddenPath(p, vault.configDir)),
 			)
 			.sort((a, b) => depth(a) - depth(b) || a.localeCompare(b));
 		const found: Skill[] = [];

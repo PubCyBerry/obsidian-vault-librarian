@@ -23,7 +23,12 @@ import type { ContextUsage } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
-import type { IndexedEvent, SessionEvent, SessionSummary } from '../session/session-types';
+import type {
+	IndexedEvent,
+	SessionEvent,
+	SessionMetadata,
+	SessionSummary,
+} from '../session/session-types';
 import { skillKey } from '../skills/skill-manager';
 import { isBinaryPath } from '../tools/path-policy';
 import {
@@ -416,6 +421,33 @@ export class LibrarianView extends ItemView {
 				.setIcon('shrink')
 				.onClick(() => void this.compactNow()),
 		);
+		const current = this.controller.session;
+		if (current)
+			menu.addItem((item) =>
+				item
+					.setTitle('Delete session')
+					.setIcon('trash-2')
+					.onClick(() => this.confirmDelete(current)),
+			);
+	}
+
+	/** Asks, then deletes the session and its snapshots; closes it first when it is the open one. */
+	private confirmDelete(session: SessionMetadata) {
+		new ConfirmModal(
+			this.app,
+			'Delete this session?',
+			(el) =>
+				el.createEl('p', {
+					text: `"${session.title}" and its snapshots will be deleted.`,
+				}),
+			'Delete',
+			async () => {
+				if (this.controller.session?.id === session.id)
+					await this.controller.closeSession();
+				await this.plugin.sessions.delete(session.id);
+				if (this.historyMode) await this.renderSessions();
+			},
+		).open();
 	}
 
 	private async compactNow() {
@@ -1447,6 +1479,9 @@ export class LibrarianView extends ItemView {
 		});
 		this.popoverEl.createDiv({ text: `${percent.toFixed(1)}% used` });
 		this.popoverEl.createDiv({
+			text: `Cache hit: ${usage.cacheHitRatio === null ? 'not reported' : `${(usage.cacheHitRatio * 100).toFixed(1)}%`}`,
+		});
+		this.popoverEl.createDiv({
 			cls: 'librarian-popover-detail',
 			text:
 				usage.usedTokens > 0
@@ -1581,23 +1616,7 @@ export class LibrarianView extends ItemView {
 			attr: { 'aria-label': 'Delete' },
 		});
 		setIcon(del, 'trash-2');
-		del.addEventListener('click', () => {
-			new ConfirmModal(
-				this.app,
-				'Delete this session?',
-				(el) =>
-					el.createEl('p', {
-						text: `"${session.title}" and its snapshots will be deleted.`,
-					}),
-				'Delete',
-				async () => {
-					if (this.controller.session?.id === session.id)
-						await this.controller.closeSession();
-					await this.plugin.sessions.delete(session.id);
-					await this.renderSessions();
-				},
-			).open();
-		});
+		del.addEventListener('click', () => this.confirmDelete(session));
 	}
 
 	/** Used by the "Add active note to prompt" command. */

@@ -1,9 +1,15 @@
 import { normalizePath } from 'obsidian';
 
-/** Top-level folders the tools never see: the vault's config folder (whatever its name) and `.trash`. */
-export function isHiddenRoot(name: string, configDir: string): boolean {
-	const n = name.toLowerCase();
-	return n === configDir.toLowerCase() || n === '.trash';
+/**
+ * Paths Obsidian keeps out of its index: anything under a dot folder or the config folder
+ * (whatever its name). The tools reach them through `vault.adapter` and never write there.
+ */
+export function isHiddenPath(path: string, configDir: string): boolean {
+	const segments = path.split('/').filter(Boolean);
+	return (
+		segments[0]?.toLowerCase() === configDir.toLowerCase() ||
+		segments.some((s) => s.startsWith('.'))
+	);
 }
 
 /** Files that are not text: read and grep skip them, mentions attach them by path or as images. */
@@ -57,9 +63,6 @@ export function checkPath(raw: string, opts: { allowRoot?: boolean; configDir: s
 	const segments = path.split('/').filter((s) => s.length > 0);
 	if (segments.some((s) => s === '..'))
 		throw new Error(`Parent traversal is not allowed: ${raw}`);
-	if (segments[0] !== undefined && isHiddenRoot(segments[0], opts.configDir)) {
-		throw new Error(`Access to ${segments[0]} is not allowed`);
-	}
 	if (segments.length === 0) {
 		if (opts.allowRoot) return '';
 		throw new Error('path must not be empty');

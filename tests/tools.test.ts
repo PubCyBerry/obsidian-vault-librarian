@@ -1,6 +1,6 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { checkPath } from '../src/tools/path-policy';
+import { checkPath, isHiddenPath } from '../src/tools/path-policy';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings } from '../src/types';
 import { FakeApp } from './fake-app';
@@ -37,15 +37,52 @@ beforeEach(() => {
 
 describe('path policy (LIB-TEST-040)', () => {
 	const opts = { configDir: '.obsidian' };
-	it('rejects traversal, absolute paths and config folders; any extension passes', () => {
+	it('rejects traversal and absolute paths; hidden folders and any extension pass', () => {
 		expect(() => checkPath('../secret.md', opts)).toThrow(/traversal/);
 		expect(() => checkPath('C:/x.md', opts)).toThrow(/Absolute/);
 		expect(() => checkPath('/etc/passwd', opts)).toThrow(/Absolute/);
-		expect(() => checkPath('.obsidian/app.json', opts)).toThrow(/not allowed/);
-		expect(() => checkPath('.trash/x.md', opts)).toThrow(/not allowed/);
-		// The rule follows the vault's config folder name, whatever it is.
-		expect(() => checkPath('config/app.json', { configDir: 'config' })).toThrow(/not allowed/);
+		expect(checkPath('.obsidian/app.json', opts)).toBe('.obsidian/app.json');
 		expect(checkPath('notes//a.txt', opts)).toBe('notes/a.txt');
+		// Hidden means a dot folder or the config folder, whatever the latter is named.
+		expect(isHiddenPath('.obsidian/app.json', '.obsidian')).toBe(true);
+		expect(isHiddenPath('config/app.json', 'config')).toBe(true);
+		expect(isHiddenPath('notes/.agents/skills/x/SKILL.md', '.obsidian')).toBe(true);
+		expect(isHiddenPath('notes/a.md', 'config')).toBe(false);
+	});
+
+	it('hidden folders are listed, read and searched through the adapter but never written', async () => {
+		app.vault.seed('.obsidian/app.json', '{"theme":"obsidian"}');
+		app.vault.seed('.obsidian/plugins/x/main.js', 'console.log(1)');
+		const root = await run('ls', {});
+		expect(root.entries[0]).toEqual({ type: 'folder', path: '.obsidian' });
+		const config = await run('ls', { path: '.obsidian' });
+		expect(config.entries).toEqual([
+			{ type: 'file', path: '.obsidian/app.json' },
+			{ type: 'folder', path: '.obsidian/plugins' },
+		]);
+		const read = await run('read', { path: '.obsidian/app.json' });
+		expect(read.lines[0].text).toBe('{"theme":"obsidian"}');
+		const grep = await run('grep', { query: 'console', path: '.obsidian' });
+		expect(grep.matches.map((m: { path: string }) => m.path)).toEqual([
+			'.obsidian/plugins/x/main.js',
+		]);
+		// Root-wide searches stay on the index so plugin bundles do not flood the results.
+		expect((await run('grep', { query: 'console' })).matches).toEqual([]);
+		expect((await run('find', { query: 'main', path: '.obsidian' })).matches).toEqual([
+			{ path: '.obsidian/plugins/x/main.js' },
+		]);
+		const before = app.vault.writes;
+		await expect(
+			tool('write').execute('id', { path: '.obsidian/new.json', content: '{}' }, undefined),
+		).rejects.toThrow(/read-only/);
+		await expect(
+			tool('edit').execute(
+				'id',
+				{ path: '.obsidian/app.json', old_text: 'obsidian', new_text: 'x' },
+				undefined,
+			),
+		).rejects.toThrow(/read-only/);
+		expect(app.vault.writes).toBe(before);
 	});
 
 	it('every tool refuses paths outside the vault without touching files', async () => {

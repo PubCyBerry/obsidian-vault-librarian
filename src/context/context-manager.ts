@@ -26,6 +26,8 @@ export interface ContextUsage {
 	safetyMarginTokens: number;
 	availableInputTokens: number;
 	usageRatio: number;
+	/** Cached share of the last reported prompt, or null when the server reported no prompt tokens. */
+	cacheHitRatio: number | null;
 	state: 'normal' | 'warning' | 'critical';
 }
 
@@ -247,15 +249,20 @@ export class ContextManager {
 	 * estimated on top, so the value is 0 until the first response and stays put between responses.
 	 */
 	reportedUsed(events: IndexedEvent[]): number {
+		const u = this.lastReported(events);
+		return u ? u.totalTokens || u.input + u.cacheRead + u.output : 0;
+	}
+
+	/** The last assistant usage with any tokens in it, or null before the first response. */
+	lastReported(events: IndexedEvent[]): StoredUsage | null {
 		const { rest } = ContextManager.visible(events);
 		for (let i = rest.length - 1; i >= 0; i--) {
 			const e = rest[i]!.event;
 			if (e.type !== 'assistant' || !e.usage) continue;
 			const u = e.usage;
-			const total = u.totalTokens || u.input + u.cacheRead + u.output;
-			if (total > 0) return total;
+			if (u.totalTokens || u.input + u.cacheRead + u.output > 0) return u;
 		}
-		return 0;
+		return null;
 	}
 
 	budget(model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>) {
@@ -268,10 +275,20 @@ export class ContextManager {
 	}
 
 	usage(events: IndexedEvent[], model: PiModel): ContextUsage {
-		return this.usageFor(this.reportedUsed(events), model);
+		const u = this.lastReported(events);
+		const prompt = u ? u.input + u.cacheRead : 0;
+		return this.usageFor(
+			this.reportedUsed(events),
+			model,
+			prompt > 0 ? u!.cacheRead / prompt : null,
+		);
 	}
 
-	usageFor(used: number, model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>): ContextUsage {
+	usageFor(
+		used: number,
+		model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>,
+		cacheHitRatio: number | null = null,
+	): ContextUsage {
 		const s = this.settings();
 		const { reserved, margin, usable } = this.budget(model);
 		const ratio = used / usable;
@@ -282,6 +299,7 @@ export class ContextManager {
 			safetyMarginTokens: margin,
 			availableInputTokens: usable,
 			usageRatio: ratio,
+			cacheHitRatio,
 			state: ratio >= s.compactAt ? 'critical' : ratio >= s.warningAt ? 'warning' : 'normal',
 		};
 	}
