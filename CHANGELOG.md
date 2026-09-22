@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.8.1...1.9.0) (2026-09-22)
+
+
+### Features
+
+* tool registry with deferred tools and a BM25 tool_search, plus three phone fixes ([cb96c56](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/cb96c5624901daa0cfc5942a14cec6d7988783d8))
+
 ## [1.8.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.8.0...1.8.1) (2026-09-22)
 
 
