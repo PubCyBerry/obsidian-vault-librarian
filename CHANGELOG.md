@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.0...1.10.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* tablet send button padding and the theme floating bookmark action ([8f1e64e](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/8f1e64e8e456fa2f3651e6b8ef141d0bf5806cc1))
+
 ## [1.10.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.9.1...1.10.0) (2026-09-22)
 
 
