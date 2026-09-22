@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.10](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.9...1.5.10) (2026-09-22)
+
+
+### Bug Fixes
+
+* drop ellipses and arrows from UI strings ([937fde6](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/937fde6ab8236c4c340393712a87df4c1f80a0f1))
+
 ## [1.5.9](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.8...1.5.9) (2026-09-22)
 
 
