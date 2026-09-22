@@ -57,6 +57,8 @@ export interface ApprovalRequest {
 	args: Record<string, unknown>;
 	/** False when settings never let this tool skip approval (destructive MCP tools). */
 	canAlways: boolean;
+	/** What "Always allow" stores: the tool name, or a skill's key for a read inside a skill folder. */
+	permissionKey: string;
 	/** For write on an existing note: its current length. */
 	existingLength?: number;
 	resolve: (decision: ApprovalDecision) => void;
@@ -99,6 +101,8 @@ export interface ControllerDeps {
 	secrets: SecretStore;
 	/** Vault tools plus whatever MCP servers currently offer; read fresh on every turn. */
 	tools: () => AgentTool[];
+	/** `<available_skills>` for the system prompt; empty when none is usable. */
+	skillCatalog: () => string;
 }
 
 function textOf(content: readonly { type: string }[]): string {
@@ -284,6 +288,7 @@ export class AgentController {
 			builtIn: BUILT_IN_SYSTEM_PROMPT,
 			vaultAgentsMd: agentsMd,
 			customSystemPrompt: s.customSystemPrompt,
+			skillCatalog: this.deps.skillCatalog(),
 		});
 	}
 
@@ -504,10 +509,11 @@ export class AgentController {
 				return { block: true, reason: 'Approval expired' };
 			}
 			if (decision === 'always') {
-				await perms.setTool(name, 'always_allow');
+				const key = perms.permissionKey(name, args);
+				await perms.setTool(key, 'always_allow');
 				this.emit({
 					type: 'notice',
-					message: `${name} is now always allowed. Change it in Settings.`,
+					message: `${key} is now always allowed. Change it in Settings.`,
 				});
 			}
 		}
@@ -555,6 +561,7 @@ export class AgentController {
 				name,
 				args,
 				canAlways: this.deps.permissions.canAlwaysAllow(name),
+				permissionKey: this.deps.permissions.permissionKey(name, args),
 				existingLength: existing?.stat.size,
 				resolve: finish,
 			};

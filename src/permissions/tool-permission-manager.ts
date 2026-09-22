@@ -49,15 +49,30 @@ export class ToolPermissionManager {
 	/** Groups beyond the built-in vault tools (one per MCP server) and tools that never get Always allow. */
 	private extraGroups: () => ToolGroup[] = () => [];
 	private alwaysAsk: () => ReadonlySet<string> = () => new Set();
+	private keyFor: (tool: string, args: unknown) => string | null = () => null;
 
 	constructor(
 		private readonly settings: () => LibrarianSettings,
 		private readonly save: () => Promise<void>,
 	) {}
 
-	attachExtras(groups: () => ToolGroup[], alwaysAsk: () => ReadonlySet<string>): void {
+	/**
+	 * `keyFor` may name another settings key that governs one concrete call, such as a skill's
+	 * key when `read` opens a file inside that skill's folder.
+	 */
+	attachExtras(
+		groups: () => ToolGroup[],
+		alwaysAsk: () => ReadonlySet<string>,
+		keyFor?: (tool: string, args: unknown) => string | null,
+	): void {
 		this.extraGroups = groups;
 		this.alwaysAsk = alwaysAsk;
+		if (keyFor) this.keyFor = keyFor;
+	}
+
+	/** The settings key a call is judged and "Always allow" is stored under. */
+	permissionKey(tool: string, args: unknown): string {
+		return this.keyFor(tool, args) ?? tool;
 	}
 
 	groups(): ToolGroup[] {
@@ -78,7 +93,7 @@ export class ToolPermissionManager {
 	 * file steers every later turn.
 	 */
 	resolve(tool: string, args: unknown): ToolPermission {
-		const stored = this.get(tool);
+		const stored = this.get(this.permissionKey(tool, args));
 		if (stored === 'blocked') return 'blocked';
 		if (!this.canAlwaysAllow(tool)) return 'approval_required';
 		if (tool === 'write' || tool === 'edit') {

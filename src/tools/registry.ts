@@ -4,9 +4,15 @@ import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
 import { checkPath, isHiddenRoot } from './path-policy';
 
+/** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
+export interface HiddenReader {
+	read(path: string): Promise<{ text: string; extra?: Record<string, unknown> } | null>;
+}
+
 export interface ToolDeps {
 	app: App;
 	settings: () => LibrarianSettings;
+	hidden?: HiddenReader;
 }
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
@@ -261,8 +267,17 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 				markdown: true,
 				configDir: deps.app.vault.configDir,
 			});
-			const file = mdFile(deps.app, path);
-			const all = (await deps.app.vault.cachedRead(file)).split('\n');
+			const file = deps.app.vault.getFileByPath(path);
+			let text: string;
+			let extra: Record<string, unknown> = {};
+			if (file) text = await deps.app.vault.cachedRead(file);
+			else {
+				const hidden = await deps.hidden?.read(path);
+				if (!hidden) throw new Error(`Note not found: ${path}`);
+				text = hidden.text;
+				extra = hidden.extra ?? {};
+			}
+			const all = text.split('\n');
 			const offset = params.offset ?? 1;
 			const limit = params.limit ?? deps.settings().readLineLimit;
 			const lines = all
@@ -275,6 +290,7 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 				lines,
 				totalLines: all.length,
 				...(next <= all.length ? { nextOffset: next } : {}),
+				...extra,
 			});
 		},
 	});

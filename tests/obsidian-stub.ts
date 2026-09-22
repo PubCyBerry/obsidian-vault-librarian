@@ -50,6 +50,49 @@ export class Notice {
 	constructor(public message: string) {}
 }
 
+/** Flat `key: value` YAML plus one level of nested mappings; bare ": " in a value throws like js-yaml. */
+export function parseYaml(yaml: string): unknown {
+	const out: Record<string, unknown> = {};
+	let nested: Record<string, unknown> | null = null;
+	for (const raw of yaml.split('\n')) {
+		if (!raw.trim() || raw.trim().startsWith('#')) continue;
+		const indented = /^\s+/.test(raw);
+		const m = /^\s*([^:]+):\s*(.*)$/.exec(raw);
+		if (!m) throw new Error(`bad line: ${raw}`);
+		const key = m[1]!.trim();
+		let value: unknown = m[2]!;
+		if (typeof value === 'string' && value.includes(': ') && !/^["']/.test(value))
+			throw new Error('mapping values are not allowed in this context');
+		if (typeof value === 'string' && /^".*"$/.test(value)) value = JSON.parse(value);
+		else if (typeof value === 'string' && /^'.*'$/.test(value)) value = value.slice(1, -1);
+		if (indented && nested) nested[key] = value;
+		else if (value === '') {
+			nested = {};
+			out[key] = nested;
+		} else {
+			nested = null;
+			out[key] = value;
+		}
+	}
+	return out;
+}
+
+/** Subsequence match; the score is minus the span, so tighter matches sort first descending. */
+export function prepareFuzzySearch(query: string) {
+	const q = query.toLowerCase();
+	return (text: string): { score: number; matches: [number, number][] } | null => {
+		const t = text.toLowerCase();
+		let from = -1;
+		let first = -1;
+		for (const ch of q) {
+			from = t.indexOf(ch, from + 1);
+			if (from < 0) return null;
+			if (first < 0) first = from;
+		}
+		return { score: -(from - first), matches: [] };
+	};
+}
+
 export class MarkdownView {}
 export class Menu {}
 export class Modal {}

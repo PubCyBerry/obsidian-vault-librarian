@@ -24,6 +24,7 @@ import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
 import type { IndexedEvent, SessionEvent, SessionSummary } from '../session/session-types';
+import { skillKey } from '../skills/skill-manager';
 import {
 	renderApprovalCard,
 	renderToolCard,
@@ -31,6 +32,14 @@ import {
 	type ToolCardData,
 	toolIcon,
 } from './cards';
+import {
+	applyMention,
+	folderBlock,
+	type MentionTarget,
+	mentionLabel,
+	mentionQuery,
+	rankMentions,
+} from './mentions';
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta } from './stream-text';
@@ -38,6 +47,22 @@ import { appendStreamDelta } from './stream-text';
 export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+/** Blocks the composer appends below the typed text; the bubble shows each as a chip instead. */
+const ATTACHED_BLOCK =
+	/\n*<(attached_note|attached_folder|skill_content) (?:path|name)="([^"]+)">[\s\S]*?<\/\1>/g;
+const CHIP_ICONS: Record<string, string> = {
+	attached_note: 'file-text',
+	attached_folder: 'folder',
+	skill_content: 'sparkles',
+};
+
+/** One row of the list above the input: a slash command, a skill name or an @mention target. */
+interface Suggestion {
+	name: string;
+	description: string;
+	accept: (run: boolean) => void | Promise<void>;
+}
 
 function formatTokens(n: number): string {
 	return n.toLocaleString('en-US');
@@ -265,9 +290,11 @@ export class LibrarianView extends ItemView {
 
 	private historyMode = false;
 	private includeActiveNote = false;
-	private slashEl!: HTMLElement;
-	private slashMatches: SlashCommand[] = [];
-	private slashIndex = 0;
+	private suggestEl!: HTMLElement;
+	private suggestions: Suggestion[] = [];
+	private suggestIndex = 0;
+	private mentionsEl!: HTMLElement;
+	private pendingMentions: MentionTarget[] = [];
 	private pendingImages: string[] = [];
 	private streamTimer: number | null = null;
 	private pendingStream: AssistantMessage | null = null;
@@ -399,9 +426,10 @@ export class LibrarianView extends ItemView {
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
 		this.composerEl = root.createDiv({ cls: 'librarian-composer' });
 		this.activityEl = this.composerEl.createDiv({ cls: 'librarian-activity is-hidden' });
-		this.slashEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
+		this.suggestEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
 		const box = this.composerEl.createDiv({ cls: 'librarian-composer-box' });
 		this.activeNoteEl = box.createDiv({ cls: 'librarian-active-note is-hidden' });
+		this.mentionsEl = box.createDiv({ cls: 'librarian-mentions is-hidden' });
 		this.imagesEl = box.createDiv({ cls: 'librarian-images is-hidden' });
 		this.imageNoticeEl = box.createDiv({ cls: 'librarian-image-notice is-hidden' });
 		this.inputEl = box.createEl('textarea', {
@@ -410,10 +438,10 @@ export class LibrarianView extends ItemView {
 		});
 		this.inputEl.addEventListener('input', () => {
 			this.updateSendEnabled();
-			this.renderSlash();
+			this.renderSuggestions();
 		});
 		this.inputEl.addEventListener('keydown', (e) => {
-			if (this.slashMatches.length && !e.isComposing && this.handleSlashKey(e)) return;
+			if (this.suggestions.length && !e.isComposing && this.handleSuggestKey(e)) return;
 			if (e.key === 'Enter' && !e.shiftKey && !Platform.isMobile && !e.isComposing) {
 				e.preventDefault();
 				void this.submit();
@@ -650,7 +678,7 @@ export class LibrarianView extends ItemView {
 				return;
 			}
 			this.inputEl.value = '';
-			this.renderSlash();
+			this.renderSuggestions();
 			this.updateSendEnabled();
 			await command.run(slash.args);
 			return;
@@ -713,6 +741,28 @@ export class LibrarianView extends ItemView {
 				},
 			},
 			{
+				name: 'skill',
+				description: 'Run a skill: /skill <name> [request]',
+				run: async (args) => {
+					const [name = '', ...rest] = args.split(/\s+/);
+					const skills = this.plugin.skills.skills;
+					if (!name)
+						return this.showNotice(
+							skills.map((s) => `${s.name}: ${s.description}`).join('\n') ||
+								'No skills found.',
+						);
+					const skill = this.plugin.skills.get(name);
+					if (!skill) return this.showNotice(`Unknown skill: ${name}`);
+					if (this.plugin.permissions.get(skillKey(skill.name)) === 'blocked')
+						return this.showNotice(`Skill "${skill.name}" is blocked in Settings.`);
+					const request = rest.join(' ').trim();
+					await this.sendText(
+						`${request || `Use the ${skill.name} skill.`}\n\n${await this.plugin.skills.activation(skill)}`,
+						skill.location,
+					);
+				},
+			},
+			{
 				name: 'help',
 				description: 'List the commands',
 				run: () =>
@@ -749,79 +799,184 @@ export class LibrarianView extends ItemView {
 		return [...builtIn, ...custom.filter((c) => !names.has(c.name))];
 	}
 
-	private renderSlash() {
-		this.slashMatches = matchCommands(this.slashCommands(), this.inputEl.value);
-		this.slashIndex = 0;
-		this.slashEl.empty();
-		this.slashEl.toggleClass('is-hidden', this.slashMatches.length === 0);
-		this.slashMatches.forEach((command, i) => {
-			const row = this.slashEl.createDiv({
+	/**
+	 * What the input offers right now: commands after `/`, skill names after `/skill `, notes and
+	 * folders after `@` at the caret. The same list and keys serve all three.
+	 */
+	private renderSuggestions() {
+		const value = this.inputEl.value;
+		const caret = this.inputEl.selectionStart ?? value.length;
+		let list: Suggestion[] = [];
+		const skillArgs = /^\/skill\s+(\S*)$/.exec(value);
+		if (skillArgs) {
+			const prefix = skillArgs[1]!.toLowerCase();
+			list = this.plugin.skills.skills
+				.filter((s) => s.name.startsWith(prefix))
+				.map((s) => ({
+					name: s.name,
+					description: s.description,
+					accept: (run) => this.acceptText(`/skill ${s.name} `, run),
+				}));
+		} else if (value.startsWith('/')) {
+			list = matchCommands(this.slashCommands(), value).map((c) => ({
+				name: `/${c.name}`,
+				description: c.description,
+				accept: (run) => this.acceptText(`/${c.name} `, run),
+			}));
+		} else {
+			const query = mentionQuery(value, caret);
+			if (query)
+				list = rankMentions(this.mentionTargets(), query.query).map((t) => ({
+					name: `@${mentionLabel(t)}`,
+					description: t.path,
+					accept: () => this.acceptMention(query, caret, t),
+				}));
+		}
+		this.suggestions = list;
+		this.suggestIndex = 0;
+		this.suggestEl.empty();
+		this.suggestEl.toggleClass('is-hidden', list.length === 0);
+		list.forEach((item, i) => {
+			const row = this.suggestEl.createDiv({
 				cls: `librarian-slash-item${i === 0 ? ' is-selected' : ''}`,
 			});
-			row.createSpan({ cls: 'librarian-slash-name', text: `/${command.name}` });
-			row.createSpan({ cls: 'librarian-slash-desc', text: command.description });
+			row.createSpan({ cls: 'librarian-slash-name', text: item.name });
+			row.createSpan({ cls: 'librarian-slash-desc', text: item.description });
 			row.addEventListener('mousedown', (e) => {
 				e.preventDefault();
-				this.slashIndex = i;
-				void this.acceptSlash(true);
+				this.suggestIndex = i;
+				void item.accept(true);
 			});
 		});
 	}
 
-	/** Arrow keys move, Tab completes the name, Enter runs the highlighted command, Escape closes. */
-	private handleSlashKey(e: KeyboardEvent): boolean {
+	private mentionTargets(): MentionTarget[] {
+		return [
+			...this.app.vault
+				.getAllFolders()
+				.map((f): MentionTarget => ({ path: f.path, kind: 'folder' })),
+			...this.app.vault
+				.getMarkdownFiles()
+				.map((f): MentionTarget => ({ path: f.path, kind: 'file' })),
+		];
+	}
+
+	/** Arrow keys move, Tab completes, Enter runs a command or completes a mention, Escape closes. */
+	private handleSuggestKey(e: KeyboardEvent): boolean {
 		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-			const n = this.slashMatches.length;
-			this.slashIndex = (this.slashIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
-			this.slashEl.querySelectorAll('.librarian-slash-item').forEach((el, i) => {
-				el.toggleClass('is-selected', i === this.slashIndex);
+			const n = this.suggestions.length;
+			this.suggestIndex = (this.suggestIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+			this.suggestEl.querySelectorAll('.librarian-slash-item').forEach((el, i) => {
+				el.toggleClass('is-selected', i === this.suggestIndex);
 			});
 			e.preventDefault();
 			return true;
 		}
 		if (e.key === 'Tab' || e.key === 'Enter') {
 			e.preventDefault();
-			void this.acceptSlash(e.key === 'Enter');
+			void this.suggestions[this.suggestIndex]?.accept(e.key === 'Enter');
 			return true;
 		}
 		if (e.key === 'Escape') {
-			this.slashMatches = [];
-			this.slashEl.addClass('is-hidden');
+			this.closeSuggestions();
 			return true;
 		}
 		return false;
 	}
 
-	private async acceptSlash(run: boolean) {
-		const command = this.slashMatches[this.slashIndex];
-		if (!command) return;
-		this.inputEl.value = `/${command.name} `;
-		this.slashMatches = [];
-		this.slashEl.addClass('is-hidden');
+	private closeSuggestions() {
+		this.suggestions = [];
+		this.suggestEl.addClass('is-hidden');
+	}
+
+	private async acceptText(text: string, run: boolean) {
+		this.inputEl.value = text;
+		this.closeSuggestions();
 		this.updateSendEnabled();
 		if (run) await this.submit();
 		else this.inputEl.focus();
 	}
 
-	/** Sends a message: the attached note, then any `@path` notes the text refers to. */
+	/** Puts `@label` in the text and a chip with the full path under it. */
+	private acceptMention(
+		query: ReturnType<typeof mentionQuery>,
+		caret: number,
+		target: MentionTarget,
+	) {
+		if (!query) return;
+		const next = applyMention(this.inputEl.value, query, caret, mentionLabel(target));
+		this.inputEl.value = next.text;
+		this.inputEl.setSelectionRange(next.caret, next.caret);
+		if (!this.pendingMentions.some((m) => m.path === target.path))
+			this.pendingMentions.push(target);
+		this.renderMentions();
+		this.closeSuggestions();
+		this.updateSendEnabled();
+		this.inputEl.focus();
+	}
+
+	private renderMentions() {
+		this.mentionsEl.empty();
+		this.mentionsEl.toggleClass('is-hidden', this.pendingMentions.length === 0);
+		for (const target of this.pendingMentions) {
+			const chip = this.mentionsEl.createDiv({ cls: 'librarian-mention' });
+			setIcon(chip.createSpan(), target.kind === 'folder' ? 'folder' : 'file-text');
+			chip.createSpan({ text: ` ${target.path}` });
+			const remove = chip.createEl('button', {
+				cls: 'clickable-icon',
+				attr: { 'aria-label': 'Remove mention' },
+			});
+			setIcon(remove, 'x');
+			remove.addEventListener('click', () => {
+				this.pendingMentions = this.pendingMentions.filter((m) => m.path !== target.path);
+				this.renderMentions();
+			});
+		}
+		void this.controller.recalculateUsage();
+	}
+
+	/** Sends a message: the attached note, the mention chips, then any `@path` notes the text refers to. */
 	private async sendText(typed: string, from = '') {
 		let text = typed;
 		this.followBottom = true;
+		// Notes already attached are not inlined a second time by the `@path` expansion.
+		const seen = new Set<string>([from]);
 		if (this.includeActiveNote) {
 			const file = this.app.workspace.getActiveFile();
 			if (file && file.extension === 'md') {
 				const content = await this.app.vault.cachedRead(file);
 				text = `${text}\n\n<attached_note path="${file.path}">\n${content}\n</attached_note>`;
+				seen.add(file.path);
 			}
 			this.includeActiveNote = false;
 			this.renderActiveNote();
 		}
-		const expanded = await expandReferences(text, from, vaultReferenceReader(this.app));
+		for (const mention of this.pendingMentions) {
+			if (mention.kind === 'file') {
+				const file = this.app.vault.getFileByPath(mention.path);
+				if (!file || seen.has(file.path)) continue;
+				const content = await this.app.vault.cachedRead(file);
+				text = `${text}\n\n<attached_note path="${file.path}">\n${content}\n</attached_note>`;
+				seen.add(file.path);
+			} else {
+				const notes = this.app.vault
+					.getMarkdownFiles()
+					.filter((f) => f.path.startsWith(`${mention.path}/`))
+					.map((f) => f.path)
+					.sort();
+				text = `${text}\n\n${folderBlock(mention.path, notes)}`;
+			}
+		}
+		this.pendingMentions = [];
+		this.renderMentions();
+		const expanded = await expandReferences(text, from, vaultReferenceReader(this.app), {
+			seen,
+		});
 		text = expanded.text;
 		const images = [...this.pendingImages];
 		this.pendingImages = [];
 		this.inputEl.value = '';
-		this.renderSlash();
+		this.closeSuggestions();
 		this.renderImages();
 		this.hideNotice();
 		if (this.historyMode) await this.toggleHistory();
@@ -1018,15 +1173,16 @@ export class LibrarianView extends ItemView {
 	private renderUser(index: number, event: Extract<SessionEvent, { type: 'user' }>) {
 		const wrap = this.messagesEl.createDiv({ cls: 'librarian-msg librarian-msg-user' });
 		const bubble = wrap.createDiv({ cls: 'librarian-bubble' });
-		const attached = event.content.match(/<attached_note path="([^"]+)">/);
-		const shown = attached
-			? event.content.replace(/\n*<attached_note[\s\S]*<\/attached_note>/, '')
-			: event.content;
+		const chips: { tag: string; id: string }[] = [];
+		const shown = event.content.replace(ATTACHED_BLOCK, (_m, tag: string, id: string) => {
+			chips.push({ tag, id });
+			return '';
+		});
 		bubble.createDiv({ cls: 'librarian-user-text', text: shown });
-		if (attached) {
+		for (const { tag, id } of chips) {
 			const chip = bubble.createDiv({ cls: 'librarian-attached' });
-			setIcon(chip.createSpan(), 'file-text');
-			chip.createSpan({ text: ` ${attached[1]}` });
+			setIcon(chip.createSpan(), CHIP_ICONS[tag] ?? 'file-text');
+			chip.createSpan({ text: ` ${id}` });
 		}
 		if (event.images?.length) {
 			const row = bubble.createDiv({ cls: 'librarian-msg-images' });
@@ -1183,6 +1339,7 @@ export class LibrarianView extends ItemView {
 				always: () => request.resolve('always'),
 			},
 			request.canAlways,
+			request.permissionKey,
 		);
 		this.scrollToBottom();
 	}

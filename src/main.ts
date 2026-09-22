@@ -9,6 +9,7 @@ import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
 import { SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
+import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
 import { createVaultTools } from './tools/registry';
 import { type LibrarianSettings, mergeSettings } from './types';
@@ -22,6 +23,7 @@ export default class LibrarianPlugin extends Plugin {
 	providers!: ProviderManager;
 	transport!: TransportRouter;
 	mcp!: McpManager;
+	skills!: SkillManager;
 	controller!: AgentController;
 
 	async onload() {
@@ -51,11 +53,22 @@ export default class LibrarianPlugin extends Plugin {
 			open: (url) => window.open(url),
 			notice: (message) => new Notice(message),
 		});
+		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
-			() => this.mcp.groups(),
+			() => [...this.mcp.groups(), ...skillGroups(this.skills.skills)],
 			() => this.mcp.destructiveTools(),
+			(tool, args) => {
+				if (tool !== 'read') return null;
+				const path = (args as { path?: unknown } | null)?.path;
+				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
+				return skill ? skillKey(skill.name) : null;
+			},
 		);
-		const vaultTools = createVaultTools({ app: this.app, settings: () => this.settings });
+		const vaultTools = createVaultTools({
+			app: this.app,
+			settings: () => this.settings,
+			hidden: this.skills.hiddenReader(),
+		});
 		const context = new ContextManager(this.app, () => this.settings.context);
 		this.controller = new AgentController({
 			app: this.app,
@@ -69,6 +82,15 @@ export default class LibrarianPlugin extends Plugin {
 			prompt: new PromptManager(this.app),
 			secrets: this.secrets,
 			tools: () => [...vaultTools, ...this.mcp.tools()],
+			// Blocked skills stay out of the catalog; without read the model could not open one anyway.
+			skillCatalog: () =>
+				this.permissions.get('read') === 'blocked'
+					? ''
+					: catalogOf(
+							this.skills.skills.filter(
+								(s) => this.permissions.get(skillKey(s.name)) !== 'blocked',
+							),
+						),
 		});
 		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
 			const id = serverIdFromState(params.state);
@@ -79,7 +101,10 @@ export default class LibrarianPlugin extends Plugin {
 			}
 			if (params.code) void this.mcp.finishAuth(id, params.code);
 		});
-		this.app.workspace.onLayoutReady(() => void this.mcp.connectAll());
+		this.app.workspace.onLayoutReady(() => {
+			void this.mcp.connectAll();
+			void this.skills.scan();
+		});
 
 		this.registerView(VIEW_TYPE_LIBRARIAN, (leaf) => new LibrarianView(leaf, this));
 		this.addRibbonIcon('book-open', 'Open chat', () => void this.activateView());

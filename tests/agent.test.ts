@@ -70,6 +70,7 @@ function harness(
 		prompt: new PromptManager(app as unknown as App),
 		secrets: new SecretStore(app as unknown as App),
 		tools: () => createVaultTools({ app: app as unknown as App, settings: () => settings }),
+		skillCatalog: () => '',
 	});
 	const events: ControllerEvent[] = [];
 	controller.subscribe((e) => events.push(e));

@@ -137,26 +137,43 @@ export class FakeVault {
 		return this.makeFolder('');
 	}
 
+	/** Like Obsidian, dot folders exist on disk (adapter) but are not in the index. */
+	private indexed(key: string): boolean {
+		return !key.split('/').some((s) => s.startsWith('.'));
+	}
+
 	getFileByPath(path: string): TFile | null {
 		const key = normalizePath(path);
-		return this.texts.has(key) || this.binaries.has(key) ? this.makeFile(key) : null;
+		return (this.texts.has(key) || this.binaries.has(key)) && this.indexed(key)
+			? this.makeFile(key)
+			: null;
 	}
 
 	getFolderByPath(path: string): TFolder | null {
 		const key = normalizePath(path);
-		return this.folders.has(key) ? this.makeFolder(key) : null;
+		return this.folders.has(key) && this.indexed(key) ? this.makeFolder(key) : null;
 	}
 
 	getAbstractFileByPath(path: string): TAbstractFile | null {
 		return this.getFileByPath(path) ?? this.getFolderByPath(path);
 	}
 
+	getAllFolders(includeRoot = false): TFolder[] {
+		return [...this.folders]
+			.filter((k) => (includeRoot || k !== '') && this.indexed(k))
+			.map((k) => this.makeFolder(k));
+	}
+
 	getMarkdownFiles(): TFile[] {
-		return [...this.texts.keys()].filter((k) => k.endsWith('.md')).map((k) => this.makeFile(k));
+		return [...this.texts.keys()]
+			.filter((k) => k.endsWith('.md') && this.indexed(k))
+			.map((k) => this.makeFile(k));
 	}
 
 	getFiles(): TFile[] {
-		return [...this.texts.keys(), ...this.binaries.keys()].map((k) => this.makeFile(k));
+		return [...this.texts.keys(), ...this.binaries.keys()]
+			.filter((k) => this.indexed(k))
+			.map((k) => this.makeFile(k));
 	}
 
 	async cachedRead(file: TFile): Promise<string> {

@@ -11,6 +11,7 @@ describe('settings search', () => {
 			'Providers',
 			'Agent',
 			'MCP servers',
+			'Skills',
 			'Tool permissions',
 			'Context',
 			'Sessions',

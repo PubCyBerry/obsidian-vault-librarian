@@ -612,17 +612,20 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	private unsubscribeMcp: (() => void) | null = null;
+	private unsubscribe: (() => void)[] = [];
 
 	display(): void {
 		this.renderLegacy();
-		this.unsubscribeMcp?.();
-		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.refreshSettings());
+		for (const u of this.unsubscribe) u();
+		this.unsubscribe = [
+			this.plugin.mcp.subscribe(() => this.refreshSettings()),
+			this.plugin.skills.subscribe(() => this.refreshSettings()),
+		];
 	}
 
 	hide(): void {
-		this.unsubscribeMcp?.();
-		this.unsubscribeMcp = null;
+		for (const u of this.unsubscribe) u();
+		this.unsubscribe = [];
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
@@ -655,6 +658,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				name: 'MCP servers',
 				aliases: ['MCP', 'Outline', 'OAuth', 'Sign in', 'Remote tools'],
 				render: (el: HTMLElement) => this.renderMcpServers(el),
+			},
+			{
+				name: 'Skills',
+				aliases: ['SKILL.md', 'Agent Skills', 'Rescan'],
+				render: (el: HTMLElement) => this.renderSkills(el),
 			},
 			{
 				name: 'Tool permissions',
@@ -707,6 +715,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		this.renderProviders(containerEl);
 		this.renderAgent(containerEl);
 		this.renderMcpServers(containerEl);
+		this.renderSkills(containerEl);
 		this.renderToolPermissions(containerEl);
 		this.renderContext(containerEl);
 		this.renderSessions(containerEl);
@@ -1007,6 +1016,40 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		}
 		if (this.plugin.settings.mcpServers.length === 0)
 			el.createDiv({ cls: 'librarian-modal-note', text: 'No MCP servers yet.' });
+	}
+
+	/** Discovered skills with their diagnostics; their permissions sit under Tool permissions. */
+	private renderSkills(el: HTMLElement) {
+		new Setting(el)
+			.setName('Skills')
+			.setHeading()
+			.setDesc(
+				'Folders named .agents/skills at the vault root or inside a folder, one subfolder with a SKILL.md per skill. Each skill asks first until you change it under Tool permissions.',
+			);
+		const skills = this.plugin.skills;
+		const n = skills.skills.length;
+		new Setting(el)
+			.setName('Rescan')
+			.setDesc(`${n} ${n === 1 ? 'skill' : 'skills'} found.`)
+			.addButton((b) =>
+				b.setButtonText('Rescan').onClick(async () => {
+					await skills.scan();
+					this.refreshSettings();
+				}),
+			);
+		for (const skill of skills.skills) {
+			const desc = createFragment((f) => {
+				f.appendText(skill.description);
+				f.createEl('br');
+				f.createEl('code', { text: skill.location });
+			});
+			new Setting(el).setName(skill.name).setDesc(desc);
+		}
+		if (skills.diagnostics.length) {
+			const list = el.createEl('ul', { cls: 'librarian-skill-warnings' });
+			for (const d of skills.diagnostics)
+				list.createEl('li', { text: `${d.location}: ${d.message}` });
+		}
 	}
 
 	private renderToolPermissions(el: HTMLElement) {

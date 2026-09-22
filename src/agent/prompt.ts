@@ -1,5 +1,6 @@
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
+import { SKILLS_INSTRUCTIONS } from '../skills/skill-manager';
 import { expandReferences, type ReferenceReader } from './references';
 
 /** Resolves `@path` the way a wikilink would: exact vault path first, then the link resolver. */
@@ -85,6 +86,8 @@ export interface PromptSources {
 	builtIn: string;
 	vaultAgentsMd: string | null;
 	customSystemPrompt: string;
+	/** `<available_skills>` catalog, empty when no skill is usable. */
+	skillCatalog?: string;
 }
 
 export type AgentsMdStatus = 'loaded' | 'disabled' | 'missing' | 'empty' | 'error';
@@ -134,6 +137,8 @@ export class PromptManager {
 		}
 		const custom = sources.customSystemPrompt.trim();
 		if (custom) parts.push(`# Custom system prompt\n\n${custom}`);
+		if (sources.skillCatalog)
+			parts.push(`# Skills\n\n${SKILLS_INSTRUCTIONS}\n\n${sources.skillCatalog}`);
 		return parts.join('\n\n');
 	}
 }

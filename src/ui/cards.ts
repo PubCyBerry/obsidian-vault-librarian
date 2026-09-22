@@ -201,6 +201,7 @@ export function renderApprovalCard(
 	existingLength: number | undefined,
 	handlers: ApprovalCardHandlers,
 	canAlways = true,
+	alwaysKey = name,
 ): HTMLElement {
 	const card = container.createDiv({ cls: 'librarian-approval' });
 	const title = card.createDiv({ cls: 'librarian-approval-title' });
@@ -227,7 +228,7 @@ export function renderApprovalCard(
 			text: 'The server marks this tool destructive, so it always asks first.',
 		});
 	} else {
-		const always = buttons.createEl('button', { text: `Always allow ${name}` });
+		const always = buttons.createEl('button', { text: `Always allow ${alwaysKey}` });
 		always.addEventListener('click', handlers.always);
 	}
 	approve.focus();
