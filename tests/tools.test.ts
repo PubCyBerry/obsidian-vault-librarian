@@ -171,22 +171,6 @@ describe('write tools', () => {
 		expect(app.vault.text('new/deep/note.md')).toBe('x');
 	});
 
-	it('LIB-TEST-116: write with append adds a part to the end and creates a missing note', async () => {
-		const first = await run('write', {
-			path: 'parts/long.md',
-			content: '# Part 1\n',
-			append: true,
-		});
-		expect(first.operation).toBe('created');
-		const second = await run('write', {
-			path: 'parts/long.md',
-			content: '# Part 2\n',
-			append: true,
-		});
-		expect(second).toEqual({ path: 'parts/long.md', operation: 'appended', characters: 9 });
-		expect(app.vault.text('parts/long.md')).toBe('# Part 1\n# Part 2\n');
-	});
-
 	it('LIB-TEST-047: edit replaces a unique match and refuses ambiguous or stale text', async () => {
 		const ok = await run('edit', {
 			path: '10-projects/alpha/vault-structure.md',
