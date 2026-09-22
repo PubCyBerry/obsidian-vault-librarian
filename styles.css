@@ -570,12 +570,13 @@ body.is-phone .librarian-composer {
 	width: var(--librarian-tool-size);
 }
 
-.librarian-model-button {
+/* Two-class selector: the row-wide button rule above sets padding 0 and would win otherwise. */
+.librarian-composer-row .librarian-model-button {
 	width: auto;
 	flex: 0 1 auto;
 	min-width: 0;
 	max-width: 60%;
-	padding: 0 var(--size-4-3);
+	padding: 0 var(--size-4-4);
 }
 
 .librarian-model-name,
