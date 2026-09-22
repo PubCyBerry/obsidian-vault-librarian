@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.5](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.4...1.5.5) (2026-09-22)
+
+
+### Bug Fixes
+
+* quieter composer controls and icon-only permission buttons ([436aebf](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/436aebf629be009e4fe40ed50557d0973ec162bf))
+
+
+### Reverts
+
+* drop the 4,000-character write cap now that the server streams tool calls ([0dcb911](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/0dcb9113db6fd3e34a6dcc6081e2fa0b2dcdd61e))
+
 ## [1.5.4](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.3...1.5.4) (2026-09-22)
 
 
