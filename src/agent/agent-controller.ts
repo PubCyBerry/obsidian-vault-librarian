@@ -168,10 +168,16 @@ export class AgentController {
 		return this.deps.providers.getActive();
 	}
 
-	async newSession(): Promise<void> {
-		await this.abortAndWait();
+	/** The settings' active model with that provider's default effort, as one unit. */
+	private applyDefaultSelection(): void {
 		this.selection = this.defaultSelection();
 		this.thinkingLevel = this.selection?.provider.requestDefaults.thinkingLevel ?? 'off';
+	}
+
+	/** Starts from the settings defaults, or keeps the model and effort picked before any session. */
+	async newSession(keepSelection = false): Promise<void> {
+		await this.abortAndWait();
+		if (!keepSelection || !this.selection) this.applyDefaultSelection();
 		this.session = await this.deps.sessions.create({
 			providerId: this.selection?.provider.id ?? '',
 			modelId: this.selection?.model.id ?? '',
@@ -259,7 +265,7 @@ export class AgentController {
 	/** Recomputes the idle state (key missing, model missing) and the usage indicator. */
 	async refreshReadiness(): Promise<void> {
 		if (this.agent) return;
-		if (!this.session && !this.selection) this.selection = this.defaultSelection();
+		if (!this.session && !this.selection) this.applyDefaultSelection();
 		if (!this.selection) {
 			this.emit({ type: 'state', state: 'model-unavailable' });
 		} else if (this.deps.secrets.get(this.selection.provider.secretId) === null) {
@@ -328,7 +334,7 @@ export class AgentController {
 
 	async send(text: string, images: string[] = []): Promise<void> {
 		if (this.agent) return;
-		if (!this.session) await this.newSession();
+		if (!this.session) await this.newSession(/*keepSelection*/ true);
 		if (!this.selection) {
 			this.emit({ type: 'state', state: 'model-unavailable' });
 			return;

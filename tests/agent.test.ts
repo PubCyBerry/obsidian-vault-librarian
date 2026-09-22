@@ -315,6 +315,21 @@ describe('approval flow', () => {
 	});
 });
 
+describe('effort before the first session', () => {
+	it('opening the view shows the provider default effort, and a pick made before sending survives', async () => {
+		const h = harness([{ text: 'ok' }, { text: 'ok' }]);
+		h.controller.deps.settings().providers[0]!.requestDefaults.thinkingLevel = 'medium';
+		await h.controller.refreshReadiness();
+		expect(h.controller.thinkingLevel).toBe('medium');
+		await h.controller.setThinkingLevel('high');
+		await h.controller.send('hi');
+		expect(h.controller.thinkingLevel).toBe('high');
+		expect(h.controller.session?.thinkingLevel).toBe('high');
+		await h.controller.newSession();
+		expect(h.controller.thinkingLevel).toBe('medium');
+	});
+});
+
 describe('stream cut retry (LIB-TEST-130)', () => {
 	const cut =
 		'network error (fetch, after 44.9 s, HTTP 200 received, body cut after 453360 bytes, TypeError: network error)';
