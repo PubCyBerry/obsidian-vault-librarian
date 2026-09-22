@@ -55,15 +55,15 @@ export function summarizeCall(
 	switch (name) {
 		case 'ls': {
 			const n = parsed && typeof parsed.total === 'number' ? parsed.total : count('entries');
-			return `${(args.path as string) || '/'}${n !== null ? ` -> ${n} entries` : ''}`;
+			return `${(args.path as string) || '/'}${n !== null ? `, ${n} entries` : ''}`;
 		}
 		case 'find': {
 			const n = count('matches');
-			return `${short(args.query)}${n !== null ? ` -> ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
+			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
 		}
 		case 'grep': {
 			const n = count('matches');
-			return `${short(args.query)}${n !== null ? ` -> ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
+			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
 		}
 		case 'read': {
 			const offset = typeof args.offset === 'number' ? args.offset : 1;
@@ -113,7 +113,7 @@ export function renderChangePreview(
 			const warn = el.createDiv({ cls: 'librarian-change-warning' });
 			setIcon(warn.createSpan(), 'alert-triangle');
 			warn.createSpan({
-				text: ` Replace entire note${existingLength !== undefined ? ` (${existingLength} -> ${content.length} characters)` : ''}`,
+				text: ` Replace entire note${existingLength !== undefined ? ` (${existingLength} to ${content.length} characters)` : ''}`,
 			});
 		} else {
 			el.createDiv({ cls: 'librarian-change-title', text: `Create ${path}` });

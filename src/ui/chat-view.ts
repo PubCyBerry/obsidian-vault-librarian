@@ -406,7 +406,7 @@ export class LibrarianView extends ItemView {
 		this.imageNoticeEl = box.createDiv({ cls: 'librarian-image-notice is-hidden' });
 		this.inputEl = box.createEl('textarea', {
 			cls: 'librarian-input',
-			attr: { placeholder: 'Ask a question...', rows: '2', 'aria-label': 'Message' },
+			attr: { placeholder: 'Ask a question', rows: '2', 'aria-label': 'Message' },
 		});
 		this.inputEl.addEventListener('input', () => {
 			this.updateSendEnabled();
@@ -883,13 +883,13 @@ export class LibrarianView extends ItemView {
 			: false;
 		const activity =
 			state === 'compacting'
-				? 'Compacting context...'
+				? 'Compacting context'
 				: state === 'requesting'
 					? nonStreaming
 						? NO_STREAMING_NOTICE
-						: 'Waiting for the model...'
+						: 'Waiting for the model'
 					: state === 'tool-running'
-						? 'Running tools...'
+						? 'Running tools'
 						: state === 'awaiting-approval'
 							? 'Waiting for your approval'
 							: '';
@@ -995,7 +995,7 @@ export class LibrarianView extends ItemView {
 				case 'compaction':
 					this.messagesEl.createDiv({
 						cls: 'librarian-compaction',
-						text: `Context compacted: ${compactTokens(event.tokensBefore)} -> ${compactTokens(event.tokensAfter)}`,
+						text: `Context compacted: ${compactTokens(event.tokensBefore)} to ${compactTokens(event.tokensAfter)}`,
 					});
 					break;
 				case 'error':

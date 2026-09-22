@@ -39,7 +39,7 @@ const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blo
 const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	disabled: 'Disabled',
 	disconnected: 'Not connected',
-	connecting: 'Connecting...',
+	connecting: 'Connecting',
 	ready: 'Connected',
 	'needs-sign-in': 'Sign-in needed',
 	error: 'Error',

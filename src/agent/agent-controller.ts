@@ -575,7 +575,7 @@ export class AgentController {
 		const max = this.deps.settings().toolResultMaxChars;
 		if (text.length > max) {
 			const dropped = text.length - max;
-			text = `${text.slice(0, max)}\n... [truncated ${dropped} characters; narrow the request to see more]`;
+			text = `${text.slice(0, max)}\n[truncated ${dropped} characters; narrow the request to see more]`;
 			this.truncatedResults.add(toolCallId);
 		}
 		const key = `${name}:${JSON.stringify(args ?? {})}`;
