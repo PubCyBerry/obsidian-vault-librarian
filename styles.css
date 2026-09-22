@@ -483,8 +483,11 @@ body.is-phone .librarian-composer {
 	padding: var(--size-2-1) 0;
 }
 
-.librarian-input:focus,
-.librarian-input:active {
+/* Themes light textareas up on hover and focus; inside the box the text area stays flat. */
+.librarian-composer-box .librarian-input:hover,
+.librarian-composer-box .librarian-input:focus,
+.librarian-composer-box .librarian-input:active {
+	background: transparent;
 	box-shadow: none;
 	border: none;
 }
