@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.6.0...1.6.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* phone composer rides up with the keyboard and fills the navbar slot, quieter send disc ([d917764](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/d91776422afaffdfe37664f8c90b33204e037344))
+
 ## [1.6.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.5.10...1.6.0) (2026-09-22)
 
 
