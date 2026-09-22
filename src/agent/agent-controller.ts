@@ -105,6 +105,13 @@ export interface ControllerDeps {
 	skillCatalog: () => string;
 }
 
+const RETRY_DELAY_MS = 1500;
+
+/** The transport's parenthetical for a response the network cut after HTTP 200. */
+function isStreamCut(message: string | undefined): boolean {
+	return /HTTP 200 received, body cut after/.test(message ?? '');
+}
+
 function textOf(content: readonly { type: string }[]): string {
 	return content
 		.filter((c): c is TextContent => c.type === 'text')
@@ -130,6 +137,10 @@ export class AgentController {
 	private failures = new Map<string, number>();
 	private iterations = 0;
 	private stopReason: string | null = null;
+	/** Set when a response stream was cut by the network; `send` then repeats the request once. */
+	private retryAfterCut = false;
+	private cutRetries = 0;
+	private stopRequested = false;
 
 	constructor(readonly deps: ControllerDeps) {}
 
@@ -356,31 +367,38 @@ export class AgentController {
 		this.iterations = 0;
 		this.failures = new Map();
 		this.stopReason = null;
-		const agent = new Agent({
-			initialState: {
-				model,
-				thinkingLevel: this.thinkingLevel,
-				tools,
-				messages: prepared.messages,
-			},
-			streamFn,
-			toolExecution: this.deps.settings().toolExecution,
-			beforeToolCall: (ctx, signal) =>
-				this.beforeToolCall(ctx.toolCall.id, ctx.toolCall.name, ctx.args, signal),
-			afterToolCall: (ctx) =>
-				this.afterToolCall(
-					ctx.toolCall.id,
-					ctx.toolCall.name,
-					ctx.args,
-					ctx.result.content,
-					ctx.isError,
-				),
-			shouldStopAfterTurn: (ctx, signal) =>
-				signal?.aborted === true || this.shouldStopAfterTurn(ctx.toolResults.length),
-			prepareNextTurnWithContext: (ctx, signal) =>
-				this.prepareNextTurn(ctx.context.messages, model, streamFn, signal),
-		});
-		agent.subscribe((event) => this.onAgentEvent(event));
+		this.cutRetries = 0;
+		this.retryAfterCut = false;
+		this.stopRequested = false;
+		const createAgent = (messages: AgentMessage[]) => {
+			const agent = new Agent({
+				initialState: {
+					model,
+					thinkingLevel: this.thinkingLevel,
+					tools,
+					messages,
+				},
+				streamFn,
+				toolExecution: this.deps.settings().toolExecution,
+				beforeToolCall: (ctx, signal) =>
+					this.beforeToolCall(ctx.toolCall.id, ctx.toolCall.name, ctx.args, signal),
+				afterToolCall: (ctx) =>
+					this.afterToolCall(
+						ctx.toolCall.id,
+						ctx.toolCall.name,
+						ctx.args,
+						ctx.result.content,
+						ctx.isError,
+					),
+				shouldStopAfterTurn: (ctx, signal) =>
+					signal?.aborted === true || this.shouldStopAfterTurn(ctx.toolResults.length),
+				prepareNextTurnWithContext: (ctx, signal) =>
+					this.prepareNextTurn(ctx.context.messages, model, streamFn, signal),
+			});
+			agent.subscribe((event) => this.onAgentEvent(event));
+			return agent;
+		};
+		const agent = createAgent(prepared.messages);
 		this.agent = agent;
 		this.emit({ type: 'state', state: 'requesting' });
 		try {
@@ -407,6 +425,25 @@ export class AgentController {
 				});
 			}
 			await agent.prompt(text, imageContents);
+			// The events hold everything up to the cut (the partial answer was not kept), so a
+			// fresh agent continues from them. Once: a second cut is reported like any error.
+			while (this.retryAfterCut && !this.stopRequested) {
+				this.retryAfterCut = false;
+				this.emit({
+					type: 'notice',
+					message: 'The connection dropped mid-response. Retrying once.',
+				});
+				await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
+				if (this.stopRequested) break;
+				const again = await this.deps.context.build({
+					events: this.events,
+					model,
+					systemPrompt: await this.systemPrompt(),
+					tools: this.exposedTools(),
+				});
+				this.agent = createAgent(again.messages);
+				await this.agent.continue();
+			}
 		} finally {
 			this.agent = null;
 			this.pendingSnapshots.clear();
@@ -417,6 +454,7 @@ export class AgentController {
 	}
 
 	stop(): void {
+		this.stopRequested = true;
 		this.agent?.abort();
 		this.pendingApproval?.resolve('expired');
 	}
@@ -690,6 +728,16 @@ export class AgentController {
 				const m = event.message;
 				if (m.role === 'assistant') {
 					this.emit({ type: 'stream', message: null });
+					// A stream the network cut mid-way is not kept: send() asks the model again once.
+					if (
+						m.stopReason === 'error' &&
+						isStreamCut(m.errorMessage) &&
+						this.cutRetries < 1
+					) {
+						this.cutRetries++;
+						this.retryAfterCut = true;
+						break;
+					}
 					const usage: StoredUsage | undefined =
 						m.usage.totalTokens > 0
 							? {

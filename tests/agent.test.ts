@@ -315,6 +315,40 @@ describe('approval flow', () => {
 	});
 });
 
+describe('stream cut retry (LIB-TEST-130)', () => {
+	const cut =
+		'network error (fetch, after 44.9 s, HTTP 200 received, body cut after 453360 bytes, TypeError: network error)';
+
+	it('repeats the request once after a mid-stream cut and keeps only the answer that arrived', async () => {
+		const h = harness([{ stopReason: 'error', errorMessage: cut }, { text: 'Recovered' }]);
+		await h.controller.send('hello');
+		expect(h.requests).toHaveLength(2);
+		const events = await sessionEvents(h);
+		expect(events.filter((e) => e.type === 'error')).toEqual([]);
+		const answers = events.filter((e) => e.type === 'assistant');
+		expect(answers).toHaveLength(1);
+		expect((answers[0] as { content: string }).content).toBe('Recovered');
+		expect(h.events.some((e) => e.type === 'notice' && /Retrying once/.test(e.message))).toBe(
+			true,
+		);
+	}, 10000);
+
+	it('a second cut is reported as an error, and a plain provider error is not retried', async () => {
+		const twice = harness([
+			{ stopReason: 'error', errorMessage: cut },
+			{ stopReason: 'error', errorMessage: cut },
+		]);
+		await twice.controller.send('hello');
+		expect(twice.requests).toHaveLength(2);
+		expect((await sessionEvents(twice)).filter((e) => e.type === 'error')).toHaveLength(1);
+
+		const plain = harness([{ stopReason: 'error', errorMessage: '500 upstream down' }]);
+		await plain.controller.send('hello');
+		expect(plain.requests).toHaveLength(1);
+		expect((await sessionEvents(plain)).filter((e) => e.type === 'error')).toHaveLength(1);
+	}, 10000);
+});
+
 describe('guards', () => {
 	it('LIB-TEST-034: malformed arguments are refused before the tool runs', async () => {
 		const h = harness(

@@ -356,7 +356,12 @@ export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(win
 						controller.enqueue(value);
 					}
 				} catch (error) {
-					failure = describeError(error);
+					// A phone freezes the app's sockets in the background; say so when that was the case.
+					failure =
+						describeError(error) +
+						(typeof document !== 'undefined' && document.visibilityState === 'hidden'
+							? ', app in background'
+							: '');
 					controller.error(error);
 				}
 			},
