@@ -1,12 +1,21 @@
 /* Librarian chat view. Colors come from Obsidian variables only. */
 
+/* The view fills its leaf through flex so it keeps working when the phone keyboard shrinks the app. */
+.workspace-leaf-content[data-type="librarian-chat"] > .view-content {
+	flex: 1 1 0;
+	min-height: 0;
+	height: auto;
+	padding: 0;
+	overflow: hidden;
+}
+
 .librarian {
 	/* The generic monospace family maps Hangul to GulimChe, so no generic appears before the text font. */
 	--librarian-font-mono:
 		"Cascadia Mono", Consolas, Menlo, "Roboto Mono", "Droid Sans Mono", var(--font-text);
 	display: flex;
 	flex-direction: column;
-	height: 100%;
+	min-height: 0;
 	padding: 0;
 	gap: var(--size-4-2);
 }
@@ -435,6 +444,10 @@
 	align-items: flex-start;
 }
 
+body.is-phone .librarian-composer {
+	padding-bottom: max(var(--size-4-3), var(--view-bottom-spacing, 0px));
+}
+
 .librarian-activity {
 	display: flex;
 	align-items: center;
@@ -465,8 +478,9 @@
 	font-family: inherit;
 	background: transparent;
 	border: none;
+	border-radius: 0;
 	box-shadow: none;
-	padding: 0;
+	padding: var(--size-2-1) 0;
 }
 
 .librarian-input:focus,
@@ -526,27 +540,38 @@
 	position: relative;
 }
 
-.librarian-composer-row button {
-	min-height: 36px;
-	min-width: 36px;
-	box-shadow: none;
+.librarian-composer-row {
+	--librarian-tool-size: 40px;
 }
 
-.librarian-attach,
-.librarian-model-button {
-	background: transparent;
+.librarian-composer-row button {
+	height: var(--librarian-tool-size);
+	min-height: var(--librarian-tool-size);
+	min-width: var(--librarian-tool-size);
+	padding: 0;
+	border: none;
+	box-shadow: none;
+	border-radius: calc(var(--librarian-tool-size) / 2);
+	background: var(--background-modifier-hover);
 	color: var(--text-muted);
-	border-radius: var(--radius-m);
-	padding: 0 var(--size-2-2);
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
 	gap: var(--size-2-1);
+	cursor: pointer;
 }
 
-.librarian-attach:hover,
-.librarian-model-button:hover {
-	background: var(--background-modifier-hover);
+.librarian-composer-row button:hover {
+	background: var(--background-modifier-border);
 	color: var(--text-normal);
+}
+
+.librarian-attach {
+	width: var(--librarian-tool-size);
+}
+
+.librarian-model-button {
+	padding: 0 var(--size-4-3) 0 var(--size-4-2);
 }
 
 .librarian-model-name,
@@ -563,15 +588,9 @@
 }
 
 .librarian-composer-row .librarian-send {
-	width: 36px;
-	height: 36px;
-	padding: 0;
-	border-radius: 50%;
+	width: var(--librarian-tool-size);
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
 }
 
 .librarian-composer-row .librarian-send:hover {
@@ -656,15 +675,15 @@
 /* Context ring */
 
 .librarian-composer-row .librarian-context-indicator {
-	width: 28px;
-	height: 28px;
-	min-width: 28px;
-	min-height: 28px;
+	width: var(--librarian-tool-size);
+	height: var(--librarian-tool-size);
+	min-width: var(--librarian-tool-size);
+	min-height: var(--librarian-tool-size);
 	padding: 0;
 	border-radius: 50%;
 	border: none;
 	background:
-		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
 		conic-gradient(
 			var(--interactive-accent) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
@@ -675,7 +694,7 @@
 
 .librarian-context-indicator.is-warning {
 	background:
-		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
 		conic-gradient(
 			var(--color-orange) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
@@ -684,7 +703,7 @@
 
 .librarian-context-indicator.is-critical {
 	background:
-		radial-gradient(closest-side, var(--background-primary) 60%, transparent 61%),
+		radial-gradient(closest-side, var(--background-secondary) 66%, transparent 67%),
 		conic-gradient(
 			var(--color-red) var(--librarian-usage, 0%),
 			var(--background-modifier-border) 0
@@ -922,12 +941,6 @@
 	min-height: 48px;
 }
 
-.librarian.is-mobile .librarian-composer-row button {
-	min-height: 44px;
-	min-width: 44px;
-}
-
-.librarian.is-mobile .librarian-send {
-	width: 44px;
-	height: 44px;
+.librarian.is-mobile .librarian-composer-row {
+	--librarian-tool-size: 44px;
 }
