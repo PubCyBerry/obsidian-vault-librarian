@@ -456,8 +456,17 @@
 	align-items: flex-start;
 }
 
+/*
+ * Clear the floating navbar while the keyboard is closed. Android reports the open keyboard as the
+ * bottom safe-area inset, so Obsidian's --view-bottom-spacing (inset - keyboard + navbar) comes out
+ * as the navbar height while the keyboard is up; ten times the keyboard height drives that term
+ * negative so the minimum wins then and the composer sits right on the keyboard.
+ */
 body.is-phone .librarian-composer {
-	padding-bottom: max(var(--size-4-3), var(--view-bottom-spacing, 0px));
+	padding-bottom: max(
+		var(--size-4-3),
+		calc(var(--view-bottom-spacing, 0px) - var(--keyboard-height, 0px) * 10)
+	);
 }
 
 /*
