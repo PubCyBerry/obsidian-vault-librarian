@@ -1,6 +1,6 @@
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { ContextManager, estimateText, estimateTools } from '../src/context/context-manager';
+import { ContextManager, estimateText } from '../src/context/context-manager';
 import { toPiModel } from '../src/provider/provider-manager';
 import { replay } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
@@ -133,34 +133,20 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 		expect(prepared.messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant']);
 	});
 
-	it('counts tool schemas and instructions, and a blocked tool lowers the usage', () => {
-		const { cm, tools } = manager();
-		const all = cm.estimateUsed([], 'prompt', tools);
-		const fewer = cm.estimateUsed(
-			[],
-			'prompt',
-			tools.filter((t) => t.name !== 'edit'),
-		);
-		expect(all).toBeGreaterThan(fewer);
-		expect(all - fewer).toBe(estimateTools(tools.filter((t) => t.name === 'edit')));
-		expect(cm.estimateUsed([], 'prompt', tools) - cm.estimateUsed([], '', tools)).toBe(
-			estimateText('prompt'),
-		);
-	});
-
-	it('anchors on provider usage when present and estimates otherwise', () => {
-		const { cm, tools } = manager();
+	it('LIB-TEST-060: the ring shows only what the provider reported for the last response', () => {
+		const { cm } = manager();
+		const meta = ev('meta', {
+			session: {
+				id: 's',
+				title: '',
+				providerId: 'p',
+				modelId: 'm',
+				createdAt: 't',
+				updatedAt: 't',
+			},
+		});
 		const withUsage = replay([
-			ev('meta', {
-				session: {
-					id: 's',
-					title: '',
-					providerId: 'p',
-					modelId: 'm',
-					createdAt: 't',
-					updatedAt: 't',
-				},
-			}),
+			meta,
 			ev('user', { content: 'x'.repeat(400) }),
 			ev('assistant', {
 				content: 'reply',
@@ -174,25 +160,21 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 				content: 'y'.repeat(40),
 				truncated: false,
 			}),
+			ev('user', { content: 'z'.repeat(4000) }),
 		]);
-		const used = cm.estimateUsed(withUsage, 'S', tools);
-		expect(used).toBe(5000 + estimateText('reply') + 4 + estimateText('y'.repeat(40)) + 4);
-		const noUsage = replay([
-			ev('meta', {
-				session: {
-					id: 's',
-					title: '',
-					providerId: 'p',
-					modelId: 'm',
-					createdAt: 't',
-					updatedAt: 't',
-				},
+		expect(cm.reportedUsed(withUsage)).toBe(5002);
+		const noUsage = replay([meta, ev('user', { content: 'x'.repeat(400) })]);
+		expect(cm.reportedUsed(noUsage)).toBe(0);
+		const errored = replay([
+			meta,
+			ev('assistant', {
+				content: '',
+				toolCalls: [],
+				usage: { input: 700, output: 30, cacheRead: 0, totalTokens: 730 },
 			}),
-			ev('user', { content: 'x'.repeat(400) }),
+			ev('assistant', { content: 'cut', toolCalls: [], stopReason: 'error' }),
 		]);
-		expect(cm.estimateUsed(noUsage, 'S', tools)).toBe(
-			estimateText('S') + estimateTools(tools) + 100 + 4,
-		);
+		expect(cm.reportedUsed(errored)).toBe(730);
 	});
 
 	it('inlines attached images from the vault and marks missing ones', async () => {

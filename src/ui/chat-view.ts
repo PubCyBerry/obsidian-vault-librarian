@@ -1213,6 +1213,13 @@ export class LibrarianView extends ItemView {
 		this.popoverEl.createDiv({ text: `${percent.toFixed(1)}% used` });
 		this.popoverEl.createDiv({
 			cls: 'librarian-popover-detail',
+			text:
+				usage.usedTokens > 0
+					? 'As reported by the server for the last response.'
+					: 'Updates when the server reports the first response.',
+		});
+		this.popoverEl.createDiv({
+			cls: 'librarian-popover-detail',
 			text: `Reserved output: ${formatTokens(usage.reservedOutputTokens)}`,
 		});
 		this.popoverEl.createDiv({

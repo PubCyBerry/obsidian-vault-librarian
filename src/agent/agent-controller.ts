@@ -294,13 +294,7 @@ export class AgentController {
 			this.emit({ type: 'usage', usage: null });
 			return null;
 		}
-		const prompt = await this.systemPrompt();
-		this.usage = this.deps.context.usage(
-			this.session ? this.events : [],
-			model,
-			prompt,
-			this.exposedTools(),
-		);
+		this.usage = this.deps.context.usage(this.session ? this.events : [], model);
 		this.emit({ type: 'usage', usage: this.usage });
 		return this.usage;
 	}
@@ -340,7 +334,7 @@ export class AgentController {
 		const streamFn = this.streamFn();
 		let prompt = await this.systemPrompt();
 		let tools = this.exposedTools();
-		const usage = this.deps.context.usage(this.events, model, prompt, tools);
+		const usage = this.deps.context.usage(this.events, model);
 		if (usage.state === 'critical') await this.compactNow(streamFn);
 		prompt = await this.systemPrompt();
 		tools = this.exposedTools();
@@ -643,7 +637,7 @@ export class AgentController {
 	) {
 		const tools = this.exposedTools();
 		const prompt = await this.systemPrompt();
-		const usage = this.deps.context.usage(this.events, model, prompt, tools);
+		const usage = this.deps.context.usage(this.events, model);
 		if (usage.state === 'critical' && !signal?.aborted) {
 			const compacted = await this.compactNow(streamFn);
 			if (compacted) {
@@ -750,6 +744,8 @@ export class AgentController {
 						});
 					}
 					await this.reloadEvents();
+					// The ring shows what the provider reported for this response, updated as each stream ends.
+					await this.recalculateUsage();
 				} else if (m.role === 'toolResult') {
 					await this.deps.sessions.append(sessionId, {
 						type: 'tool_result',

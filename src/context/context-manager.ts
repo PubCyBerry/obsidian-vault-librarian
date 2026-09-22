@@ -76,10 +76,6 @@ function estimateEvent(event: SessionEvent): number {
 	}
 }
 
-export function estimateTools(tools: AgentTool[]): number {
-	return tools.reduce((n, t) => n + estimateText(JSON.stringify(toToolDeclaration(t))), 0);
-}
-
 function readImageBase64(
 	app: App,
 	path: string,
@@ -242,35 +238,24 @@ export class ContextManager {
 			systemPrompt: input.systemPrompt,
 			messages,
 			tools: input.tools,
-			usage: this.usage(input.events, input.model, input.systemPrompt, input.tools),
+			usage: this.usage(input.events, input.model),
 		};
 	}
 
-	/** Estimated request size: provider usage anchors the prefix, local estimates cover what came after. */
-	estimateUsed(events: IndexedEvent[], systemPrompt: string, tools: AgentTool[]): number {
-		const { compaction, rest } = ContextManager.visible(events);
-		let anchorPos = -1;
-		let anchorTokens = 0;
-		rest.forEach((e, i) => {
-			if (
-				e.event.type === 'assistant' &&
-				e.event.usage &&
-				e.event.usage.input + e.event.usage.cacheRead > 0
-			) {
-				anchorPos = i;
-				anchorTokens = e.event.usage.input + e.event.usage.cacheRead;
-			}
-		});
-		let used = 0;
-		if (anchorPos >= 0) {
-			used = anchorTokens;
-			for (let i = anchorPos; i < rest.length; i++) used += estimateEvent(rest[i]!.event);
-		} else {
-			used = estimateText(systemPrompt) + estimateTools(tools);
-			if (compaction) used += estimateEvent(compaction.event);
-			for (const e of rest) used += estimateEvent(e.event);
+	/**
+	 * Tokens of the last response the provider reported: prompt plus completion. Nothing is
+	 * estimated on top, so the value is 0 until the first response and stays put between responses.
+	 */
+	reportedUsed(events: IndexedEvent[]): number {
+		const { rest } = ContextManager.visible(events);
+		for (let i = rest.length - 1; i >= 0; i--) {
+			const e = rest[i]!.event;
+			if (e.type !== 'assistant' || !e.usage) continue;
+			const u = e.usage;
+			const total = u.totalTokens || u.input + u.cacheRead + u.output;
+			if (total > 0) return total;
 		}
-		return used;
+		return 0;
 	}
 
 	budget(model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>) {
@@ -282,14 +267,8 @@ export class ContextManager {
 		return { reserved, margin, usable };
 	}
 
-	usage(
-		events: IndexedEvent[],
-		model: PiModel,
-		systemPrompt: string,
-		tools: AgentTool[],
-	): ContextUsage {
-		const used = this.estimateUsed(events, systemPrompt, tools);
-		return this.usageFor(used, model);
+	usage(events: IndexedEvent[], model: PiModel): ContextUsage {
+		return this.usageFor(this.reportedUsed(events), model);
 	}
 
 	usageFor(used: number, model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>): ContextUsage {
@@ -333,7 +312,7 @@ export class ContextManager {
 		if (cut === null) return null;
 		const { compaction, rest } = ContextManager.visible(events);
 		const before = rest.filter((e) => e.index < cut);
-		const tokensBefore = this.estimateUsed(events, '', []);
+		const tokensBefore = this.reportedUsed(events);
 		const transcript = (
 			compaction
 				? [

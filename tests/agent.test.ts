@@ -499,7 +499,7 @@ describe('snapshots and rewind (LIB-TEST-083, LIB-TEST-084, LIB-TEST-086, LIB-TE
 });
 
 describe('compaction during a session (LIB-TEST-064, LIB-TEST-067)', () => {
-	it('compacts before sending when the estimate is critical and keeps the log intact', async () => {
+	it('compacts before sending when the reported usage is critical and keeps the log intact', async () => {
 		const h = harness(
 			[{ text: 'summary of old stuff' }, { text: 'reply' }],
 			{},
@@ -528,6 +528,13 @@ describe('compaction during a session (LIB-TEST-064, LIB-TEST-067)', () => {
 				type: 'assistant',
 				content: `a${i} ${'나'.repeat(600)}`,
 				toolCalls: [],
+				// The ring and the compaction gate use only what the provider reported (LIB-FEAT-055).
+				usage: {
+					input: 700 * (i + 1),
+					output: 50,
+					cacheRead: 0,
+					totalTokens: 700 * (i + 1) + 50,
+				},
 			});
 		}
 		await h.controller.reloadEvents();
