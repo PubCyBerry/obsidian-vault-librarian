@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.9.0...1.9.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* generic settings text, live tool default limits, deferred tools noted in the prompt ([ec386f6](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/ec386f663a05029ef3d9e7b227a61f676f54364c))
+
 ## [1.9.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.8.1...1.9.0) (2026-09-22)
 
 
