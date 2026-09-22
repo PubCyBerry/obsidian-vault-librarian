@@ -86,7 +86,7 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				Type.Integer({
 					minimum: 1,
 					maximum: 200,
-					description: 'Maximum entries. Default 100.',
+					description: `Maximum entries. Default ${deps.settings().listLimit}.`,
 				}),
 			),
 		}),
@@ -193,7 +193,11 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 				Type.Integer({ minimum: 0, maximum: 5, description: 'Default 2.' }),
 			),
 			limit: Type.Optional(
-				Type.Integer({ minimum: 1, maximum: 100, description: 'Default 20.' }),
+				Type.Integer({
+					minimum: 1,
+					maximum: 100,
+					description: `Default ${deps.settings().grepLimit}.`,
+				}),
 			),
 		}),
 		async execute(_id, params, signal) {
@@ -264,7 +268,7 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 				Type.Integer({
 					minimum: 1,
 					maximum: 500,
-					description: 'Maximum lines. Default 200.',
+					description: `Maximum lines. Default ${deps.settings().readLineLimit}.`,
 				}),
 			),
 		}),
@@ -328,7 +332,7 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 			content: Type.String({ description: 'Complete file content.' }),
 			overwrite: Type.Optional(
 				Type.Boolean({
-					description: 'Allow full replacement of an existing note. Default false.',
+					description: 'Allow full replacement of an existing file. Default false.',
 				}),
 			),
 		}),

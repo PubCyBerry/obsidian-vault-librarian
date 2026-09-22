@@ -11,7 +11,7 @@ import { SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
-import { createVaultTools } from './tools/registry';
+import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
@@ -66,7 +66,7 @@ export default class LibrarianPlugin extends Plugin {
 				return skill ? skillKey(skill.name) : null;
 			},
 		);
-		const vaultTools = createVaultTools({
+		const vaultDeps: ToolDeps = {
 			app: this.app,
 			settings: () => this.settings,
 			hidden: this.skills.hiddenReader(),
@@ -74,12 +74,13 @@ export default class LibrarianPlugin extends Plugin {
 				before: (id, path) => this.controller.beforeMutation(id, path),
 				after: (id, path) => this.controller.afterMutation(id, path),
 			},
-		});
+		};
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
 			registered: () =>
-				[...vaultTools, ...this.mcp.tools()].map((t) => ({
+				// Built fresh each time so descriptions carry the current default limits from settings.
+				[...createVaultTools(vaultDeps), ...this.mcp.tools()].map((t) => ({
 					...t,
 					executionMode:
 						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',

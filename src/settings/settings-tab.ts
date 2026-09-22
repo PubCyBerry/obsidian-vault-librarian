@@ -70,7 +70,7 @@ class McpServerEditorModal extends Modal {
 		);
 		new Setting(el)
 			.setName('URL')
-			.setDesc('Endpoint of the server. For Outline it ends in /mcp.')
+			.setDesc('Streamable HTTP endpoint of the server, usually ending in /mcp.')
 			.addText((t) =>
 				t.setValue(this.draft.url).onChange((v) => {
 					this.draft.url = v.trim();
@@ -651,7 +651,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'MCP servers',
-				aliases: ['MCP', 'Outline', 'OAuth', 'Sign in', 'Remote tools'],
+				aliases: ['MCP', 'OAuth', 'Sign in', 'Remote tools'],
 				render: (el: HTMLElement) => this.renderMcpServers(el),
 			},
 			{

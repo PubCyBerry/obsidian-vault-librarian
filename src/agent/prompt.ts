@@ -69,6 +69,7 @@ Safety:
 
 Tool permissions:
 - Only tools included in the current tool list are available.
+- When a tool_search tool is listed, more tools exist but are deferred: search for a capability with it before saying the capability is missing.
 - Some available tools may require user approval before execution.
 - If a tool call is rejected, blocked, or unavailable, do not claim that it ran.
 - Do not repeatedly request a rejected or unavailable tool unless the user changes the permission or explicitly asks you to try again.
