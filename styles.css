@@ -571,13 +571,17 @@ body.is-phone .librarian-composer {
 }
 
 .librarian-model-button {
-	padding: 0 var(--size-4-3) 0 var(--size-4-2);
+	width: auto;
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 60%;
+	padding: 0 var(--size-4-3);
 }
 
 .librarian-model-name,
 .librarian-model-effort {
 	font-size: var(--font-ui-smaller);
-	max-width: 140px;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -855,15 +859,24 @@ body.is-phone .librarian-composer {
 
 .librarian-tool-permission-row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--size-4-2);
+	gap: var(--size-2-2) var(--size-4-2);
 	padding: var(--size-2-2) 0;
 	border-top: 1px solid var(--background-modifier-border);
 }
 
 .librarian-tool-permission-name {
 	font-family: var(--font-monospace);
-	flex: 1 1 auto;
+	flex: 1 1 200px;
+	min-width: 0;
+	word-break: break-all;
+}
+
+/* A long tool name pushes the control onto its own line, right-aligned, instead of clipping it. */
+.librarian-tool-permission-row .librarian-segmented {
+	flex: 0 0 auto;
+	margin-left: auto;
 }
 
 .librarian-segmented {

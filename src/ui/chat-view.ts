@@ -372,7 +372,6 @@ export class LibrarianView extends ItemView {
 		const options = this.plugin.providers.listSelectable();
 		const current = this.controller.selection;
 		this.modelButton.empty();
-		setIcon(this.modelButton.createSpan({ cls: 'librarian-model-icon' }), 'cpu');
 		this.modelButton.createSpan({
 			cls: 'librarian-model-name',
 			text: current ? current.model.name : options.length ? 'Pick a model' : 'No model',
