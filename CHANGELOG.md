@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.1.0...2.2.0) (2026-09-23)
+
+
+### Features
+
+* one permission for the shell, and settings split into pages ([a287b27](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a287b27f6def0d8a577ec303e584ca7661908ae5))
+
 ## [2.1.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.0.0...2.1.0) (2026-09-23)
 
 
