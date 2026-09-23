@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.13.0...1.14.0) (2026-09-23)
+
+
+### Features
+
+* open the plugin settings from the chat view menu ([47bd31d](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/47bd31de0ee82d4071932e594bd88744a330ddb2))
+
 ## [1.13.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.12.0...1.13.0) (2026-09-23)
 
 
