@@ -19,7 +19,9 @@ import {
 	TOOL_GROUPS,
 } from '../permissions/tool-permission-manager';
 import { testConnection } from '../provider/transport';
+import { SKILL_KEY_PREFIX, SKILL_SEARCH_NAME } from '../skills/skill-manager';
 import { isValidSecretId } from '../storage/secret-store';
+import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
 import {
 	MCP_SERVER_ID_PATTERN,
 	type McpServerConfig,
@@ -866,12 +868,15 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		numberInput(
 			new Setting(el)
 				.setName('Max tool iterations')
-				.setDesc('Turns with tool calls before the agent stops and waits for you.'),
-			s.maxIterations,
+				.setDesc(
+					'Turns with tool calls before the agent stops and waits for you. Empty means no limit.',
+				),
+			s.maxIterations > 0 ? s.maxIterations : undefined,
 			async (v) => {
-				s.maxIterations = v ?? 10;
+				s.maxIterations = v !== undefined && v > 0 ? Math.floor(v) : 0;
 				await this.save();
 			},
+			'No limit',
 		);
 		numberInput(
 			new Setting(el)
@@ -1127,7 +1132,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			.setName('Skills')
 			.setHeading()
 			.setDesc(
-				'Folders named .agents/skills at the vault root or inside a folder, one subfolder with a SKILL.md per skill. Each skill asks first until you change it under Tool permissions.',
+				'Folders named .agents/skills at the vault root or inside a folder, one subfolder with a SKILL.md per skill. Each skill asks first and is deferred, found through skill_search, until you change it under Tool permissions.',
 			);
 		const skills = this.plugin.skills;
 		const n = skills.skills.length;
@@ -1220,9 +1225,9 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			for (const tool of group.tools) {
 				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
 				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
-				// A skill row is a permission only: it is not a tool that runs or lists on its own.
-				const target = tool.startsWith('skill:');
-				if (!target) {
+				// A skill row is a permission and a listing: it is not a tool that runs on its own.
+				const skill = tool.startsWith(SKILL_KEY_PREFIX);
+				if (!skill) {
 					const exec = row.createEl('select', {
 						cls: 'dropdown librarian-tool-execution',
 						attr: { 'aria-label': `${tool} execution` },
@@ -1236,7 +1241,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						void this.save();
 					});
 				}
-				if (!target && tool !== 'tool_search' && !tool.startsWith('skill:')) {
+				// The two searches are how deferred things are found, so they are always listed.
+				if (tool !== TOOL_SEARCH_NAME && tool !== SKILL_SEARCH_NAME) {
 					const deferred = row.createEl('select', {
 						cls: 'dropdown librarian-tool-deferred',
 						attr: { 'aria-label': `${tool} listing` },

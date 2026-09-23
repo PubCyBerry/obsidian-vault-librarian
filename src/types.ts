@@ -13,7 +13,8 @@ export type ToolName =
 	| 'get_active_note'
 	| 'write'
 	| 'edit'
-	| 'tool_search';
+	| 'tool_search'
+	| 'skill_search';
 export type McpAuthMode = 'oauth' | 'apiKey' | 'none';
 
 /** A remote MCP server reached over Streamable HTTP. Credentials live in SecretStorage. */
@@ -46,6 +47,7 @@ export const TOOL_NAMES: readonly ToolName[] = [
 	'write',
 	'edit',
 	'tool_search',
+	'skill_search',
 ];
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
@@ -146,7 +148,10 @@ export interface LibrarianSettings {
 	toolExecution: ToolExecutionMode;
 	/** Per tool; a tool absent here keeps its own default (write, edit and MCP tools: sequential). */
 	toolExecutionByTool: Record<string, ToolExecutionMode>;
-	/** Per tool; absent means the default: MCP tools deferred (found through tool_search), vault tools listed. */
+	/**
+	 * Per tool, and per skill under `skill:<name>`; absent means the default: MCP tools and skills
+	 * deferred (found through tool_search and skill_search), vault tools listed.
+	 */
 	toolDeferredByTool: Record<string, boolean>;
 	mcpServers: McpServerConfig[];
 	webdav: WebDavSettings;
@@ -154,6 +159,7 @@ export interface LibrarianSettings {
 	chatLocation: 'sidebar' | 'tab';
 	/** Vault folder whose notes become `/<name>` prompt commands. */
 	commandsFolder: string;
+	/** Turns with tool calls before a run stops and waits; 0 means no limit. */
 	maxIterations: number;
 	repeatedFailureLimit: number;
 	useVaultAgentsMd: boolean;
@@ -175,6 +181,7 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		write: 'approval_required',
 		edit: 'approval_required',
 		tool_search: 'approval_required',
+		skill_search: 'approval_required',
 		bash: 'approval_required',
 	},
 };
@@ -198,7 +205,7 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	webdav: { enabled: false, url: '', username: '' },
 	chatLocation: 'sidebar',
 	commandsFolder: 'Librarian/commands',
-	maxIterations: 10,
+	maxIterations: 0,
 	repeatedFailureLimit: 3,
 	useVaultAgentsMd: true,
 	customSystemPrompt: '',

@@ -483,6 +483,19 @@ describe('guards', () => {
 		expect(h2.requests).toHaveLength(4);
 	});
 
+	it('LIB-TEST-192: with no iteration limit set, a long tool run goes on to its answer', async () => {
+		const read = { toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] };
+		const h = harness([...Array.from({ length: 12 }, () => read), { text: 'done' }], {
+			read: 'always_allow',
+		});
+		expect(mergeSettings({}).maxIterations).toBe(0);
+		await h.controller.send('go');
+		expect(h.requests).toHaveLength(13);
+		expect(h.events.some((e) => e.type === 'notice' && e.message.startsWith('Stopped'))).toBe(
+			false,
+		);
+	});
+
 	it('LIB-TEST-032: Stop cancels the request and skips tools that have not started', async () => {
 		const h = harness(
 			[

@@ -12,7 +12,15 @@ import { TransportRouter } from './provider/transport';
 import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
 import { createShellTool, ShellSession } from './shell/shell-tool';
-import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
+import {
+	createSkillSearchTool,
+	SKILL_KEY_PREFIX,
+	SKILL_SEARCH_NAME,
+	SkillManager,
+	skillGroups,
+	skillKey,
+	skillsSection,
+} from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
 import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
@@ -133,21 +141,34 @@ export default class LibrarianPlugin extends Plugin {
 			},
 			snapshot: mutation,
 		});
+		// Skills the model may reach: none while read is blocked, and never a blocked one.
+		const usableSkills = () =>
+			this.permissions.get('read') === 'blocked'
+				? []
+				: this.skills.skills.filter(
+						(s) => this.permissions.get(skillKey(s.name)) !== 'blocked',
+					);
+		const deferredSkills = () =>
+			usableSkills().filter((s) => this.toolDeferredOf(skillKey(s.name)));
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
-			registered: () =>
+			registered: () => {
+				const hidden = deferredSkills();
 				// Built fresh each time so descriptions carry the current default limits from settings.
-				[
+				return [
 					...createVaultTools(vaultDeps),
 					createShellTool(this.shell),
 					...webdavTools(),
 					...this.mcp.tools(),
+					// Only while some skill waits to be found, as tool_search for deferred tools.
+					...(hidden.length ? [createSkillSearchTool(hidden)] : []),
 				].map((t) => ({
 					...t,
 					executionMode:
 						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
-				})),
+				}));
+			},
 			sourceOf: (t) =>
 				this.mcpServerNameOf(t.name) ?? (t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
 			deferred: (t) => this.toolDeferredOf(t.name),
@@ -166,15 +187,16 @@ export default class LibrarianPlugin extends Plugin {
 			secrets: this.secrets,
 			nestedAgentsMd,
 			tools: () => this.registry.visible(),
-			// Blocked skills stay out of the catalog; without read the model could not open one anyway.
-			skillCatalog: () =>
-				this.permissions.get('read') === 'blocked'
-					? ''
-					: catalogOf(
-							this.skills.skills.filter(
-								(s) => this.permissions.get(skillKey(s.name)) !== 'blocked',
-							),
-						),
+			// Listed skills go in the catalog; deferred ones by name only, for skill_search to find.
+			skillCatalog: () => {
+				const usable = usableSkills();
+				const listed = usable.filter((s) => !this.toolDeferredOf(skillKey(s.name)));
+				const deferred =
+					this.permissions.get(SKILL_SEARCH_NAME) === 'blocked'
+						? []
+						: usable.filter((s) => !listed.includes(s));
+				return skillsSection(listed, deferred);
+			},
 		});
 		this.controller.subscribe((e) => {
 			if (e.type !== 'session') return;
@@ -275,11 +297,14 @@ export default class LibrarianPlugin extends Plugin {
 		return this.settings.mcpServers.find((s) => s.id === id)?.name ?? id;
 	}
 
-	/** Deferred tools are not listed to the model until tool_search finds them. MCP tools default to deferred. */
+	/**
+	 * Deferred tools and skills are not listed to the model until tool_search or skill_search
+	 * finds them. MCP tools and skills default to deferred.
+	 */
 	toolDeferredOf(name: string): boolean {
 		const stored = this.settings.toolDeferredByTool[name];
 		if (stored !== undefined) return stored;
-		return name.includes('__');
+		return name.includes('__') || name.startsWith(SKILL_KEY_PREFIX);
 	}
 
 	/** Effective execution mode of one tool: the setting, else the tool's own default. */

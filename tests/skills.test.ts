@@ -4,10 +4,13 @@ import { PromptManager } from '../src/agent/prompt';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import {
 	catalogOf,
+	createSkillSearchTool,
 	parseSkillMd,
+	type Skill,
 	SkillManager,
 	skillGroups,
 	skillKey,
+	skillsSection,
 } from '../src/skills/skill-manager';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings } from '../src/types';
@@ -87,10 +90,12 @@ describe('skills (LIB-TEST-123)', () => {
 			builtIn: 'built-in',
 			vaultAgentsMd: null,
 			customSystemPrompt: '',
-			skillCatalog: catalog,
+			skillCatalog: skillsSection(skills.skills, []),
 		});
 		expect(prompt).toContain('# Skills');
-		expect(prompt).toContain('call read with the SKILL.md path');
+		expect(prompt).toContain('call read with the path of its SKILL.md');
+		expect(prompt).toContain(catalog);
+		expect(prompt).not.toContain('skill_search');
 		expect(skillGroups(skills.skills)[0]?.tools).toEqual([
 			'skill:pdf-processing',
 			'skill:meeting-notes',
@@ -144,6 +149,42 @@ describe('skills (LIB-TEST-123)', () => {
 		expect((ref.lines as { text: string }[])[0]!.text).toBe('deep reference');
 		expect(ref.skillDir).toBeUndefined();
 		await expect(run('.agents/other/x.md')).rejects.toThrow('File not found');
+	});
+
+	it('LIB-TEST-190: names deferred skills in the prompt and finds them with skill_search', async () => {
+		const [pdf, meeting] = skills.skills as [Skill, Skill];
+		const deferredOnly = skillsSection([], [pdf, meeting]);
+		expect(deferredOnly).toContain('known by name only: pdf-processing, meeting-notes.');
+		expect(deferredOnly).toContain('skill_search');
+		expect(deferredOnly).not.toContain('<available_skills>');
+		expect(deferredOnly).not.toContain(meeting.description);
+		const mixed = skillsSection([pdf], [meeting]);
+		expect(mixed).toContain('<name>pdf-processing</name>');
+		expect(mixed).toContain('known by name only: meeting-notes.');
+		expect(skillsSection([], [])).toBe('');
+
+		const search = createSkillSearchTool(skills.skills);
+		expect(search.description).toContain('- .agents/skills: 1 skill');
+		expect(search.description).toContain('- 10-projects/alpha/.agents/skills: 1 skill');
+		const run = async (query: string) =>
+			JSON.parse(
+				(await search.execute('id', { query } as never, undefined)).content[0]!.text,
+			) as {
+				matches: { name: string; location: string }[];
+				note?: string;
+				hint?: string;
+			};
+		const found = await run('summarize meeting notes');
+		expect(found.matches[0]).toMatchObject({
+			name: 'meeting-notes',
+			location: '10-projects/alpha/.agents/skills/meeting-notes/SKILL.md',
+		});
+		expect(found.note).toContain('Read the SKILL.md');
+		expect((await run('extract pdf text')).matches[0]!.name).toBe('pdf-processing');
+		expect((await run('회의록 요약')).hint).toContain('English');
+		const none = await run('weather');
+		expect(none.matches).toEqual([]);
+		expect(none.hint).toBeUndefined();
 	});
 
 	it('wraps the body for /skill with the directory and the resource list', async () => {

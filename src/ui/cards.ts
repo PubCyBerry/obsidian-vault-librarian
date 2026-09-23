@@ -23,6 +23,7 @@ const TOOL_ICONS: Record<string, string> = {
 	write: 'file-plus',
 	edit: 'pencil',
 	tool_search: 'search',
+	skill_search: 'sparkles',
 	webdav_ls: 'folder',
 	webdav_read: 'book-open',
 	webdav_write: 'file-plus',
@@ -118,9 +119,11 @@ export function summarizeCall(
 			const end = lines !== null ? offset + lines - 1 : null;
 			return `${args.path as string}:${offset}${end !== null ? `-${end}` : ''}`;
 		}
-		case 'tool_search': {
+		case 'tool_search':
+		case 'skill_search': {
 			const n = count('matches');
-			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'tool' : 'tools'}` : ''}`;
+			const noun = name === 'tool_search' ? 'tool' : 'skill';
+			return `${short(args.query)}${n !== null ? `, ${n} ${noun}${n === 1 ? '' : 's'}` : ''}`;
 		}
 		case 'get_active_note':
 			return parsed && typeof parsed.path === 'string'

@@ -60,8 +60,10 @@ describe('deferred tools (LIB-TEST-137)', () => {
 		const r = registry();
 		expect(r.visible().map((t) => t.name)).toEqual(['read', TOOL_SEARCH_NAME]);
 		const search = r.visible().find((t) => t.name === TOOL_SEARCH_NAME)!;
-		expect(search.description).toContain('- outline: 2 tools');
-		expect(search.description).toContain('- calendar: 1 tool');
+		expect(search.description).toContain(
+			'- outline: outline__list_documents, outline__create_document',
+		);
+		expect(search.description).toContain('- calendar: calendar__list_events');
 		const result = await search.execute(
 			'id',
 			{ query: 'outline wiki documents' } as never,

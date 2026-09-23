@@ -15,6 +15,12 @@ creates a note and rewinds it, sends a turn over the requestUrl transport, and r
 after it, **Send now** skipping the next call and going in after the tool results, and Stop handing the
 queue back to the composer. It auto-approves every tool call and leaves the results in `window.__queue`.
 
+`skill-search.js` sends a request that a deferred skill covers, without telling the model to use a tool, and
+leaves the `# Skills` section, the `skill_search` description and the calls in `window.__skill`.
+`selection.js` runs a list of requests in fresh sessions to see whether the model reaches for `tool_search`
+and `skill_search` on its own, and leaves the calls of each in `window.__batch`. Set `window.__batchCfg` first
+(the script's header lists the fields); `deferBash: true` hides `bash` behind `tool_search`.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:

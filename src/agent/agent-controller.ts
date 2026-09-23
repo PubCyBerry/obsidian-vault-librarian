@@ -126,7 +126,7 @@ export interface ControllerDeps {
 	secrets: SecretStore;
 	/** Vault tools plus whatever MCP servers currently offer; read fresh on every turn. */
 	tools: () => AgentTool[];
-	/** `<available_skills>` for the system prompt; empty when none is usable. */
+	/** The `# Skills` section: listed skills and how to find the deferred ones; empty when none is usable. */
 	skillCatalog: () => string;
 	/** AGENTS.md files below the vault root and on the storage, delivered as tools reach them. */
 	nestedAgentsMd?: NestedAgentsMd;
@@ -1002,7 +1002,9 @@ export class AgentController {
 				return true;
 			}
 		}
-		if (this.iterations >= this.deps.settings().maxIterations) {
+		// 0 is no limit: the failure limit above and Stop are what end a long run then.
+		const max = this.deps.settings().maxIterations;
+		if (max > 0 && this.iterations >= max) {
 			this.stopReason = `Stopped after ${this.iterations} tool iterations. Send a message to continue.`;
 			return true;
 		}

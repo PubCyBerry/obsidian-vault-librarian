@@ -2,7 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
 
 export const TOOL_SEARCH_NAME = 'tool_search';
-const DEFAULT_LIMIT = 5;
+export const DEFAULT_SEARCH_LIMIT = 5;
 
 /** Small BM25 over short English texts: ASCII-folded, lowercased, light suffix stripping. */
 const STOP = new Set([
@@ -149,7 +149,7 @@ export class ToolRegistry {
 
 	search(
 		query: string,
-		limit = DEFAULT_LIMIT,
+		limit = DEFAULT_SEARCH_LIMIT,
 	): { name: string; description: string; source: string }[] {
 		const deferred = this.deferredEntries();
 		const index = new Bm25Index(
@@ -166,52 +166,54 @@ export class ToolRegistry {
 	}
 
 	private searchTool(entries: RegisteredTool[]): AgentTool {
-		const sources = new Map<string, number>();
+		// Names only, no schemas: enough for the model to know what exists and search for it.
+		const sources = new Map<string, string[]>();
 		for (const e of entries)
-			if (e.deferred) sources.set(e.source, (sources.get(e.source) ?? 0) + 1);
+			if (e.deferred) sources.set(e.source, [...(sources.get(e.source) ?? []), e.tool.name]);
 		const listing = [...sources]
-			.map(([name, count]) => `- ${name}: ${count} ${count === 1 ? 'tool' : 'tools'}`)
+			.map(([name, tools]) => `- ${name}: ${tools.join(', ')}`)
 			.join('\n');
-		const description = `Searches deferred tool metadata with BM25 and exposes the matching tools on the next model call. Some tools were not listed upfront; search for them by what they do before saying a capability is missing. Write the query in English keywords, whatever language the user writes in.\n\nDeferred tools come from:\n${listing}`;
+		const description = `Searches deferred tool metadata with BM25 and exposes the matching tools on the next model call. Some tools were not listed upfront; search for them by what they do before using a listed tool for something it was not made for, or saying a capability is missing. Write the query in English keywords, whatever language the user writes in.\n\nDeferred tools come from:\n${listing}`;
 		const tool: AgentTool<ReturnType<typeof searchParameters>> = {
 			name: TOOL_SEARCH_NAME,
 			label: 'Find tools',
 			description,
-			parameters: searchParameters(),
+			parameters: searchParameters('English keywords for what the tool should do.', 'tools'),
 			execute: async (_id, params) => {
 				const query = params.query.trim();
 				if (!query) throw new Error('query must not be empty');
-				const limit = params.limit ?? DEFAULT_LIMIT;
-				const matches = this.search(query, limit);
+				const matches = this.search(query, params.limit ?? DEFAULT_SEARCH_LIMIT);
 				this.activate(matches.map((m) => m.name));
-				const result: Record<string, unknown> = { query, matches };
-				if (!matches.length && /\P{ASCII}/u.test(query))
-					result.hint = 'No match. Write the query in English keywords.';
-				else if (matches.length)
-					result.note = 'These tools are available from your next response on.';
-				return ok(result);
+				return searchResult(
+					query,
+					matches,
+					'These tools are available from your next response on.',
+				);
 			},
 		};
 		return tool as AgentTool;
 	}
 }
 
-function searchParameters() {
+/** Arguments of tool_search and skill_search. */
+export function searchParameters(query: string, noun: string) {
 	return Type.Object({
-		query: Type.String({
-			minLength: 1,
-			description: 'English keywords for what the tool should do.',
-		}),
+		query: Type.String({ minLength: 1, description: query }),
 		limit: Type.Optional(
 			Type.Integer({
 				minimum: 1,
 				maximum: 20,
-				description: `Maximum tools to return. Default ${DEFAULT_LIMIT}.`,
+				description: `Maximum ${noun} to return. Default ${DEFAULT_SEARCH_LIMIT}.`,
 			}),
 		),
 	});
 }
 
-function ok(result: unknown): AgentToolResult {
+/** The matches, with a nudge toward English when a non-ASCII query finds nothing. */
+export function searchResult(query: string, matches: unknown[], note: string): AgentToolResult {
+	const result: Record<string, unknown> = { query, matches };
+	if (!matches.length && /\P{ASCII}/u.test(query))
+		result.hint = 'No match. Write the query in English keywords.';
+	else if (matches.length) result.note = note;
 	return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result as never };
 }

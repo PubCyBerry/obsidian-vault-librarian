@@ -1,6 +1,5 @@
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
-import { SKILLS_INSTRUCTIONS } from '../skills/skill-manager';
 import { expandReferences, type ReferenceReader } from './references';
 
 /** Resolves `@path` the way a wikilink would: exact vault path first, then the link resolver. */
@@ -72,7 +71,7 @@ Safety:
 
 Tool permissions:
 - Only tools included in the current tool list are available.
-- When a tool_search tool is listed, more tools exist but are deferred: search for a capability with it before saying the capability is missing.
+- When a tool_search tool is listed, more tools exist but are deferred, including any tool these instructions name that is not in your tool list. If no listed tool is made for what the task needs, search with tool_search first: do not use a listed tool for something it was not made for, and do not say a capability is missing before searching.
 - Some available tools may require user approval before execution.
 - If a tool call is rejected, blocked, or unavailable, do not claim that it ran.
 - Do not repeatedly request a rejected or unavailable tool unless the user changes the permission or explicitly asks you to try again.
@@ -90,7 +89,7 @@ export interface PromptSources {
 	builtIn: string;
 	vaultAgentsMd: string | null;
 	customSystemPrompt: string;
-	/** `<available_skills>` catalog, empty when no skill is usable. */
+	/** Body of the `# Skills` section (`skillsSection`), empty when no skill is usable. */
 	skillCatalog?: string;
 }
 
@@ -141,8 +140,7 @@ export class PromptManager {
 		}
 		const custom = sources.customSystemPrompt.trim();
 		if (custom) parts.push(`# Custom system prompt\n\n${custom}`);
-		if (sources.skillCatalog)
-			parts.push(`# Skills\n\n${SKILLS_INSTRUCTIONS}\n\n${sources.skillCatalog}`);
+		if (sources.skillCatalog) parts.push(`# Skills\n\n${sources.skillCatalog}`);
 		return parts.join('\n\n');
 	}
 }

@@ -52,6 +52,7 @@ describe('tool permissions', () => {
 			'get_active_note',
 			'write',
 			'tool_search',
+			'skill_search',
 		]);
 	});
 
