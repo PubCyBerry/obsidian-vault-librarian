@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.14.0...2.0.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace the four script tools with one bash tool
+
+### Features
+
+* replace the four script tools with one bash tool ([d593bfb](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/d593bfb13934434bc979feea6f0616c81a456439))
+
 ## [1.14.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.13.0...1.14.0) (2026-09-23)
 
 
