@@ -10,116 +10,13 @@ export const NO_CLI = 'obsidian: the command registry is not available in this v
 const WITHHELD = (verb: string) =>
 	verb === 'eval' || verb === 'devtools' || verb.startsWith('dev:');
 
-/** Obsidian verbs that only read. Anything else is treated as a change and asks first. */
-const READ_ONLY_VERBS = new Set([
-	'aliases',
-	'backlinks',
-	'base:query',
-	'base:views',
-	'bases',
-	'bookmarks',
-	'commands',
-	'daily:path',
-	'daily:read',
-	'deadends',
-	'diff',
-	'file',
-	'files',
-	'folders',
-	'help',
-	'history:list',
-	'history:read',
-	'homepage:read',
-	'hotkeys',
-	'links',
-	'orphans',
-	'outline',
-	'plugins',
-	'plugins:enabled',
-	'properties',
-	'property:read',
-	'random:read',
-	'read',
-	'recents',
-	'search',
-	'search:context',
-	'snippets',
-	'snippets:enabled',
-	'tabs',
-	'tags',
-	'tasks',
-	'template:read',
-	'templates',
-	'themes',
-	'unique',
-	'unresolved',
-	'vaults',
-	'version',
-	'wordcount',
-	'workspaces',
-]);
-
-/** Verbs whose effect cannot be taken back, so the settings never let them skip approval. */
-export const IRREVERSIBLE_VERBS = new Set([
-	'delete',
-	'plugin:uninstall',
-	'plugins:restrict',
-	'reload',
-	'restart',
-	'theme:uninstall',
-	'workspace:delete',
-]);
-
-export function isReadOnlyVerb(verb: string): boolean {
-	return READ_ONLY_VERBS.has(verb);
-}
-
-/** `http:<origin>` for curl, `obsidian:<verb>` (or `command:<id>`) for the Obsidian bridge. */
-export function shellPermissionKey(name: string, args: unknown): string | null {
-	const record = (args ?? {}) as Record<string, unknown>;
-	if (name === 'curl') {
-		const url = typeof record.url === 'string' ? record.url : '';
-		try {
-			return `http:${new URL(url).origin}`;
-		} catch {
-			return null;
-		}
-	}
-	if (name !== 'obsidian') return null;
-	const verb = typeof record.verb === 'string' ? record.verb : '';
-	if (!verb) return null;
-	const id = (record.flags as Record<string, unknown> | undefined)?.id;
-	if (verb === 'command' && typeof id === 'string' && id) return `command:${id}`;
-	return `obsidian:${verb}`;
-}
-
-/** Permission and approval for one thing a command is about to do. */
-export type ShellGate = (name: string, args: Record<string, unknown>) => Promise<void>;
-
 export interface CommandDeps {
 	app: App;
-	gate: ShellGate;
 	signal?: AbortSignal;
 }
 
 /** A command the settings or the user refused. 126 is the shell's "found but not runnable". */
 export const REFUSED = 126;
-
-/** Asks first, turning a refusal into an ordinary command failure the script can react to. */
-async function gated(
-	deps: CommandDeps,
-	name: string,
-	args: Record<string, unknown>,
-	run: () => Promise<ExecResult>,
-): Promise<ExecResult> {
-	try {
-		await deps.gate(name, args);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return { stdout: '', stderr: `${name}: ${message}\n`, exitCode: REFUSED };
-	}
-	return await run();
-}
 
 // curl
 
@@ -237,13 +134,9 @@ export function createCurl(deps: CommandDeps): Command {
 			const message = error instanceof CurlUsageError ? error.message : String(error);
 			return { stdout: '', stderr: `curl: ${message}\n`, exitCode: 2 };
 		}
-		const request = {
-			url: args.url,
-			method: args.method,
-			headers: args.headers,
-			body: args.body,
-		};
-		return await gated(deps, 'curl', request, () => fetchIt(args, deps, ctx));
+		// No permission of its own: the bash call that wrote this line was approved with the URL
+		// in plain sight, so a second card for the same request would only repeat the question.
+		return await fetchIt(args, deps, ctx);
 	});
 }
 
@@ -420,26 +313,24 @@ export function createObsidian(deps: CommandDeps): Command {
 			if (at > 0) flags[arg.slice(0, at)] = arg.slice(at + 1);
 			else flags[arg] = true;
 		}
-		return await gated(deps, 'obsidian', { verb, flags }, async () => {
-			try {
-				const result = await entry.handler(flags);
-				// Handlers answer with a string; a few return a value, which is clearest as JSON.
-				const text =
-					typeof result === 'string'
-						? result
-						: result === undefined || result === null
-							? ''
-							: JSON.stringify(result);
-				return {
-					stdout: text.endsWith('\n') || !text ? text : `${text}\n`,
-					stderr: '',
-					exitCode: 0,
-				};
-			} catch (error) {
-				// The handlers throw plain strings, which is how the real CLI reports a refusal.
-				const message = error instanceof Error ? error.message : String(error);
-				return { stdout: '', stderr: `obsidian: ${message}\n`, exitCode: 1 };
-			}
-		});
+		try {
+			const result = await entry.handler(flags);
+			// Handlers answer with a string; a few return a value, which is clearest as JSON.
+			const text =
+				typeof result === 'string'
+					? result
+					: result === undefined || result === null
+						? ''
+						: JSON.stringify(result);
+			return {
+				stdout: text.endsWith('\n') || !text ? text : `${text}\n`,
+				stderr: '',
+				exitCode: 0,
+			};
+		} catch (error) {
+			// The handlers throw plain strings, which is how the real CLI reports a refusal.
+			const message = error instanceof Error ? error.message : String(error);
+			return { stdout: '', stderr: `obsidian: ${message}\n`, exitCode: 1 };
+		}
 	});
 }

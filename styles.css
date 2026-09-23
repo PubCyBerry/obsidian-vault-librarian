@@ -955,14 +955,6 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	word-break: break-all;
 }
 
-/* Marks a row that is a command inside bash rather than a tool the model calls on its own. */
-.librarian-tool-permission-note {
-	font-family: var(--font-interface);
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	margin-left: var(--size-4-2);
-}
-
 /* A long tool name pushes the control onto its own line, right-aligned, instead of clipping it. */
 .librarian-tool-permission-row .librarian-segmented {
 	flex: 0 0 auto;

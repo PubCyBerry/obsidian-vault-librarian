@@ -16,7 +16,7 @@ export interface ShellDeps {
 	app: App;
 	/** Characters of tool result the model may receive, from the context settings. */
 	resultLimit: () => number;
-	/** Permission and approval for one thing a command is about to do. Throws to refuse. */
+	/** Permission and approval for a note the shell is about to change. Throws to refuse. */
 	gate: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<void>;
 	/** Rewind snapshot around one vault write. */
 	snapshot: {
@@ -83,12 +83,7 @@ export class ShellSession {
 
 	private shell(timeoutSeconds: number): Bash {
 		const signal = this.call.signal;
-		const deps = {
-			app: this.deps.app,
-			gate: (name: string, args: Record<string, unknown>) =>
-				this.deps.gate(name, args, signal),
-			signal,
-		};
+		const deps = { app: this.deps.app, signal };
 		return new Bash({
 			fs: this.filesystem(),
 			cwd: VAULT_ROOT,

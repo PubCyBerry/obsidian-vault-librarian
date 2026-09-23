@@ -37,9 +37,6 @@ import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
 
-/** Permission rows that are commands inside `bash`, not tools the model can call on its own. */
-const SHELL_COMMANDS = new Set(['curl', 'obsidian']);
-
 const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	disabled: 'Disabled',
 	disconnected: 'Not connected',
@@ -632,6 +629,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		const sections = [
 			{
 				name: 'Providers',
+				desc: 'Endpoints, API keys and the models Librarian may use.',
 				aliases: [
 					'API key',
 					'Base URL',
@@ -645,6 +643,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Agent',
+				desc: 'Tool iterations, vault instructions and your own system prompt.',
 				aliases: [
 					'Max tool iterations',
 					'Repeated failure limit',
@@ -655,36 +654,39 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'MCP servers',
+				desc: 'Remote tool servers and how you sign in to them.',
 				aliases: ['MCP', 'OAuth', 'Sign in', 'Remote tools'],
 				render: (el: HTMLElement) => this.renderMcpServers(el),
 			},
 			{
 				name: 'WebDAV storage',
+				desc: 'One WebDAV server, such as a NAS, the agent may reach.',
 				aliases: ['WebDAV', 'NAS', 'Synology', 'Remote storage', 'Password'],
 				render: (el: HTMLElement) => this.renderWebDav(el),
 			},
 			{
 				name: 'Skills',
+				desc: 'SKILL.md folders the agent may open.',
 				aliases: ['SKILL.md', 'Agent Skills', 'Rescan'],
 				render: (el: HTMLElement) => this.renderSkills(el),
 			},
 			{
 				name: 'Tool permissions',
+				desc: 'What each tool may do without asking.',
 				aliases: [
 					'Read',
 					'Write',
 					'Ask first',
 					'Blocked',
-					'HTTP',
-					'Web',
 					'Commands',
-					'Script',
+					'Shell',
 					...TOOL_GROUPS.flatMap((group) => group.tools),
 				],
 				render: (el: HTMLElement) => this.renderToolPermissions(el),
 			},
 			{
 				name: 'Context',
+				desc: 'When to warn about the context window and when to compact it.',
 				aliases: [
 					'Warning at',
 					'Compact at',
@@ -696,18 +698,29 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Sessions',
+				desc: 'Where conversations and rewind snapshots are kept.',
 				aliases: ['Storage', 'History', 'Snapshots', 'Rewind'],
 				render: (el: HTMLElement) => this.renderSessions(el),
 			},
 		];
+		// One navigable page per section: eight of them stacked ran past seven thousand pixels.
+		// The page itself carries no aliases, so the section sits inside it as a single item that
+		// does, which is what Obsidian's settings search matches on.
 		return sections.map((section) => ({
+			type: 'page' as const,
 			name: section.name,
-			aliases: section.aliases,
-			render: (setting: Setting) => {
-				setting.settingEl.empty();
-				setting.settingEl.addClass('librarian-settings-section');
-				section.render(setting.settingEl);
-			},
+			desc: section.desc,
+			items: [
+				{
+					name: section.name,
+					aliases: section.aliases,
+					render: (setting: Setting) => {
+						setting.settingEl.empty();
+						setting.settingEl.addClass('librarian-settings-section');
+						section.render(setting.settingEl);
+					},
+				},
+			],
 		}));
 	}
 
@@ -1196,17 +1209,9 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			);
 			for (const tool of group.tools) {
 				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
-				const inBash = SHELL_COMMANDS.has(tool);
-				const name = row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
-				// The model calls bash; curl and obsidian are commands it may write inside one.
-				if (inBash)
-					name.createSpan({ cls: 'librarian-tool-permission-note', text: 'in bash' });
-				// A row that is a permission only: it is not a tool the model runs or lists.
-				const target =
-					inBash ||
-					tool.startsWith('http:') ||
-					tool.startsWith('obsidian:') ||
-					tool.startsWith('command:');
+				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
+				// A skill row is a permission only: it is not a tool that runs or lists on its own.
+				const target = tool.startsWith('skill:');
 				if (!target) {
 					const exec = row.createEl('select', {
 						cls: 'dropdown librarian-tool-execution',

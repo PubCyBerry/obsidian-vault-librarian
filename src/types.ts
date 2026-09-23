@@ -176,8 +176,6 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		edit: 'approval_required',
 		tool_search: 'approval_required',
 		bash: 'approval_required',
-		curl: 'approval_required',
-		obsidian: 'approval_required',
 	},
 };
 

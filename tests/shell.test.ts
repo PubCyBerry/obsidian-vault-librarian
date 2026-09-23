@@ -1,6 +1,6 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CurlUsageError, cliHandlers, parseCurl, shellPermissionKey } from '../src/shell/commands';
+import { CurlUsageError, cliHandlers, parseCurl } from '../src/shell/commands';
 import { ShellSession } from '../src/shell/shell-tool';
 import { normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
@@ -163,28 +163,16 @@ describe('curl (LIB-TEST-175)', () => {
 			headers: { Authorization: 'Bearer abcdef' },
 			body: '{"a":1}',
 		});
-		expect(asked[0]?.name).toBe('curl');
-		expect(asked[0]?.args).toMatchObject({ url: 'https://api.test/items', method: 'POST' });
+		// The approved bash call already showed this URL, so the request asks nothing further.
+		expect(asked).toEqual([]);
 	});
 
-	it('shows the status only when asked, and reports a refusal', async () => {
+	it('shows the status only when asked', async () => {
 		requestUrlMock.impl = async () => ({ status: 404, headers: {}, text: 'nope' });
 		const { run } = shell();
 		expect(await run('curl -s https://api.test/x')).toBe('nope');
 		expect(await run('curl -si https://api.test/x')).toContain('HTTP 404');
 		expect(await run('curl -sf https://api.test/x')).toContain('Exit code: 22');
-		const refused = shell({ refuse: () => 'Tool blocked by settings' });
-		expect(await refused.run('curl -s https://api.test/x')).toContain(
-			'Tool blocked by settings',
-		);
-	});
-
-	it('names the permission key after the site', () => {
-		expect(shellPermissionKey('curl', { url: 'https://a.test/x?y=1' })).toBe(
-			'http:https://a.test',
-		);
-		expect(shellPermissionKey('curl', { url: 'nonsense' })).toBeNull();
-		expect(shellPermissionKey('write', { path: 'x' })).toBeNull();
 	});
 });
 
@@ -215,8 +203,8 @@ describe('the obsidian command (LIB-TEST-175)', () => {
 		expect(await s.run('obsidian version')).toBe('1.13.7\n');
 		expect(await s.run('obsidian search query=alpha limit=5 total')).toBe('notes/a.md\n');
 		expect(seen[0]).toEqual({ query: 'alpha', limit: '5', total: true });
-		expect(s.asked.map((a) => a.name)).toEqual(['obsidian', 'obsidian']);
-		expect(s.asked[1]?.args).toMatchObject({ verb: 'search' });
+		// The approved bash call already showed the verb, so running it asks nothing further.
+		expect(s.asked).toEqual([]);
 	});
 
 	it('refuses an unknown verb, the withheld ones and a missing registry', async () => {
@@ -242,18 +230,6 @@ describe('the obsidian command (LIB-TEST-175)', () => {
 		const out = await s.run('obsidian read path=x.md');
 		expect(out).toContain('File "x.md" not found.');
 		expect(out).toContain('Exit code: 1');
-	});
-
-	it('names the permission key after the verb, and after the command id for command', () => {
-		expect(shellPermissionKey('obsidian', { verb: 'search', flags: {} })).toBe(
-			'obsidian:search',
-		);
-		expect(shellPermissionKey('obsidian', { verb: 'command', flags: { id: 'x:y' } })).toBe(
-			'command:x:y',
-		);
-		expect(shellPermissionKey('obsidian', { verb: 'command', flags: {} })).toBe(
-			'obsidian:command',
-		);
 	});
 
 	it('finds the registry only when it is a Map', () => {

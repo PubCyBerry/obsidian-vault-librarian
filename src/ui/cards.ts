@@ -32,8 +32,6 @@ const TOOL_ICONS: Record<string, string> = {
 	webdav_download: 'download',
 	webdav_upload: 'upload',
 	bash: 'square-terminal',
-	curl: 'globe',
-	obsidian: 'play',
 };
 
 export function toolIcon(name: string): string {
@@ -67,8 +65,7 @@ const SECRET_HEADER = /authorization|cookie|token|key|secret|password/i;
 
 /** Arguments as the cards show them; request credentials are masked on screen. */
 export function shownArgs(name: string, args: Record<string, unknown>): string {
-	if (name !== 'curl' || !args.headers || typeof args.headers !== 'object')
-		return JSON.stringify(args, null, 2);
+	if (!args.headers || typeof args.headers !== 'object') return JSON.stringify(args, null, 2);
 	const headers = Object.fromEntries(
 		Object.entries(args.headers as Record<string, unknown>).map(([k, v]) => [
 			k,
@@ -150,14 +147,6 @@ export function summarizeCall(
 					: [args.vault_path, args.path];
 			const n = count('files');
 			return `${str(from) || '/'} to ${str(to) || '/'}${n !== null ? `, ${n} ${n === 1 ? 'file' : 'files'}` : ''}`;
-		}
-		case 'curl':
-			return `${str(args.method) || 'GET'} ${short(args.url)}`;
-		case 'obsidian': {
-			const flags = Object.entries((args.flags ?? {}) as Record<string, unknown>)
-				.map(([k, v]) => (v === true ? k : `${k}=${str(v)}`))
-				.join(' ');
-			return short(`${str(args.verb)}${flags ? ` ${flags}` : ''}`);
 		}
 		case 'bash':
 			return short(
@@ -300,10 +289,10 @@ export function renderApprovalCard(
 	if (isChange(shape, args)) renderChangePreview(body, shape, args, existingLength);
 	else if (name === 'bash') body.createEl('pre', { text: str(args.command) });
 	else body.createEl('pre', { text: shownArgs(name, args) });
-	if (name === 'obsidian')
+	if (name === 'bash')
 		body.createDiv({
 			cls: 'librarian-approval-note',
-			text: 'Obsidian commands are not undone by rewind.',
+			text: 'Obsidian commands this runs are not undone by rewind.',
 		});
 	const path = typeof args.path === 'string' ? args.path : '';
 	const protectsAgentsMd = (name === 'write' || name === 'edit') && isRootAgentsMd(path);

@@ -6,8 +6,13 @@ import { LibrarianSettingTab } from '../src/settings/settings-tab';
 describe('settings search', () => {
 	it('indexes all sections without rendering UI, and renders the matching section on demand', () => {
 		const tab = new LibrarianSettingTab({} as App, {} as LibrarianPlugin);
-		const definitions = tab.getSettingDefinitions() as SettingDefinitionRender[];
-		expect(definitions.map((definition) => definition.name)).toEqual([
+		const pages = tab.getSettingDefinitions() as {
+			name: string;
+			desc?: string;
+			items: SettingDefinitionRender[];
+		}[];
+		const definitions = pages.map((page) => page.items[0]!);
+		expect(pages.map((page) => page.name)).toEqual([
 			'Providers',
 			'Agent',
 			'MCP servers',
@@ -33,6 +38,8 @@ describe('settings search', () => {
 		const renderContext = vi.fn();
 		Object.assign(tab, { renderContext });
 		const element = { empty: vi.fn(), addClass: vi.fn() };
+		// Every page carries a one-line description on its navigable entry.
+		expect(pages.every((page) => (page.desc ?? '').length > 0)).toBe(true);
 		const definition = definitions.find((item) => item.name === 'Context')!;
 		definition.render({ settingEl: element } as never, {} as never);
 		expect(renderContext).toHaveBeenCalledWith(element);

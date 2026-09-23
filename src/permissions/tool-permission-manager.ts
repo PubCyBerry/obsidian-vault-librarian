@@ -1,5 +1,5 @@
 import { normalizePath } from 'obsidian';
-import { IRREVERSIBLE_VERBS, isReadOnlyVerb } from '../shell/commands';
+
 import type { LibrarianSettings, ToolPermission } from '../types';
 
 export interface ToolGroup {
@@ -17,46 +17,14 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
 	{ id: 'write', label: 'Write tools', tools: ['write', 'edit'] },
 ];
 
-/** The shell and what it reaches, plus each site, verb and command that has its own row. */
-export function shellGroup(settings: LibrarianSettings): ToolGroup {
-	const keys = Object.keys(settings.toolPermissions.byTool);
-	const rows = (prefix: string) => keys.filter((k) => k.startsWith(prefix)).sort();
-	return {
-		id: 'shell',
-		label: 'Shell, web and commands',
-		tools: [
-			'bash',
-			'curl',
-			...rows('http:'),
-			'obsidian',
-			...rows('obsidian:'),
-			...rows('command:'),
-		],
-	};
-}
+/**
+ * The shell. `curl` and `obsidian` are commands the model writes inside a `bash` call, not tools
+ * it can reach on its own, so they get no rows of their own: the approval for the call shows the
+ * whole command, URL and all, and that one decision covers everything the command then does.
+ */
+export const SHELL_GROUP: ToolGroup = { id: 'shell', label: 'Commands', tools: ['bash'] };
 
 export type ToolGroupDisplayPermission = ToolPermission | 'mixed';
-
-/**
- * Per-target keys of the shell's commands: a site, verb or command without its own row follows the
- * command's row, so setting `curl` to Always allow allows every site not set otherwise.
- */
-const INHERITED_FROM: [prefix: string, tool: string][] = [
-	['http:', 'curl'],
-	['obsidian:', 'obsidian'],
-	['command:', 'obsidian'],
-];
-
-/** The rows a per-target key follows when it has no value of its own. */
-function parentsOf(tool: string): string[] {
-	const parent = INHERITED_FROM.find(([prefix]) => tool.startsWith(prefix))?.[1];
-	if (!parent) return [];
-	// An Obsidian verb that only looks things up also counts as a read, so allowing the read-only
-	// tools covers it without allowing the verbs that change the vault.
-	if (parent === 'obsidian' && isReadOnlyVerb(tool.slice('obsidian:'.length)))
-		return [parent, 'read'];
-	return [parent];
-}
 
 export const PERMISSION_LABELS: Record<ToolPermission, string> = {
 	always_allow: 'Always allow',
@@ -120,20 +88,11 @@ export class ToolPermissionManager {
 	}
 
 	get(tool: string): ToolPermission {
-		const byTool = this.settings().toolPermissions.byTool;
-		const stored = byTool[tool];
-		if (stored) return stored;
-		const inherited = parentsOf(tool)
-			.map((p) => byTool[p])
-			.filter((v): v is ToolPermission => Boolean(v));
-		if (inherited.includes('always_allow')) return 'always_allow';
-		return inherited[0] ?? 'approval_required';
+		return this.settings().toolPermissions.byTool[tool] ?? 'approval_required';
 	}
 
 	/** False for tools a server marks destructive: they can be allowed once or blocked, never always. */
 	canAlwaysAllow(tool: string): boolean {
-		if (tool.startsWith('obsidian:') && IRREVERSIBLE_VERBS.has(tool.slice('obsidian:'.length)))
-			return false;
 		return !this.alwaysAsk().has(tool);
 	}
 

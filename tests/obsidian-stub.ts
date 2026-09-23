@@ -114,6 +114,11 @@ export class ItemView {}
 export class Plugin {}
 export class PluginSettingTab {}
 export class Setting {}
+/** Base of a navigable settings page; the real one also gives rootEl and titlebarEl. */
+export class SettingPage {
+	title = '';
+	containerEl: unknown = null;
+}
 export class FuzzySuggestModal {}
 export class MarkdownRenderer {}
 export function setIcon() {}

@@ -4,12 +4,12 @@ import { PromptManager } from './agent/prompt';
 import { ContextManager } from './context/context-manager';
 import { McpManager } from './mcp/mcp-manager';
 import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
-import { shellGroup, ToolPermissionManager } from './permissions/tool-permission-manager';
+import { SHELL_GROUP, ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
 import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
-import { shellPermissionKey } from './shell/commands';
+
 import { createShellTool, ShellSession } from './shell/shell-tool';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
@@ -65,16 +65,13 @@ export default class LibrarianPlugin extends Plugin {
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
 			() => [
-				shellGroup(this.settings),
+				SHELL_GROUP,
 				...this.mcp.groups(),
 				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
 				...skillGroups(this.skills.skills),
 			],
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
-				// One key per site, verb and command, so Always allow covers exactly that target.
-				const shellKey = shellPermissionKey(tool, args);
-				if (shellKey) return shellKey;
 				if (tool !== 'read') return null;
 				const path = (args as { path?: unknown } | null)?.path;
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
