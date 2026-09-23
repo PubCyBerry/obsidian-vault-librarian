@@ -1,6 +1,6 @@
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 import type { App } from 'obsidian';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
 	effectiveRequestOptions,
 	mergeCompat,
@@ -8,10 +8,11 @@ import {
 	selectableThinkingLevels,
 	toPiModel,
 } from '../src/provider/provider-manager';
-import { buildRequestBody, testConnection } from '../src/provider/transport';
+import { buildRequestBody, TransportRouter, testConnection } from '../src/provider/transport';
 import { isValidSecretId, SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider } from '../src/types';
+import { noteVisibility } from '../src/visibility';
 import { FakeApp } from './fake-app';
 import { requestUrlMock } from './obsidian-stub';
 
@@ -225,5 +226,59 @@ describe('secrets (LIB-TEST-024)', () => {
 		expect(store.get('vault-librarian-openwebui')).toBe('secret');
 		store.clear('vault-librarian-openwebui');
 		expect(store.get('vault-librarian-openwebui')).toBe('');
+	});
+});
+
+describe('auto transport while the app is away (LIB-TEST-148)', () => {
+	const g = globalThis as unknown as { window?: unknown; document?: unknown };
+	afterEach(() => {
+		delete g.window;
+		delete g.document;
+		noteVisibility();
+		requestUrlMock.impl = null;
+	});
+
+	async function failOnce(visibility: 'hidden' | 'visible') {
+		g.document = { visibilityState: visibility };
+		noteVisibility();
+		g.window = {
+			fetch: async () => {
+				throw new TypeError('Failed to fetch');
+			},
+		};
+		let urlCalls = 0;
+		requestUrlMock.impl = async () => {
+			urlCalls++;
+			throw new Error('UnknownHostException');
+		};
+		const provider = { ...newProvider('p'), baseUrl: 'https://x', transport: 'auto' as const };
+		const model = { ...newModel('m'), contextWindow: 8000, maxTokens: 500 };
+		provider.models = [model];
+		const router = new TransportRouter();
+		const streamFn = router.createStreamFn(provider, () => ({
+			apiKey: 'k',
+			authHeader: true,
+			options: effectiveRequestOptions(provider, model, 'off'),
+		}));
+		const context = normalizeContext({
+			systemPrompt: 's',
+			messages: [{ role: 'user', content: 'hi', timestamp: 0 }],
+		});
+		const stream = await streamFn(toPiModel(provider, model), context, {});
+		const result = await stream.result();
+		return { result, urlCalls, fellBack: router.hasFallenBack('p') };
+	}
+
+	it('a request blocked while the app is away fails without turning streaming off', async () => {
+		const away = await failOnce('hidden');
+		expect(away.result.stopReason).toBe('error');
+		expect(away.urlCalls).toBe(0);
+		expect(away.fellBack).toBe(false);
+	});
+
+	it('the same failure in front of the user is still treated as CORS and falls back', async () => {
+		const front = await failOnce('visible');
+		expect(front.urlCalls).toBe(1);
+		expect(front.fellBack).toBe(true);
 	});
 });

@@ -18,6 +18,7 @@ import { TFile } from 'obsidian';
 import type { PiModel } from '../provider/provider-manager';
 import type { IndexedEvent, SessionEvent, StoredUsage } from '../session/session-types';
 import type { ContextSettings, ModelConfig } from '../types';
+import { wasHiddenSince } from '../visibility';
 
 export interface ContextUsage {
 	usedTokens: number;
@@ -341,6 +342,7 @@ export class ContextManager {
 			.concat(before.map(({ event }) => serialize(event)).filter((s) => s.length > 0))
 			.join('\n\n');
 		let summary: string | null = null;
+		const startedAt = Date.now();
 		try {
 			const context = normalizeContext({
 				systemPrompt:
@@ -360,6 +362,8 @@ export class ContextManager {
 		} catch {
 			summary = null;
 		}
+		// Dropping history cannot be undone; a failure caused by being away is retried on return.
+		if (!summary && (signal?.aborted || wasHiddenSince(startedAt))) return null;
 		const result: CompactionResult = summary
 			? { summary, coveredUntil: cut, tokensBefore, tokensAfter: 0, method: 'summary' }
 			: {

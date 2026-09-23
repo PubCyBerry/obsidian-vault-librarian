@@ -7,8 +7,18 @@ import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
 import type { SecretStore } from '../storage/secret-store';
 import type { LibrarianSettings, McpServerConfig } from '../types';
+import { wasHiddenSince, whenVisible } from '../visibility';
 import { isNetworkFailure, requestUrlFetch } from './fetch-shim';
 import { ObsidianOAuthProvider, oauthSecretId } from './oauth-provider';
+
+/** Told to the model when a call that is not safe to repeat broke while the app was away. */
+export const AWAY_UNKNOWN =
+	'The app was in the background, so it is unknown whether the server ran this call. Check before calling it again.';
+
+/** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
+export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {
+	return tool.annotations?.readOnlyHint === true || tool.annotations?.idempotentHint === true;
+}
 
 export type McpStatus =
 	| 'disabled'
@@ -301,11 +311,28 @@ export class McpManager {
 					// Sequential even for read-only tools: parallel 401s would race the single refresh token.
 					executionMode: 'sequential',
 					execute: async (_toolCallId, args, signal) => {
-						const result = await connection.client.callTool(
-							{ name: tool.name, arguments: args as Record<string, unknown> },
-							undefined,
-							{ signal },
-						);
+						const call = () =>
+							connection.client.callTool(
+								{ name: tool.name, arguments: args as Record<string, unknown> },
+								undefined,
+								{ signal },
+							);
+						const startedAt = Date.now();
+						let result: Awaited<ReturnType<typeof call>>;
+						try {
+							result = await call();
+						} catch (error) {
+							if (signal?.aborted || !wasHiddenSince(startedAt)) throw error;
+							// The server may have run the call before the app froze, so only a call that
+							// is safe to repeat is sent again once the app is back.
+							if (!repeatable(tool))
+								throw new Error(
+									`${error instanceof Error ? error.message : String(error)}. ${AWAY_UNKNOWN}`,
+								);
+							await whenVisible();
+							if (signal?.aborted) throw error;
+							result = await call();
+						}
 						const text = textOf(result.content);
 						if (result.isError)
 							throw new Error(text || 'The MCP tool reported an error.');
@@ -346,10 +373,12 @@ export class McpManager {
 	private fetchFor(id: string): (url: string | URL, init?: RequestInit) => Promise<Response> {
 		return async (url, init) => {
 			if (this.fallback.has(id)) return requestUrlFetch(url, init);
+			const startedAt = Date.now();
 			try {
 				return await fetch(url, init);
 			} catch (error) {
-				if (!isNetworkFailure(error)) throw error;
+				// While the app is away a phone blocks the request; that says nothing about CORS.
+				if (!isNetworkFailure(error) || wasHiddenSince(startedAt)) throw error;
 				this.fallback.add(id);
 				return requestUrlFetch(url, init);
 			}

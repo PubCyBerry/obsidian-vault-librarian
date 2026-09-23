@@ -272,6 +272,18 @@ describe('compaction (LIB-TEST-065, LIB-TEST-066)', () => {
 		expect(JSON.stringify(requests[0])).not.toContain('"toolsAdded"');
 	});
 
+	it('keeps the history when the summary failed while the app was away (LIB-TEST-148)', async () => {
+		const g = globalThis as unknown as { document?: unknown };
+		g.document = { visibilityState: 'hidden' };
+		try {
+			const { cm } = manager({ preserveRecentTurns: 1 });
+			const { streamFn } = scriptedStream([{ stopReason: 'error', errorMessage: 'down' }]);
+			expect(await cm.compact(longConversation(3), piModel, streamFn)).toBeNull();
+		} finally {
+			delete g.document;
+		}
+	});
+
 	it('falls back to dropping the older part when the summary request fails', async () => {
 		const { cm } = manager({ preserveRecentTurns: 1 });
 		const { streamFn } = scriptedStream([{ stopReason: 'error', errorMessage: 'down' }]);

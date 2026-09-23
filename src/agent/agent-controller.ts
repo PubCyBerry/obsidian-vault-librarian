@@ -26,6 +26,7 @@ import type {
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
+import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
 import { BUILT_IN_SYSTEM_PROMPT, type PromptManager } from './prompt';
 
 export type AgentUiState =
@@ -121,11 +122,6 @@ export const BACKGROUND_RESUME_NOTICE =
 export const INTERRUPTED_RESUME_NOTICE = 'Continuing the request that was interrupted.';
 export const STREAM_CUT_NOTICE = 'The connection dropped mid-response. Retrying once.';
 
-/** `document` is absent in unit tests; treat that as an app the user is looking at. */
-function appIsHidden(): boolean {
-	return typeof document !== 'undefined' && document.visibilityState === 'hidden';
-}
-
 /** The transport's parenthetical for a response the network cut after HTTP 200. */
 function isStreamCut(message: string | undefined): boolean {
 	return /HTTP 200 received, body cut after/.test(message ?? '');
@@ -179,7 +175,6 @@ export class AgentController {
 	private resumeWhenVisible = false;
 	private hiddenDuringRequest = false;
 	private backgroundResumes = 0;
-	private readonly visibleWaiters = new Set<() => void>();
 	private wakeLock: WakeLockSentinel | null = null;
 
 	constructor(readonly deps: ControllerDeps) {}
@@ -188,25 +183,14 @@ export class AgentController {
 
 	/** Fed by the plugin from the document's `visibilitychange`. */
 	onVisibilityChange(): void {
+		noteVisibility();
 		if (appIsHidden()) {
 			this.hiddenDuringRequest = true;
 			// The screen lock is dropped by the browser whenever the page hides; forget ours.
 			this.wakeLock = null;
 			return;
 		}
-		this.releaseVisibleWaiters();
 		void this.acquireWakeLock();
-	}
-
-	private releaseVisibleWaiters(): void {
-		const waiters = [...this.visibleWaiters];
-		this.visibleWaiters.clear();
-		for (const resolve of waiters) resolve();
-	}
-
-	private whenVisible(): Promise<void> {
-		if (!appIsHidden()) return Promise.resolve();
-		return new Promise((resolve) => this.visibleWaiters.add(resolve));
 	}
 
 	/** Keeps the screen awake while a turn runs, so the phone does not sleep the app mid-answer. */
@@ -550,7 +534,7 @@ export class AgentController {
 			while (!this.stopRequested && (this.resumeWhenVisible || this.retryAfterCut)) {
 				if (this.resumeWhenVisible) {
 					this.resumeWhenVisible = false;
-					await this.whenVisible();
+					await whenVisible();
 					if (this.stopRequested) break;
 					this.emit({ type: 'notice', message: BACKGROUND_RESUME_NOTICE });
 				} else {
@@ -585,7 +569,7 @@ export class AgentController {
 		this.stopRequested = true;
 		this.agent?.abort();
 		// A turn parked until the app comes back has nothing to abort; wake it so it can end.
-		this.releaseVisibleWaiters();
+		releaseVisibilityWaiters();
 		this.pendingApproval?.resolve('expired');
 	}
 

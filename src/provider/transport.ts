@@ -18,6 +18,7 @@ import {
 } from '@earendil-works/pi-ai/utils/transcript';
 import { requestUrl } from 'obsidian';
 import type { ProviderConfig, ThinkingLevel, TransportMode } from '../types';
+import { appIsHidden, wasHiddenSince } from '../visibility';
 import type { EffectiveRequestOptions, PiModel } from './provider-manager';
 
 export const NO_STREAMING_NOTICE =
@@ -357,11 +358,7 @@ export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(win
 					}
 				} catch (error) {
 					// A phone freezes the app's sockets in the background; say so when that was the case.
-					failure =
-						describeError(error) +
-						(typeof document !== 'undefined' && document.visibilityState === 'hidden'
-							? ', app in background'
-							: '');
+					failure = describeError(error) + (appIsHidden() ? ', app in background' : '');
 					controller.error(error);
 				}
 			},
@@ -491,6 +488,7 @@ export class TransportRouter {
 		const out = createAssistantMessageEventStream();
 		const diag = createDiagnosticFetch();
 		let gotResponse = false;
+		const startedAt = Date.now();
 		const inner = streamSimple(model, context, {
 			...fetchOptions,
 			fetch: diag.fetch,
@@ -506,7 +504,10 @@ export class TransportRouter {
 					ev.reason === 'error' &&
 					!gotResponse &&
 					!urlOptions.signal?.aborted &&
-					!looksLikeHttpError(ev.error.errorMessage);
+					!looksLikeHttpError(ev.error.errorMessage) &&
+					// A phone blocks requests while the app is away; that is not CORS, and requestUrl
+					// would fail the same way. The controller asks again when the app returns.
+					!wasHiddenSince(startedAt);
 				// The runtime's own text ("network error") says nothing; add when and how it broke.
 				if (ev.type === 'error' && ev.reason === 'error')
 					ev.error.errorMessage = `${ev.error.errorMessage ?? ''} (${diag.describe()})`;

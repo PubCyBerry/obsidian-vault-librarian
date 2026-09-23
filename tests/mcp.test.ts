@@ -1,7 +1,7 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { requestUrlFetch } from '../src/mcp/fetch-shim';
-import { changedTools, exposedToolName, untrustedPrefix } from '../src/mcp/mcp-manager';
+import { changedTools, exposedToolName, repeatable, untrustedPrefix } from '../src/mcp/mcp-manager';
 import { serverIdFromState } from '../src/mcp/oauth-provider';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { mergeSettings } from '../src/types';
@@ -93,5 +93,14 @@ describe('requestUrl fetch shim (LIB-TEST-107)', () => {
 			headers: { Accept: 'text/event-stream' },
 		});
 		expect(stream.status).toBe(405);
+	});
+});
+
+describe('MCP calls interrupted while the app is away (LIB-TEST-148)', () => {
+	it('only read-only or idempotent tools are sent again', () => {
+		expect(repeatable({ annotations: { readOnlyHint: true } })).toBe(true);
+		expect(repeatable({ annotations: { idempotentHint: true } })).toBe(true);
+		expect(repeatable({ annotations: { destructiveHint: false } })).toBe(false);
+		expect(repeatable({})).toBe(false);
 	});
 });
