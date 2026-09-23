@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.4.0...2.4.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* draw a reopened conversation's tool cards in their saved state ([b88ab7f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/b88ab7fadaf84abed6d0379375ca645d0d9be4c7))
+* show user bubbles on every pane, and set skill paths apart in the settings ([86c9a4a](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/86c9a4a3ffb1237bec10a89805af077095866564))
+
 ## [2.4.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.3.0...2.4.0) (2026-09-23)
 
 
