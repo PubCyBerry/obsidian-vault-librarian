@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.5.0...2.6.0) (2026-09-23)
+
+
+### Features
+
+* desktop MCP sign-in through 127.0.0.1, and easier defaults for a new install ([c0e600c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/c0e600cd99a1e3b13b40a75431f8b3377d82088d))
+
 ## [2.5.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.4.1...2.5.0) (2026-09-23)
 
 
