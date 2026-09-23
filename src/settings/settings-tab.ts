@@ -33,6 +33,7 @@ import {
 	type ThinkingLevel,
 	type ToolPermission,
 } from '../types';
+import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
 
@@ -655,6 +656,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				render: (el: HTMLElement) => this.renderMcpServers(el),
 			},
 			{
+				name: 'WebDAV storage',
+				aliases: ['WebDAV', 'NAS', 'Synology', 'Remote storage', 'Password'],
+				render: (el: HTMLElement) => this.renderWebDav(el),
+			},
+			{
 				name: 'Skills',
 				aliases: ['SKILL.md', 'Agent Skills', 'Rescan'],
 				render: (el: HTMLElement) => this.renderSkills(el),
@@ -710,6 +716,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		this.renderProviders(containerEl);
 		this.renderAgent(containerEl);
 		this.renderMcpServers(containerEl);
+		this.renderWebDav(containerEl);
 		this.renderSkills(containerEl);
 		this.renderToolPermissions(containerEl);
 		this.renderContext(containerEl);
@@ -1025,6 +1032,75 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		}
 		if (this.plugin.settings.mcpServers.length === 0)
 			el.createDiv({ cls: 'librarian-modal-note', text: 'No MCP servers yet.' });
+	}
+
+	/** One WebDAV storage. The password goes to this device's SecretStorage only. */
+	private renderWebDav(el: HTMLElement) {
+		new Setting(el)
+			.setName('WebDAV storage')
+			.setHeading()
+			.setDesc(
+				'Files on a WebDAV server such as a network drive. The agent reaches them through the WebDAV tools on desktop and phone.',
+			);
+		const w = this.plugin.settings.webdav;
+		new Setting(el).setName('Enabled').addToggle((t) =>
+			t.setValue(w.enabled).onChange(async (v) => {
+				w.enabled = v;
+				await this.save();
+				// The storage group under Tool permissions comes and goes with this.
+				this.refreshSettings();
+			}),
+		);
+		new Setting(el)
+			.setName('URL')
+			.setDesc('WebDAV address of the folder the agent may reach. Storage paths start here.')
+			.addText((t) =>
+				t.setValue(w.url).onChange(async (v) => {
+					w.url = v.trim();
+					await this.save();
+				}),
+			);
+		new Setting(el).setName('User name').addText((t) =>
+			t.setValue(w.username).onChange(async (v) => {
+				w.username = v.trim();
+				await this.save();
+			}),
+		);
+		const saved = !!this.plugin.secrets.get(WEBDAV_SECRET_ID);
+		let pending = '';
+		new Setting(el)
+			.setName('Password')
+			.setDesc('Kept on this device only.')
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.setPlaceholder(saved ? 'Password saved on this device' : 'Password');
+				t.onChange((v) => {
+					pending = v;
+				});
+			})
+			.addButton((b) =>
+				b.setButtonText('Save password').onClick(() => {
+					if (!pending) return;
+					this.plugin.secrets.set(WEBDAV_SECRET_ID, pending);
+					this.refreshSettings();
+				}),
+			);
+		new Setting(el).setName('Test connection').addButton((b) =>
+			b.setButtonText('Test connection').onClick(async () => {
+				try {
+					const client = new WebDavClient({
+						url: w.url,
+						username: w.username,
+						password: this.plugin.secrets.get(WEBDAV_SECRET_ID),
+					});
+					new Notice(
+						(await client.stat('')) ? 'Connected to the storage.' : 'Not found: /',
+					);
+				} catch (error) {
+					new Notice(error instanceof Error ? error.message : String(error));
+				}
+			}),
+		);
 	}
 
 	/** Discovered skills with their diagnostics; their permissions sit under Tool permissions. */

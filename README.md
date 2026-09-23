@@ -16,6 +16,7 @@ There is no index to build. The agent explores the vault the way a coding agent 
 - **Vault-local instructions.** If `AGENTS.md` exists at the vault root it is included as instructions, above your own custom system prompt and below the built-in rules.
 - **Images.** Paste a screenshot or attach a vault image when the model accepts images. Only the path is stored in the session.
 - **Streaming.** Answers stream through `fetch`. If the server does not allow Obsidian's origin, the plugin falls back to Obsidian's `requestUrl` and tells you that streaming is unavailable.
+- **WebDAV storage.** Connect one WebDAV server, such as a NAS, under **Settings → WebDAV storage**. The agent can list, read, write, edit, move and delete files there, and copy files and folders between the storage and the vault byte for byte without passing their contents through the conversation. Requests go through Obsidian's `requestUrl`, so the server needs no CORS setup and phones work the same. The password is kept in `SecretStorage` on each device. Changes on the storage are not undone by rewind.
 
 ## Setup
 
@@ -45,11 +46,11 @@ OpenAI-compatible servers differ in the details. The provider and model editors 
 
 ## Privacy
 
-The plugin only talks to the endpoint you configure. Note contents reach that endpoint when the agent reads them with a tool you approved, or when you attach a note or an image yourself. There is no telemetry.
+The plugin only talks to the endpoints you configure: the model provider, and any MCP server or WebDAV storage you add. Note contents reach the model provider when the agent reads them with a tool you approved, or when you attach a note or an image yourself. Files reach the WebDAV storage only through the storage tools, which ask first by default. There is no telemetry.
 
 The `find` and `grep` tools enumerate Markdown notes to search the vault; a folder restriction narrows the search results. They run only after the tool's permission check (Ask first by default). Opening the image picker enumerates vault file paths locally so you can choose an image. It sends only the image you attach, not the complete file list. Vault enumeration is necessary for these features and may be reported on the community scorecard.
 
-When enabled, the vault-root `AGENTS.md` is included in the system prompt sent to your configured endpoint. Approved search results can include note paths and excerpts. No files outside the vault are read.
+When enabled, the vault-root `AGENTS.md` is included in the system prompt sent to your configured endpoint. Approved search results can include note paths and excerpts. No files outside the vault are read, except on the WebDAV storage you connect.
 
 ## Development
 

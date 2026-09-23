@@ -1,5 +1,7 @@
 import { normalizePath, type TAbstractFile, TFile, TFolder } from 'obsidian';
 
+const encode = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
+
 interface Stat {
 	type: 'file' | 'folder';
 	ctime: number;
@@ -184,10 +186,20 @@ export class FakeVault {
 		return this.adapter.read(file.path);
 	}
 
+	/** Like Obsidian, any file reads as bytes, text files included. */
 	async readBinary(file: TFile): Promise<ArrayBuffer> {
-		const b = this.binaries.get(file.path);
+		const t = this.texts.get(file.path);
+		const b = this.binaries.get(file.path) ?? (t === undefined ? undefined : encode(t));
 		if (!b) throw new Error(`ENOENT ${file.path}`);
 		return b;
+	}
+
+	/** Test helper: a file's bytes, whichever way it was written. */
+	bytes(path: string): Uint8Array | undefined {
+		const t = this.texts.get(normalizePath(path));
+		const b =
+			this.binaries.get(normalizePath(path)) ?? (t === undefined ? undefined : encode(t));
+		return b && new Uint8Array(b);
 	}
 
 	async create(path: string, data: string): Promise<TFile> {

@@ -11,6 +11,7 @@ describe('settings search', () => {
 			'Providers',
 			'Agent',
 			'MCP servers',
+			'WebDAV storage',
 			'Skills',
 			'Tool permissions',
 			'Context',
@@ -23,6 +24,7 @@ describe('settings search', () => {
 			'write',
 			'Compact at',
 			'Rewind',
+			'NAS',
 		]) {
 			expect(definitions.some((definition) => definition.aliases?.includes(query))).toBe(
 				true,

@@ -28,6 +28,15 @@ export interface McpServerConfig {
 	toolHashes: Record<string, string>;
 }
 
+/** One WebDAV storage such as a NAS. The password lives in SecretStorage, never here. */
+export interface WebDavSettings {
+	enabled: boolean;
+	/** Storage root; tool paths are relative to it. */
+	url: string;
+	/** Empty means no authentication. */
+	username: string;
+}
+
 export const TOOL_NAMES: readonly ToolName[] = [
 	'ls',
 	'find',
@@ -140,6 +149,7 @@ export interface LibrarianSettings {
 	/** Per tool; absent means the default: MCP tools deferred (found through tool_search), vault tools listed. */
 	toolDeferredByTool: Record<string, boolean>;
 	mcpServers: McpServerConfig[];
+	webdav: WebDavSettings;
 	/** Where "Open chat" puts the view when none is open yet. */
 	chatLocation: 'sidebar' | 'tab';
 	/** Vault folder whose notes become `/<name>` prompt commands. */
@@ -184,6 +194,7 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	toolExecutionByTool: {},
 	toolDeferredByTool: {},
 	mcpServers: [],
+	webdav: { enabled: false, url: '', username: '' },
 	chatLocation: 'sidebar',
 	commandsFolder: 'Librarian/commands',
 	maxIterations: 10,
@@ -222,6 +233,7 @@ export function mergeSettings(stored: unknown): LibrarianSettings {
 		toolPermissions: { byTool },
 		context: { ...DEFAULT_SETTINGS.context, ...(s.context ?? {}) },
 		mcpServers: (s.mcpServers ?? []).map((m) => ({ ...m, toolHashes: m.toolHashes ?? {} })),
+		webdav: { ...DEFAULT_SETTINGS.webdav, ...(s.webdav ?? {}) },
 		providers: (s.providers ?? []).map((p) => ({
 			...p,
 			compat: p.compat ?? {},

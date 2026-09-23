@@ -24,16 +24,33 @@ export interface ToolDeps {
 }
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
-function tool<T extends TSchema>(t: AgentTool<T>): AgentTool {
+export function tool<T extends TSchema>(t: AgentTool<T>): AgentTool {
 	return t;
 }
 
-function ok(result: unknown): AgentToolResult {
+export function ok(result: unknown): AgentToolResult {
 	return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result as never };
 }
 
-function throwIfAborted(signal?: AbortSignal) {
+export function throwIfAborted(signal?: AbortSignal) {
 	if (signal?.aborted) throw new Error('Operation aborted');
+}
+
+/** The edit rule the vault and storage edit tools share: one exact match unless replace_all. */
+export function replaceExact(
+	data: string,
+	oldText: string,
+	newText: string,
+	replaceAll?: boolean,
+): { text: string; replacements: number } | { failure: string } {
+	const count = data.split(oldText).length - 1;
+	if (count === 0)
+		return { failure: 'old_text was not found in the note. Reread the note and retry.' };
+	if (count > 1 && !replaceAll)
+		return { failure: `old_text matches ${count} places. Make it unique or set replace_all.` };
+	return replaceAll
+		? { text: data.split(oldText).join(newText), replacements: count }
+		: { text: data.replace(oldText, () => newText), replacements: 1 };
 }
 
 const yieldToUi = () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
@@ -45,7 +62,7 @@ function vaultFile(app: App, path: string): TFile {
 }
 
 /** A file the tools can read: indexed ones carry their TFile, hidden ones only a path. */
-interface Entry {
+export interface Entry {
 	path: string;
 	file: TFile | null;
 }
@@ -75,7 +92,7 @@ async function hiddenFilesUnder(app: App, path: string, signal?: AbortSignal): P
 }
 
 /** Every file of any type under a folder, or the one file a path names. */
-async function filesUnder(
+export async function filesUnder(
 	app: App,
 	folderPath: string | undefined,
 	signal?: AbortSignal,
@@ -95,7 +112,7 @@ async function readEntry(app: App, entry: Entry): Promise<string> {
 	return entry.file ? app.vault.cachedRead(entry.file) : app.vault.adapter.read(entry.path);
 }
 
-function rejectHiddenWrite(app: App, path: string): void {
+export function rejectHiddenWrite(app: App, path: string): void {
 	if (isHiddenPath(path, app.vault.configDir))
 		throw new Error(`Hidden paths are read-only: ${path}`);
 }
@@ -104,7 +121,7 @@ function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function ensureFolder(app: App, path: string): Promise<void> {
+export async function ensureFolder(app: App, path: string): Promise<void> {
 	const parts = path.split('/').filter(Boolean);
 	let current = '';
 	for (const part of parts) {
@@ -151,19 +168,39 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				...listing.folders.map((p) => ({ type: 'folder' as const, path: p })),
 				...listing.files.map((p) => ({ type: 'file' as const, path: p })),
 			].sort((a, b) => a.path.localeCompare(b.path));
-			const offset = params.offset ?? 0;
-			const limit = params.limit ?? deps.settings().listLimit;
-			const page = entries.slice(offset, offset + limit);
-			const next = offset + page.length;
 			return ok({
 				path,
-				entries: page,
-				offset,
-				...(next < entries.length ? { nextOffset: next } : {}),
-				total: entries.length,
+				...pageOf(entries, params.offset ?? 0, params.limit ?? deps.settings().listLimit),
 			});
 		},
 	});
+}
+
+/** The ls result shape, shared with the storage listing. */
+export function pageOf<T>(items: T[], offset: number, limit: number) {
+	const entries = items.slice(offset, offset + limit);
+	const next = offset + entries.length;
+	return {
+		entries,
+		offset,
+		...(next < items.length ? { nextOffset: next } : {}),
+		total: items.length,
+	};
+}
+
+/** The read result shape, shared with the storage read. `offset` is 1-based. */
+export function lineWindow(text: string, offset: number, limit: number) {
+	const all = text.split('\n');
+	const lines = all
+		.slice(offset - 1, offset - 1 + limit)
+		.map((line, i) => ({ line: offset + i, text: line }));
+	const next = offset + lines.length;
+	return {
+		offset,
+		lines,
+		totalLines: all.length,
+		...(next <= all.length ? { nextOffset: next } : {}),
+	};
 }
 
 export function createFindTool(deps: ToolDeps): AgentTool {
@@ -332,19 +369,13 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 					text = await deps.app.vault.adapter.read(path);
 				} else throw new Error(`File not found: ${path}`);
 			}
-			const all = text.split('\n');
-			const offset = params.offset ?? 1;
-			const limit = params.limit ?? deps.settings().readLineLimit;
-			const lines = all
-				.slice(offset - 1, offset - 1 + limit)
-				.map((text, i) => ({ line: offset + i, text }));
-			const next = offset + lines.length;
 			return ok({
 				path,
-				offset,
-				lines,
-				totalLines: all.length,
-				...(next <= all.length ? { nextOffset: next } : {}),
+				...lineWindow(
+					text,
+					params.offset ?? 1,
+					params.limit ?? deps.settings().readLineLimit,
+				),
 				...extra,
 			});
 		},
@@ -441,19 +472,18 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 				let failure: string | null = null;
 				// The match is re-checked inside process() so a note edited after it was read is left alone.
 				await deps.app.vault.process(file, (data) => {
-					const count = data.split(params.old_text).length - 1;
-					if (count === 0) {
-						failure = 'old_text was not found in the note. Reread the note and retry.';
+					const edit = replaceExact(
+						data,
+						params.old_text,
+						params.new_text,
+						params.replace_all,
+					);
+					if ('failure' in edit) {
+						failure = edit.failure;
 						return data;
 					}
-					if (count > 1 && !params.replace_all) {
-						failure = `old_text matches ${count} places. Make it unique or set replace_all.`;
-						return data;
-					}
-					replacements = params.replace_all ? count : 1;
-					return params.replace_all
-						? data.split(params.old_text).join(params.new_text)
-						: data.replace(params.old_text, () => params.new_text);
+					replacements = edit.replacements;
+					return edit.text;
 				});
 				if (failure) throw new Error(failure);
 				await deps.mutation?.after(id, path);

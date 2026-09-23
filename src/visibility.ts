@@ -4,6 +4,10 @@
  * (Android 14, ten seconds in), so a failure while away says nothing about the server or CORS.
  */
 
+/** Told to the model when a call that is not safe to repeat broke while the app was away. */
+export const AWAY_UNKNOWN =
+	'The app was in the background, so it is unknown whether the server ran this call. Check before calling it again.';
+
 let lastHiddenAt = 0;
 const waiters = new Set<() => void>();
 

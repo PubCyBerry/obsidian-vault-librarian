@@ -7,13 +7,9 @@ import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
 import type { SecretStore } from '../storage/secret-store';
 import type { LibrarianSettings, McpServerConfig } from '../types';
-import { wasHiddenSince, whenVisible } from '../visibility';
+import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
 import { isNetworkFailure, requestUrlFetch } from './fetch-shim';
 import { ObsidianOAuthProvider, oauthSecretId } from './oauth-provider';
-
-/** Told to the model when a call that is not safe to repeat broke while the app was away. */
-export const AWAY_UNKNOWN =
-	'The app was in the background, so it is unknown whether the server ran this call. Check before calling it again.';
 
 /** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
 export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {

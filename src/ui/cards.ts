@@ -22,10 +22,31 @@ const TOOL_ICONS: Record<string, string> = {
 	write: 'file-plus',
 	edit: 'pencil',
 	tool_search: 'search',
+	webdav_ls: 'folder',
+	webdav_read: 'book-open',
+	webdav_write: 'file-plus',
+	webdav_edit: 'pencil',
+	webdav_mkdir: 'folder-plus',
+	webdav_move: 'folder-input',
+	webdav_delete: 'trash-2',
+	webdav_download: 'download',
+	webdav_upload: 'upload',
 };
 
 export function toolIcon(name: string): string {
 	return TOOL_ICONS[name] ?? 'wrench';
+}
+
+/** Storage tools whose arguments and results have the shape of a vault tool, shown the same way. */
+const SHAPE_OF: Record<string, string> = {
+	webdav_ls: 'ls',
+	webdav_read: 'read',
+	webdav_write: 'write',
+	webdav_edit: 'edit',
+};
+
+function shapeOf(name: string): string {
+	return SHAPE_OF[name] ?? name;
 }
 
 function str(v: unknown): string {
@@ -53,7 +74,7 @@ export function summarizeCall(
 	}
 	const count = (key: string) =>
 		Array.isArray(parsed?.[key]) ? (parsed[key] as unknown[]).length : null;
-	switch (name) {
+	switch (shapeOf(name)) {
 		case 'ls': {
 			const n = parsed && typeof parsed.total === 'number' ? parsed.total : count('entries');
 			return `${(args.path as string) || '/'}${n !== null ? `, ${n} entries` : ''}`;
@@ -88,6 +109,20 @@ export function summarizeCall(
 			const n =
 				parsed && typeof parsed.replacements === 'number' ? parsed.replacements : null;
 			return `${args.path as string}${n !== null ? `, ${n} ${n === 1 ? 'replacement' : 'replacements'}` : ''}`;
+		}
+		case 'webdav_mkdir':
+		case 'webdav_delete':
+			return str(args.path) || '/';
+		case 'webdav_move':
+			return `${str(args.from)} to ${str(args.to)}`;
+		case 'webdav_download':
+		case 'webdav_upload': {
+			const [from, to] =
+				name === 'webdav_download'
+					? [args.path, args.vault_path]
+					: [args.vault_path, args.path];
+			const n = count('files');
+			return `${str(from) || '/'} to ${str(to) || '/'}${n !== null ? `, ${n} ${n === 1 ? 'file' : 'files'}` : ''}`;
 		}
 		default:
 			return short(args);
@@ -178,8 +213,9 @@ export function renderToolCard(
 			toggle();
 		}
 	});
-	if (data.name === 'write' || data.name === 'edit') {
-		renderChangePreview(body, data.name, data.args, data.existingLength);
+	const shape = shapeOf(data.name);
+	if (shape === 'write' || shape === 'edit') {
+		renderChangePreview(body, shape, data.args, data.existingLength);
 	} else {
 		body.createDiv({ cls: 'librarian-tool-label', text: 'Arguments' });
 		body.createEl('pre', { text: JSON.stringify(data.args, null, 2) });
@@ -213,7 +249,9 @@ export function renderApprovalCard(
 	setIcon(title.createSpan(), toolIcon(name));
 	title.createSpan({ text: ` Approve ${name}?` });
 	const body = card.createDiv({ cls: 'librarian-approval-body' });
-	if (name === 'write' || name === 'edit') renderChangePreview(body, name, args, existingLength);
+	const shape = shapeOf(name);
+	if (shape === 'write' || shape === 'edit')
+		renderChangePreview(body, shape, args, existingLength);
 	else body.createEl('pre', { text: JSON.stringify(args, null, 2) });
 	const path = typeof args.path === 'string' ? args.path : '';
 	const protectsAgentsMd = (name === 'write' || name === 'edit') && isRootAgentsMd(path);

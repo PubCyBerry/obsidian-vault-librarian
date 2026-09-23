@@ -15,6 +15,8 @@ import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
+import { WEBDAV_SECRET_ID, WebDavClient } from './webdav/webdav-client';
+import { createWebDavTools, WEBDAV_GROUP } from './webdav/webdav-tools';
 
 export default class LibrarianPlugin extends Plugin {
 	settings!: LibrarianSettings;
@@ -57,7 +59,11 @@ export default class LibrarianPlugin extends Plugin {
 		});
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
-			() => [...this.mcp.groups(), ...skillGroups(this.skills.skills)],
+			() => [
+				...this.mcp.groups(),
+				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
+				...skillGroups(this.skills.skills),
+			],
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
 				if (tool !== 'read') return null;
@@ -75,17 +81,35 @@ export default class LibrarianPlugin extends Plugin {
 				after: (id, path) => this.controller.afterMutation(id, path),
 			},
 		};
+		const webdavTools = () =>
+			this.webdavOn()
+				? createWebDavTools({
+						...vaultDeps,
+						// A fresh client per call picks up changed settings and this device's password.
+						client: () =>
+							new WebDavClient({
+								url: this.settings.webdav.url,
+								username: this.settings.webdav.username,
+								password: this.secrets.get(WEBDAV_SECRET_ID),
+							}),
+					})
+				: [];
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
 			registered: () =>
 				// Built fresh each time so descriptions carry the current default limits from settings.
-				[...createVaultTools(vaultDeps), ...this.mcp.tools()].map((t) => ({
-					...t,
-					executionMode:
-						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
-				})),
-			sourceOf: (t) => this.mcpServerNameOf(t.name) ?? 'vault',
+				[...createVaultTools(vaultDeps), ...webdavTools(), ...this.mcp.tools()].map(
+					(t) => ({
+						...t,
+						executionMode:
+							this.settings.toolExecutionByTool[t.name] ??
+							t.executionMode ??
+							'parallel',
+					}),
+				),
+			sourceOf: (t) =>
+				this.mcpServerNameOf(t.name) ?? (t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
 			deferred: (t) => this.toolDeferredOf(t.name),
 		});
 		const context = new ContextManager(this.app, () => this.settings.context);
@@ -192,6 +216,11 @@ export default class LibrarianPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/** The storage tools exist only while a WebDAV storage is switched on and has a URL. */
+	webdavOn(): boolean {
+		return this.settings.webdav.enabled && this.settings.webdav.url.trim() !== '';
 	}
 
 	/** The MCP server a `<server id>__<tool>` name belongs to, by display name. */
