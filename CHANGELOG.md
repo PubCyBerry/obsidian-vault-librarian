@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.3.0...2.4.0) (2026-09-23)
+
+
+### Features
+
+* queue messages sent while the agent works, and animate the send button ([dfb3eba](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/dfb3eba26d648ae52389a07b1d1f837bc52f2082))
+
 ## [2.3.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.2.0...2.3.0) (2026-09-23)
 
 
