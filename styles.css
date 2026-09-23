@@ -955,6 +955,14 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	word-break: break-all;
 }
 
+/* Marks a row that is a command inside bash rather than a tool the model calls on its own. */
+.librarian-tool-permission-note {
+	font-family: var(--font-interface);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-left: var(--size-4-2);
+}
+
 /* A long tool name pushes the control onto its own line, right-aligned, instead of clipping it. */
 .librarian-tool-permission-row .librarian-segmented {
 	flex: 0 0 auto;
@@ -993,8 +1001,17 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-normal);
 }
 
+/*
+ * These must outrank the hover rule above. A phone keeps :hover on whatever was tapped last, so
+ * without the hover variant the button just chosen shows the hover grey and the row looks unset.
+ */
 .librarian-segmented button.is-active {
 	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.librarian-segmented button.is-active:hover:not(:disabled) {
+	background: var(--interactive-accent-hover);
 	color: var(--text-on-accent);
 }
 

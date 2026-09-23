@@ -37,6 +37,9 @@ import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
 
+/** Permission rows that are commands inside `bash`, not tools the model can call on its own. */
+const SHELL_COMMANDS = new Set(['curl', 'obsidian']);
+
 const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	disabled: 'Disabled',
 	disconnected: 'Not connected',
@@ -1193,9 +1196,17 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			);
 			for (const tool of group.tools) {
 				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
-				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
-				// A site or a command row is a permission only: it is not a tool that runs or lists.
-				const target = tool.startsWith('http:') || tool.startsWith('command:');
+				const inBash = SHELL_COMMANDS.has(tool);
+				const name = row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
+				// The model calls bash; curl and obsidian are commands it may write inside one.
+				if (inBash)
+					name.createSpan({ cls: 'librarian-tool-permission-note', text: 'in bash' });
+				// A row that is a permission only: it is not a tool the model runs or lists.
+				const target =
+					inBash ||
+					tool.startsWith('http:') ||
+					tool.startsWith('obsidian:') ||
+					tool.startsWith('command:');
 				if (!target) {
 					const exec = row.createEl('select', {
 						cls: 'dropdown librarian-tool-execution',

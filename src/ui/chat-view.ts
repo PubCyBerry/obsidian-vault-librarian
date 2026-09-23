@@ -594,7 +594,11 @@ export class LibrarianView extends ItemView {
 		});
 	}
 
-	/** The "+" menu: images from the camera, the device or the vault, and the active note. */
+	/**
+	 * The "+" menu: images from the camera, the device or the vault, the active note, and the
+	 * settings. Obsidian hides the view header in a sidebar, so this is the only menu the chat
+	 * always shows and the one place Settings is reachable from there.
+	 */
 	private showAttachMenu(e: MouseEvent) {
 		const menu = new Menu();
 		const images = this.modelAcceptsImages();
@@ -631,6 +635,13 @@ export class LibrarianView extends ItemView {
 				.setTitle(this.includeActiveNote ? 'Remove active note' : 'Attach active note')
 				.setIcon('file-text')
 				.onClick(() => this.toggleActiveNote()),
+		);
+		menu.addSeparator();
+		menu.addItem((item) =>
+			item
+				.setTitle('Settings')
+				.setIcon('settings')
+				.onClick(() => this.plugin.openSettings()),
 		);
 		menu.showAtMouseEvent(e);
 	}
@@ -769,6 +780,11 @@ export class LibrarianView extends ItemView {
 	private slashCommands(): SlashCommand[] {
 		const builtIn: SlashCommand[] = [
 			{ name: 'new', description: 'Start a new session', run: () => this.newSession() },
+			{
+				name: 'settings',
+				description: 'Open the Librarian settings',
+				run: () => this.plugin.openSettings(),
+			},
 			{
 				name: 'history',
 				description: 'Open session history',
