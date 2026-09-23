@@ -107,9 +107,43 @@ export interface ControllerDeps {
 
 const RETRY_DELAY_MS = 1500;
 
+/**
+ * Backstop for a request that keeps failing while the app is sent away and brought back. Each
+ * resume needs the app to become visible again, so reaching this means the user retried by hand.
+ */
+const MAX_BACKGROUND_RESUMES = 10;
+
+/** Device-local: the session whose turn was running, so a killed app can finish it on the next start. */
+export const ACTIVE_TURN_KEY = 'librarian-active-turn';
+
+export const BACKGROUND_RESUME_NOTICE =
+	'The app was in the background. Continuing where it stopped.';
+export const INTERRUPTED_RESUME_NOTICE = 'Continuing the request that was interrupted.';
+export const STREAM_CUT_NOTICE = 'The connection dropped mid-response. Retrying once.';
+
+/** `document` is absent in unit tests; treat that as an app the user is looking at. */
+function appIsHidden(): boolean {
+	return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
 /** The transport's parenthetical for a response the network cut after HTTP 200. */
 function isStreamCut(message: string | undefined): boolean {
 	return /HTTP 200 received, body cut after/.test(message ?? '');
+}
+
+/**
+ * An unfinished turn: the last thing in the log is something the model still owes an answer for.
+ * Events that carry no conversation (approvals, snapshots, renames) are skipped.
+ */
+export function hasUnfinishedTurn(events: IndexedEvent[]): boolean {
+	for (let i = events.length - 1; i >= 0; i--) {
+		const e = events[i]!.event;
+		if (e.type === 'user' || e.type === 'tool_result') return true;
+		// A response that stopped to call tools is only half a turn; anything else closed it.
+		if (e.type === 'assistant') return e.stopReason === 'toolUse';
+		if (e.type === 'compaction' || e.type === 'rewind') return false;
+	}
+	return false;
 }
 
 function textOf(content: readonly { type: string }[]): string {
@@ -141,8 +175,58 @@ export class AgentController {
 	private retryAfterCut = false;
 	private cutRetries = 0;
 	private stopRequested = false;
+	/** Set when the request now running failed after the app had been sent to the background. */
+	private resumeWhenVisible = false;
+	private hiddenDuringRequest = false;
+	private backgroundResumes = 0;
+	private readonly visibleWaiters = new Set<() => void>();
+	private wakeLock: WakeLockSentinel | null = null;
 
 	constructor(readonly deps: ControllerDeps) {}
+
+	// Running while the app is away
+
+	/** Fed by the plugin from the document's `visibilitychange`. */
+	onVisibilityChange(): void {
+		if (appIsHidden()) {
+			this.hiddenDuringRequest = true;
+			// The screen lock is dropped by the browser whenever the page hides; forget ours.
+			this.wakeLock = null;
+			return;
+		}
+		this.releaseVisibleWaiters();
+		void this.acquireWakeLock();
+	}
+
+	private releaseVisibleWaiters(): void {
+		const waiters = [...this.visibleWaiters];
+		this.visibleWaiters.clear();
+		for (const resolve of waiters) resolve();
+	}
+
+	private whenVisible(): Promise<void> {
+		if (!appIsHidden()) return Promise.resolve();
+		return new Promise((resolve) => this.visibleWaiters.add(resolve));
+	}
+
+	/** Keeps the screen awake while a turn runs, so the phone does not sleep the app mid-answer. */
+	private async acquireWakeLock(): Promise<void> {
+		if (!this.agent || this.wakeLock || appIsHidden()) return;
+		try {
+			const lock = await navigator.wakeLock.request('screen');
+			// The turn may have ended while the request was in flight.
+			if (!this.agent) void lock.release().catch(() => {});
+			else this.wakeLock = lock;
+		} catch {
+			// Older WebViews have no wake lock, and the platform may refuse one. The turn runs anyway.
+		}
+	}
+
+	private releaseWakeLock(): void {
+		const lock = this.wakeLock;
+		this.wakeLock = null;
+		void lock?.release().catch(() => {});
+	}
 
 	subscribe(listener: (event: ControllerEvent) => void): () => void {
 		this.listeners.add(listener);
@@ -344,28 +428,77 @@ export class AgentController {
 			this.emit({ type: 'state', state: 'no-key' });
 			return;
 		}
-		const sessionId = this.session!.id;
-		const model = this.piModel()!;
-		await this.deps.sessions.append(sessionId, {
+		await this.deps.sessions.append(this.session!.id, {
 			type: 'user',
 			content: text,
 			images: images.length ? images : undefined,
 		});
 		await this.reloadEvents();
+		const imageContents = await this.imageContents(images);
+		await this.runTurn({
+			excludeLastUser: true,
+			start: (agent) => agent.prompt(text, imageContents),
+		});
+	}
 
+	/**
+	 * Finishes a turn that never got its answer, after the app was closed or killed while it ran.
+	 * Every completed step is in the session log, so the model picks up from there.
+	 */
+	async resumeTurn(): Promise<boolean> {
+		if (this.agent || !this.session || !this.selection) return false;
+		if (this.deps.secrets.get(this.selection.provider.secretId) === null) return false;
+		if (!hasUnfinishedTurn(this.events)) return false;
+		this.emit({ type: 'notice', message: INTERRUPTED_RESUME_NOTICE });
+		await this.runTurn({ start: (agent) => agent.continue() });
+		return true;
+	}
+
+	private async imageContents(images: string[]): Promise<ImageContent[]> {
+		const out: ImageContent[] = [];
+		for (const path of images) {
+			const file = this.deps.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) continue;
+			const bytes = new Uint8Array(await this.deps.app.vault.readBinary(file));
+			let binary = '';
+			for (let i = 0; i < bytes.length; i += 0x8000)
+				binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+			const ext = file.extension.toLowerCase();
+			out.push({
+				type: 'image',
+				data: btoa(binary),
+				mimeType:
+					ext === 'jpg' || ext === 'jpeg'
+						? 'image/jpeg'
+						: ext === 'gif'
+							? 'image/gif'
+							: ext === 'webp'
+								? 'image/webp'
+								: 'image/png',
+			});
+		}
+		return out;
+	}
+
+	/**
+	 * Runs one turn to its end, repeats included: a stream the network cut is asked again, and a
+	 * request that died while the app was away waits for the app to come back before asking again.
+	 */
+	private async runTurn(opts: {
+		excludeLastUser?: boolean;
+		start: (agent: Agent) => Promise<void>;
+	}): Promise<void> {
+		const sessionId = this.session!.id;
+		const model = this.piModel()!;
 		const streamFn = this.streamFn();
-		let prompt = await this.systemPrompt();
-		let tools = this.exposedTools();
-		const usage = this.deps.context.usage(this.events, model);
-		if (usage.state === 'critical') await this.compactNow(streamFn);
-		prompt = await this.systemPrompt();
-		tools = this.exposedTools();
+		if (this.deps.context.usage(this.events, model).state === 'critical')
+			await this.compactNow(streamFn);
 		const prepared = await this.deps.context.build({
 			events: this.events,
 			model,
-			excludeLastUser: true,
-			systemPrompt: prompt,
-			tools,
+			excludeLastUser: opts.excludeLastUser,
+			systemPrompt: await this.systemPrompt(),
+			tools: this.exposedTools(),
 		});
 		this.usage = prepared.usage;
 		this.emit({ type: 'usage', usage: this.usage });
@@ -376,7 +509,9 @@ export class AgentController {
 		this.cutRetries = 0;
 		this.retryAfterCut = false;
 		this.stopRequested = false;
-		const createAgent = (messages: AgentMessage[]) => {
+		this.resumeWhenVisible = false;
+		this.backgroundResumes = 0;
+		const createAgent = (messages: AgentMessage[], tools: AgentTool[]) => {
 			const agent = new Agent({
 				initialState: {
 					model,
@@ -404,54 +539,41 @@ export class AgentController {
 			agent.subscribe((event) => this.onAgentEvent(event));
 			return agent;
 		};
-		const agent = createAgent(prepared.messages);
-		this.agent = agent;
+		this.agent = createAgent(prepared.messages, prepared.tools);
+		// A phone that kills the app mid-turn leaves this behind, and the next start finishes it.
+		this.deps.app.saveLocalStorage(ACTIVE_TURN_KEY, sessionId);
 		this.emit({ type: 'state', state: 'requesting' });
+		void this.acquireWakeLock();
 		try {
-			const imageContents: ImageContent[] = [];
-			for (const path of images) {
-				const file = this.deps.app.vault.getAbstractFileByPath(path);
-				if (!(file instanceof TFile)) continue;
-				const bytes = new Uint8Array(await this.deps.app.vault.readBinary(file));
-				let binary = '';
-				for (let i = 0; i < bytes.length; i += 0x8000)
-					binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-				const ext = file.extension.toLowerCase();
-				imageContents.push({
-					type: 'image',
-					data: btoa(binary),
-					mimeType:
-						ext === 'jpg' || ext === 'jpeg'
-							? 'image/jpeg'
-							: ext === 'gif'
-								? 'image/gif'
-								: ext === 'webp'
-									? 'image/webp'
-									: 'image/png',
-				});
-			}
-			await agent.prompt(text, imageContents);
-			// The events hold everything up to the cut (the partial answer was not kept), so a
-			// fresh agent continues from them. Once: a second cut is reported like any error.
-			while (this.retryAfterCut && !this.stopRequested) {
-				this.retryAfterCut = false;
-				this.emit({
-					type: 'notice',
-					message: 'The connection dropped mid-response. Retrying once.',
-				});
-				await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
-				if (this.stopRequested) break;
+			await opts.start(this.agent);
+			// The events hold every completed step, so a fresh agent continues from them.
+			while (!this.stopRequested && (this.resumeWhenVisible || this.retryAfterCut)) {
+				if (this.resumeWhenVisible) {
+					this.resumeWhenVisible = false;
+					await this.whenVisible();
+					if (this.stopRequested) break;
+					this.emit({ type: 'notice', message: BACKGROUND_RESUME_NOTICE });
+				} else {
+					this.retryAfterCut = false;
+					this.emit({ type: 'notice', message: STREAM_CUT_NOTICE });
+					await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
+					if (this.stopRequested) break;
+				}
 				const again = await this.deps.context.build({
 					events: this.events,
 					model,
 					systemPrompt: await this.systemPrompt(),
 					tools: this.exposedTools(),
 				});
-				this.agent = createAgent(again.messages);
+				this.agent = createAgent(again.messages, again.tools);
+				this.emit({ type: 'state', state: 'requesting' });
+				void this.acquireWakeLock();
 				await this.agent.continue();
 			}
 		} finally {
 			this.agent = null;
+			this.releaseWakeLock();
+			this.deps.app.saveLocalStorage(ACTIVE_TURN_KEY, null);
 			this.pendingSnapshots.clear();
 			await this.reloadEvents();
 			await this.refreshReadiness();
@@ -462,6 +584,8 @@ export class AgentController {
 	stop(): void {
 		this.stopRequested = true;
 		this.agent?.abort();
+		// A turn parked until the app comes back has nothing to abort; wake it so it can end.
+		this.releaseVisibleWaiters();
 		this.pendingApproval?.resolve('expired');
 	}
 
@@ -720,6 +844,8 @@ export class AgentController {
 				this.emit({ type: 'state', state: 'requesting' });
 				break;
 			case 'turn_start':
+				// Each request tracks its own backgrounding, so only the one that was away resumes.
+				this.hiddenDuringRequest = appIsHidden();
 				this.emit({ type: 'state', state: 'requesting' });
 				break;
 			case 'message_start':
@@ -734,15 +860,23 @@ export class AgentController {
 				const m = event.message;
 				if (m.role === 'assistant') {
 					this.emit({ type: 'stream', message: null });
-					// A stream the network cut mid-way is not kept: send() asks the model again once.
-					if (
-						m.stopReason === 'error' &&
-						isStreamCut(m.errorMessage) &&
-						this.cutRetries < 1
-					) {
-						this.cutRetries++;
-						this.retryAfterCut = true;
-						break;
+					// A response that did not arrive is not kept: runTurn asks the model again.
+					// Being sent to the background takes priority, because a phone freezes the
+					// connection there and the request would fail again right away.
+					if (m.stopReason === 'error') {
+						if (
+							this.hiddenDuringRequest &&
+							this.backgroundResumes < MAX_BACKGROUND_RESUMES
+						) {
+							this.backgroundResumes++;
+							this.resumeWhenVisible = true;
+							break;
+						}
+						if (isStreamCut(m.errorMessage) && this.cutRetries < 1) {
+							this.cutRetries++;
+							this.retryAfterCut = true;
+							break;
+						}
 					}
 					const usage: StoredUsage | undefined =
 						m.usage.totalTokens > 0

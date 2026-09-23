@@ -1,12 +1,18 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { AgentController, type ControllerEvent } from '../src/agent/agent-controller';
+import {
+	ACTIVE_TURN_KEY,
+	AgentController,
+	type ControllerEvent,
+	hasUnfinishedTurn,
+} from '../src/agent/agent-controller';
 import { PromptManager } from '../src/agent/prompt';
 import { ContextManager } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
 import { SessionManager } from '../src/session/session-manager';
+import type { SessionEvent } from '../src/session/session-types';
 import { SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
@@ -605,5 +611,149 @@ describe('compaction during a session (LIB-TEST-064, LIB-TEST-067)', () => {
 		expect((sent[1] as { content: string }).content).toContain('summary of old stuff');
 		// The summary stands in for the older turns; the current turn is the one preserved turn.
 		expect(sent.filter((m) => m.role === 'user')).toHaveLength(2);
+	});
+});
+
+/** Stands in for the document so a test can send the app away and bring it back. */
+function fakeVisibility() {
+	const g = globalThis as unknown as { document?: { visibilityState: string } };
+	const had = 'document' in g;
+	const previous = g.document;
+	g.document = { visibilityState: 'visible' };
+	return {
+		set(state: 'visible' | 'hidden') {
+			g.document = { visibilityState: state };
+		},
+		restore() {
+			if (had) g.document = previous;
+			else delete g.document;
+		},
+	};
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+describe('surviving the app going to the background (LIB-TEST-145)', () => {
+	const died = 'network error (fetch, after 3.0 s, no response, TypeError: network error)';
+
+	it('a request that dies while the app is away is asked again when the app comes back', async () => {
+		const vis = fakeVisibility();
+		try {
+			const h = harness([
+				{ stopReason: 'error', errorMessage: died },
+				{ text: 'Finished after coming back' },
+			]);
+			const turn = h.controller.send('summarize my inbox');
+			vis.set('hidden');
+			h.controller.onVisibilityChange();
+			await settle();
+			expect(h.requests).toHaveLength(1);
+			expect(h.controller.isRunning).toBe(true);
+			vis.set('visible');
+			h.controller.onVisibilityChange();
+			await turn;
+			expect(h.requests).toHaveLength(2);
+			const events = await sessionEvents(h);
+			expect(events.filter((e) => e.type === 'error')).toEqual([]);
+			const answers = events.filter((e) => e.type === 'assistant');
+			expect(answers).toHaveLength(1);
+			expect((answers[0] as { content: string }).content).toBe('Finished after coming back');
+			expect(h.events.some((e) => e.type === 'notice' && /background/.test(e.message))).toBe(
+				true,
+			);
+		} finally {
+			vis.restore();
+		}
+	}, 10000);
+
+	it('Stop ends a turn that is waiting for the app to come back', async () => {
+		const vis = fakeVisibility();
+		try {
+			const h = harness([{ stopReason: 'error', errorMessage: died }, { text: 'not asked' }]);
+			const turn = h.controller.send('hi');
+			vis.set('hidden');
+			h.controller.onVisibilityChange();
+			await settle();
+			expect(h.controller.isRunning).toBe(true);
+			h.controller.stop();
+			await turn;
+			expect(h.requests).toHaveLength(1);
+			expect(h.controller.isRunning).toBe(false);
+		} finally {
+			vis.restore();
+		}
+	}, 10000);
+
+	it('a failure with the app in view is not parked', async () => {
+		const vis = fakeVisibility();
+		try {
+			const h = harness([{ stopReason: 'error', errorMessage: '500 upstream down' }]);
+			await h.controller.send('hi');
+			expect(h.requests).toHaveLength(1);
+			expect((await sessionEvents(h)).filter((e) => e.type === 'error')).toHaveLength(1);
+		} finally {
+			vis.restore();
+		}
+	});
+});
+
+describe('finishing a turn the app was killed during (LIB-TEST-146)', () => {
+	const ev = (events: SessionEvent[]) => events.map((event, index) => ({ index, event }));
+	const assistant = (stopReason: string, toolCalls: [] = []) =>
+		({ t: '', type: 'assistant', content: 'x', toolCalls, stopReason }) as SessionEvent;
+
+	it('reads the log to tell an unfinished turn from a closed one', () => {
+		expect(hasUnfinishedTurn(ev([{ t: '', type: 'user', content: 'hi' }]))).toBe(true);
+		expect(hasUnfinishedTurn(ev([assistant('stop')]))).toBe(false);
+		expect(hasUnfinishedTurn(ev([assistant('aborted')]))).toBe(false);
+		expect(hasUnfinishedTurn(ev([assistant('error')]))).toBe(false);
+		expect(hasUnfinishedTurn(ev([assistant('toolUse')]))).toBe(true);
+		expect(
+			hasUnfinishedTurn(
+				ev([
+					assistant('toolUse'),
+					{
+						t: '',
+						type: 'tool_result',
+						toolCallId: 'a',
+						name: 'read',
+						ok: true,
+						content: 'x',
+						truncated: false,
+					},
+				]),
+			),
+		).toBe(true);
+		// Bookkeeping after the answer does not reopen the turn.
+		expect(
+			hasUnfinishedTurn(ev([assistant('stop'), { t: '', type: 'rename', title: 'x' }])),
+		).toBe(false);
+		expect(hasUnfinishedTurn([])).toBe(false);
+	});
+
+	it('notes the running session while the turn runs and clears it at the end', async () => {
+		const h = harness([{ text: 'done' }]);
+		let markedDuringTurn: unknown = null;
+		h.controller.subscribe((e) => {
+			if (e.type === 'state' && e.state === 'requesting' && markedDuringTurn === null)
+				markedDuringTurn = h.app.loadLocalStorage(ACTIVE_TURN_KEY);
+		});
+		await h.controller.send('hi');
+		expect(markedDuringTurn).toBe(h.controller.session!.id);
+		expect(h.app.loadLocalStorage(ACTIVE_TURN_KEY)).toBeNull();
+	});
+
+	it('answers a question whose reply never arrived, and leaves a finished session alone', async () => {
+		const h = harness([{ text: 'Here is the answer' }]);
+		await h.controller.newSession();
+		const id = h.controller.session!.id;
+		await h.sessions.append(id, { type: 'user', content: 'what changed today?' });
+		await h.controller.openSession(id);
+		expect(await h.controller.resumeTurn()).toBe(true);
+		const events = await sessionEvents(h);
+		expect(events.at(-1)).toMatchObject({ type: 'assistant', content: 'Here is the answer' });
+		expect(h.requests).toHaveLength(1);
+		expect(h.requests[0]!.messages.at(-1)).toMatchObject({ role: 'user' });
+		expect(await h.controller.resumeTurn()).toBe(false);
 	});
 });

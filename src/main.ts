@@ -1,5 +1,5 @@
 import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
-import { AgentController } from './agent/agent-controller';
+import { ACTIVE_TURN_KEY, AgentController, hasUnfinishedTurn } from './agent/agent-controller';
 import { PromptManager } from './agent/prompt';
 import { ContextManager } from './context/context-manager';
 import { McpManager } from './mcp/mcp-manager';
@@ -7,7 +7,7 @@ import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import { ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
-import { SessionManager } from './session/session-manager';
+import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
@@ -114,6 +114,10 @@ export default class LibrarianPlugin extends Plugin {
 		this.controller.subscribe((e) => {
 			if (e.type === 'session') this.registry.reset();
 		});
+		// Leaving the app freezes the connection on a phone; the controller waits for the return.
+		this.registerDomEvent(document, 'visibilitychange', () =>
+			this.controller.onVisibilityChange(),
+		);
 		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
 			const id = serverIdFromState(params.state);
 			if (!id) return;
@@ -126,6 +130,7 @@ export default class LibrarianPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			void this.mcp.connectAll();
 			void this.skills.scan();
+			void this.finishInterruptedTurn();
 		});
 
 		this.registerView(VIEW_TYPE_LIBRARIAN, (leaf) => new LibrarianView(leaf, this));
@@ -216,6 +221,22 @@ export default class LibrarianPlugin extends Plugin {
 	 * Reveals the chat and returns the view. Without `location` an open chat is reused wherever
 	 * it is and a new one follows the setting; with it, a chat in the other place is moved.
 	 */
+	/**
+	 * A phone may kill the app while the agent works. The session whose turn was running is noted
+	 * on this device, so the next start opens it and lets the model finish what was asked.
+	 */
+	private async finishInterruptedTurn(): Promise<void> {
+		const sessionId: unknown = this.app.loadLocalStorage(ACTIVE_TURN_KEY);
+		if (typeof sessionId !== 'string' || !sessionId) return;
+		this.app.saveLocalStorage(ACTIVE_TURN_KEY, null);
+		if (this.controller.isRunning) return;
+		// Peek before switching the chat: an interrupted turn is the only reason to reopen it.
+		if (!hasUnfinishedTurn(replay(await this.sessions.load(sessionId)))) return;
+		await this.activateView();
+		await this.controller.openSession(sessionId);
+		await this.controller.resumeTurn();
+	}
+
 	async activateView(location?: 'sidebar' | 'tab'): Promise<LibrarianView | null> {
 		const { workspace } = this.app;
 		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN)[0] ?? null;

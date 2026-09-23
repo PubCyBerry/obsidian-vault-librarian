@@ -245,6 +245,15 @@ export class FakeApp {
 			await this.vault.adapter.remove(file.path);
 		},
 	};
+	/** Obsidian's per-device store, which the controller uses to remember a turn it must finish. */
+	localStore = new Map<string, unknown>();
+	loadLocalStorage(key: string): unknown {
+		return this.localStore.has(key) ? this.localStore.get(key) : null;
+	}
+	saveLocalStorage(key: string, data: unknown): void {
+		if (data === null) this.localStore.delete(key);
+		else this.localStore.set(key, data);
+	}
 	secretStorage = {
 		getSecret: (id: string) => (this.secrets.has(id) ? this.secrets.get(id)! : null),
 		setSecret: (id: string, value: string) => {
