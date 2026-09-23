@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.11.1...1.12.0) (2026-09-23)
+
+
+### Features
+
+* reach a WebDAV storage such as a NAS with nine storage tools ([e4e477a](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e4e477a9c828710dab95a63a849057803cb2c148))
+
 ## [1.11.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.11.0...1.11.1) (2026-09-23)
 
 
