@@ -316,7 +316,9 @@ export class AgentController {
 		this.thinkingLevel = summary.thinkingLevel ?? 'off';
 		// A resumed conversation gets each folder's AGENTS.md again, as it now reads.
 		this.deps.nestedAgentsMd?.reset();
-		await this.reloadEvents();
+		// The card states come from the log before the view draws it; drawn first, every card
+		// whose result failed would read Failed instead of Skipped, Rejected or Approval expired.
+		this.events = replay(await this.deps.sessions.load(id));
 		for (const { event } of this.events) {
 			if (event.type === 'tool_result' && !this.toolStatus.has(event.toolCallId)) {
 				this.toolStatus.set(
@@ -333,6 +335,7 @@ export class AgentController {
 			if (event.type === 'approval' && event.decision === 'rejected')
 				this.toolStatus.set(event.toolCallId, 'rejected');
 		}
+		this.emit({ type: 'events', events: this.events });
 		this.emit({ type: 'session', session: this.session });
 		await this.refreshReadiness();
 	}

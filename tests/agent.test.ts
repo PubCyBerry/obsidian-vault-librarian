@@ -1045,10 +1045,17 @@ describe('messages sent while the agent works (LIB-TEST-186)', () => {
 			'assistant',
 		]);
 		expect(h.controller.queue).toEqual([]);
-		// Reopened later, the card still reads as skipped.
+		// Reopened later, the card still reads as skipped, already when the view draws the log.
 		const id = h.controller.session!.id;
 		await h.controller.newSession();
+		let drawnAs: string | undefined;
+		const off = h.controller.subscribe((e) => {
+			if (e.type === 'events' && e.events.length)
+				drawnAs ??= h.controller.toolStatusOf(grepId);
+		});
 		await h.controller.openSession(id);
+		off();
+		expect(drawnAs).toBe('skipped');
 		expect(h.controller.toolStatusOf(grepId)).toBe('skipped');
 	});
 
