@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.2...1.11.0) (2026-09-23)
+
+
+### Features
+
+* finish the turn when the phone sends the app to the background ([30cc626](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/30cc626443aeabd28fb1d96028fcdb6063bd8f91))
+
 ## [1.10.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.1...1.10.2) (2026-09-22)
 
 
