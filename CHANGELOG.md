@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.12.0...1.13.0) (2026-09-23)
+
+
+### Features
+
+* call any url, run obsidian commands and combine tools in a sandboxed script ([68c9e93](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/68c9e93b7cb42be4941c95ab74e8a5c6edbba4ce))
+
 ## [1.12.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.11.1...1.12.0) (2026-09-23)
 
 
