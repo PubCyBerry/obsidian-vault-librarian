@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.11.0...1.11.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* do not misread failures while the app is in the background ([1cfc196](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1cfc19686f78acd84ae1c8337d9d91855596e7c6))
+
 ## [1.11.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.10.2...1.11.0) (2026-09-23)
 
 
