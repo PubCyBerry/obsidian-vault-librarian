@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.4.1...2.5.0) (2026-09-23)
+
+
+### Features
+
+* defer skills behind skill_search, name what is deferred, and lift the iteration limit ([54ad808](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/54ad808ee73b03b46e8f84d12bcec4b05b987518))
+
 ## [2.4.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.4.0...2.4.1) (2026-09-23)
 
 
