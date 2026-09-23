@@ -950,6 +950,7 @@ export class AgentController {
 									input: m.usage.input,
 									output: m.usage.output,
 									cacheRead: m.usage.cacheRead,
+									cacheWrite: m.usage.cacheWrite,
 									totalTokens: m.usage.totalTokens,
 								}
 							: undefined;

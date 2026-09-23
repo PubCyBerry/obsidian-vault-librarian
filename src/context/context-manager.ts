@@ -27,9 +27,18 @@ export interface ContextUsage {
 	safetyMarginTokens: number;
 	availableInputTokens: number;
 	usageRatio: number;
-	/** Cached share of the last reported prompt, or null when the server reported no prompt tokens. */
-	cacheHitRatio: number | null;
+	/** The token counts of the last response the server reported, or null before the first one. */
+	lastResponse: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
 	state: 'normal' | 'warning' | 'critical';
+}
+
+/**
+ * Share of the last prompt the server served from its cache. The reported input excludes what
+ * was read from or written to the cache, so the whole prompt is the three added together.
+ */
+export function cacheHitRatio(last: ContextUsage['lastResponse']): number | null {
+	const prompt = last ? last.input + last.cacheRead + last.cacheWrite : 0;
+	return last && prompt > 0 ? last.cacheRead / prompt : null;
 }
 
 export interface PreparedContext {
@@ -277,18 +286,21 @@ export class ContextManager {
 
 	usage(events: IndexedEvent[], model: PiModel): ContextUsage {
 		const u = this.lastReported(events);
-		const prompt = u ? u.input + u.cacheRead : 0;
-		return this.usageFor(
-			this.reportedUsed(events),
-			model,
-			prompt > 0 ? u!.cacheRead / prompt : null,
-		);
+		const last = u
+			? {
+					input: u.input,
+					output: u.output,
+					cacheRead: u.cacheRead,
+					cacheWrite: u.cacheWrite ?? 0,
+				}
+			: null;
+		return this.usageFor(this.reportedUsed(events), model, last);
 	}
 
 	usageFor(
 		used: number,
 		model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>,
-		cacheHitRatio: number | null = null,
+		lastResponse: ContextUsage['lastResponse'] = null,
 	): ContextUsage {
 		const s = this.settings();
 		const { reserved, margin, usable } = this.budget(model);
@@ -300,7 +312,7 @@ export class ContextManager {
 			safetyMarginTokens: margin,
 			availableInputTokens: usable,
 			usageRatio: ratio,
-			cacheHitRatio,
+			lastResponse,
 			state: ratio >= s.compactAt ? 'critical' : ratio >= s.warningAt ? 'warning' : 'normal',
 		};
 	}
@@ -386,7 +398,7 @@ function toUsage(u: StoredUsage | undefined): AssistantMessage['usage'] {
 		input: u?.input ?? 0,
 		output: u?.output ?? 0,
 		cacheRead: u?.cacheRead ?? 0,
-		cacheWrite: 0,
+		cacheWrite: u?.cacheWrite ?? 0,
 		totalTokens: u?.totalTokens ?? 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};

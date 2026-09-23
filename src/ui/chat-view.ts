@@ -19,16 +19,11 @@ import type {
 } from '../agent/agent-controller';
 import { vaultReferenceReader } from '../agent/prompt';
 import { expandReferences } from '../agent/references';
-import type { ContextUsage } from '../context/context-manager';
+import { type ContextUsage, cacheHitRatio } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
-import type {
-	IndexedEvent,
-	SessionEvent,
-	SessionMetadata,
-	SessionSummary,
-} from '../session/session-types';
+import type { IndexedEvent, SessionEvent, SessionMetadata } from '../session/session-types';
 import { skillKey } from '../skills/skill-manager';
 import { isBinaryPath } from '../tools/path-policy';
 import {
@@ -46,6 +41,7 @@ import {
 	mentionQuery,
 	rankMentions,
 } from './mentions';
+import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session-list';
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta } from './stream-text';
@@ -77,76 +73,6 @@ function formatTokens(n: number): string {
 
 function compactTokens(n: number): string {
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
-}
-
-class ConfirmModal extends Modal {
-	constructor(
-		app: LibrarianPlugin['app'],
-		private readonly title: string,
-		private readonly body: (el: HTMLElement) => void,
-		private readonly confirmText: string,
-		private readonly onConfirm: () => void | Promise<void>,
-	) {
-		super(app);
-	}
-
-	onOpen() {
-		this.titleEl.setText(this.title);
-		this.body(this.contentEl);
-		const row = this.contentEl.createDiv({ cls: 'librarian-modal-buttons' });
-		const ok = row.createEl('button', { cls: 'mod-warning', text: this.confirmText });
-		ok.addEventListener(
-			'click',
-			() =>
-				void (async () => {
-					this.close();
-					await this.onConfirm();
-				})(),
-		);
-		const cancel = row.createEl('button', { text: 'Cancel' });
-		cancel.addEventListener('click', () => this.close());
-	}
-
-	onClose() {
-		this.contentEl.empty();
-	}
-}
-
-class TextPromptModal extends Modal {
-	constructor(
-		app: LibrarianPlugin['app'],
-		private readonly title: string,
-		private readonly initial: string,
-		private readonly onSubmit: (value: string) => void | Promise<void>,
-	) {
-		super(app);
-	}
-
-	onOpen() {
-		this.titleEl.setText(this.title);
-		const input = this.contentEl.createEl('input', {
-			type: 'text',
-			cls: 'librarian-modal-input',
-		});
-		input.value = this.initial;
-		const submit = async () => {
-			const value = input.value.trim();
-			this.close();
-			if (value) await this.onSubmit(value);
-		};
-		input.addEventListener('keydown', (e) => {
-			if (e.key === 'Enter') void submit();
-		});
-		const row = this.contentEl.createDiv({ cls: 'librarian-modal-buttons' });
-		const ok = row.createEl('button', { cls: 'mod-cta', text: 'Save' });
-		ok.addEventListener('click', () => void submit());
-		input.focus();
-		input.select();
-	}
-
-	onClose() {
-		this.contentEl.empty();
-	}
 }
 
 /** Models on top, effort below: the same two choices the old header selects offered. */
@@ -437,23 +363,11 @@ export class LibrarianView extends ItemView {
 		);
 	}
 
-	/** Asks, then deletes the session and its snapshots; closes it first when it is the open one. */
+	/** Asks, then deletes the session; the history list redraws when it is showing. */
 	private confirmDelete(session: SessionMetadata) {
-		new ConfirmModal(
-			this.app,
-			'Delete this session?',
-			(el) =>
-				el.createEl('p', {
-					text: `"${session.title}" and its snapshots will be deleted.`,
-				}),
-			'Delete',
-			async () => {
-				if (this.controller.session?.id === session.id)
-					await this.controller.closeSession();
-				await this.plugin.sessions.delete(session.id);
-				if (this.historyMode) await this.renderSessions();
-			},
-		).open();
+		confirmDeleteSession(this.plugin, session, async () => {
+			if (this.historyMode) await this.renderSessions();
+		});
 	}
 
 	private async compactNow() {
@@ -1501,9 +1415,22 @@ export class LibrarianView extends ItemView {
 			text: `${formatTokens(usage.usedTokens)} / ${formatTokens(usage.maxTokens)} tokens`,
 		});
 		this.popoverEl.createDiv({ text: `${percent.toFixed(1)}% used` });
+		const last = usage.lastResponse;
+		const hit = cacheHitRatio(last);
 		this.popoverEl.createDiv({
-			text: `Cache hit: ${usage.cacheHitRatio === null ? 'not reported' : `${(usage.cacheHitRatio * 100).toFixed(1)}%`}`,
+			text: `Cache hit: ${hit === null ? 'not reported' : `${(hit * 100).toFixed(1)}%`}`,
 		});
+		// The four counts the server reports for a response, as it reported them for the last one.
+		for (const [label, n] of [
+			['Input', last?.input],
+			['Output', last?.output],
+			['Cache read', last?.cacheRead],
+			['Cache write', last?.cacheWrite],
+		] as const) {
+			const line = this.popoverEl.createDiv({ cls: 'librarian-popover-row' });
+			line.createSpan({ text: label });
+			line.createSpan({ text: n === undefined ? '-' : formatTokens(n) });
+		}
 		this.popoverEl.createDiv({
 			cls: 'librarian-popover-detail',
 			text:
@@ -1588,58 +1515,17 @@ export class LibrarianView extends ItemView {
 	}
 
 	private async renderSessions() {
-		this.sessionsEl.empty();
-		const sessions = await this.plugin.sessions.list();
-		if (!sessions.length) {
-			this.sessionsEl.createDiv({
-				cls: 'librarian-sessions-empty',
-				text: 'No sessions yet.',
-			});
-			return;
-		}
-		for (const session of sessions) this.renderSessionRow(session);
+		await renderSessionList(this.sessionsEl, this.plugin, (session) =>
+			this.openSession(session.id),
+		);
 	}
 
-	private renderSessionRow(session: SessionSummary) {
-		const row = this.sessionsEl.createDiv({ cls: 'librarian-session-row' });
-		if (this.controller.session?.id === session.id) row.addClass('is-current');
-		const main = row.createDiv({ cls: 'librarian-session-main' });
-		main.setAttr('role', 'button');
-		main.setAttr('tabindex', '0');
-		main.createDiv({ cls: 'librarian-session-title', text: session.title });
-		const meta = main.createDiv({ cls: 'librarian-session-meta' });
-		meta.createSpan({ text: `${session.providerId || '?'}/${session.modelId || '?'}` });
-		meta.createSpan({ text: new Date(session.updatedAt).toLocaleString() });
-		const open = async () => {
-			this.followBottom = true;
-			await this.controller.openSession(session.id);
-			await this.toggleHistory();
-			this.renderModelSelect();
-		};
-		main.addEventListener('click', () => void open());
-		main.addEventListener('keydown', (e) => {
-			if (e.key === 'Enter') void open();
-		});
-		const actions = row.createDiv({ cls: 'librarian-session-actions' });
-		const rename = actions.createEl('button', {
-			cls: 'clickable-icon',
-			attr: { 'aria-label': 'Rename' },
-		});
-		setIcon(rename, 'pencil');
-		rename.addEventListener('click', () => {
-			new TextPromptModal(this.app, 'Rename session', session.title, async (title) => {
-				await this.plugin.sessions.rename(session.id, title);
-				if (this.controller.session?.id === session.id)
-					this.controller.session.title = title;
-				await this.renderSessions();
-			}).open();
-		});
-		const del = actions.createEl('button', {
-			cls: 'clickable-icon',
-			attr: { 'aria-label': 'Delete' },
-		});
-		setIcon(del, 'trash-2');
-		del.addEventListener('click', () => this.confirmDelete(session));
+	/** Opens a session picked from the history list or from the settings, leaving the history. */
+	async openSession(id: string) {
+		this.followBottom = true;
+		await this.controller.openSession(id);
+		if (this.historyMode) await this.toggleHistory();
+		this.renderModelSelect();
 	}
 
 	/** Used by the "Add active note to prompt" command. */

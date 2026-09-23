@@ -819,6 +819,14 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	font-size: var(--font-ui-smaller);
 }
 
+/* One of the four token counts: the name on the left, the number lined up on the right. */
+.librarian-popover-row {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-4);
+	font-variant-numeric: tabular-nums;
+}
+
 /* Sessions */
 
 .librarian-sessions {

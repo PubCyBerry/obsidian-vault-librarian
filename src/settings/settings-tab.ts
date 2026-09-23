@@ -33,6 +33,7 @@ import {
 	type ThinkingLevel,
 	type ToolPermission,
 } from '../types';
+import { renderSessionList } from '../ui/session-list';
 import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
@@ -1338,7 +1339,19 @@ export class LibrarianSettingTab extends PluginSettingTab {
 	}
 
 	private renderSessions(el: HTMLElement) {
-		new Setting(el).setName('Sessions').setHeading();
+		new Setting(el)
+			.setName('Sessions')
+			.setHeading()
+			.setDesc(
+				'Open a conversation in the chat, rename it, or delete it with its rewind snapshots.',
+			);
+		const list = el.createDiv({ cls: 'librarian-settings-sessions' });
+		void renderSessionList(list, this.plugin, async (session) => {
+			// The settings window covers the chat, so it closes before the session opens there.
+			(this.app as unknown as { setting: { close(): void } }).setting.close();
+			const view = await this.plugin.activateView();
+			await view?.openSession(session.id);
+		});
 		new Setting(el)
 			.setName('Storage')
 			.setDesc(

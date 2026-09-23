@@ -1,6 +1,6 @@
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { ContextManager, estimateText } from '../src/context/context-manager';
+import { ContextManager, cacheHitRatio, estimateText } from '../src/context/context-manager';
 import { toPiModel } from '../src/provider/provider-manager';
 import { replay } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
@@ -175,6 +175,50 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 			ev('assistant', { content: 'cut', toolCalls: [], stopReason: 'error' }),
 		]);
 		expect(cm.reportedUsed(errored)).toBe(730);
+	});
+
+	it('carries the four counts of the last response and the cache hit ratio (LIB-TEST-069)', () => {
+		const { cm } = manager();
+		const meta = ev('meta', { session: { id: 's' } });
+		const events = replay([
+			meta,
+			ev('assistant', {
+				content: 'reply',
+				toolCalls: [],
+				usage: {
+					input: 200,
+					output: 40,
+					cacheRead: 600,
+					cacheWrite: 200,
+					totalTokens: 1040,
+				},
+			}),
+		]);
+		const usage = cm.usage(events, piModel);
+		expect(usage.lastResponse).toEqual({
+			input: 200,
+			output: 40,
+			cacheRead: 600,
+			cacheWrite: 200,
+		});
+		expect(usage.usedTokens).toBe(1040);
+		// 600 read from the cache out of a 1,000-token prompt (200 fresh, 600 read, 200 written).
+		expect(cacheHitRatio(usage.lastResponse)).toBeCloseTo(0.6);
+		// A session written before cache write was kept reads it as 0.
+		const older = replay([
+			meta,
+			ev('assistant', {
+				content: 'r',
+				toolCalls: [],
+				usage: { input: 300, output: 5, cacheRead: 100, totalTokens: 405 },
+			}),
+		]);
+		expect(cm.usage(older, piModel).lastResponse?.cacheWrite).toBe(0);
+		expect(cacheHitRatio(cm.usage(older, piModel).lastResponse)).toBeCloseTo(0.25);
+		// Before the first response, and for a server that reports no prompt, there is no ratio.
+		expect(cm.usage(replay([meta]), piModel).lastResponse).toBeNull();
+		expect(cacheHitRatio(null)).toBeNull();
+		expect(cacheHitRatio({ input: 0, output: 5, cacheRead: 0, cacheWrite: 0 })).toBeNull();
 	});
 
 	it('inlines attached images from the vault and marks missing ones', async () => {

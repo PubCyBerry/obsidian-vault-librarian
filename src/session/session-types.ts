@@ -25,6 +25,8 @@ export interface StoredUsage {
 	input: number;
 	output: number;
 	cacheRead: number;
+	/** Absent in sessions written before 2.3.0. */
+	cacheWrite?: number;
 	totalTokens: number;
 }
 
