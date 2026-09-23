@@ -9,10 +9,14 @@
 	overflow: hidden;
 }
 
-.librarian {
-	/* The generic monospace family maps Hangul to GulimChe, so no generic appears before the text font. */
+/* On body so the settings window has it too. The generic monospace family maps Hangul to GulimChe,
+   so no generic appears before the text font. */
+body {
 	--librarian-font-mono:
 		"Cascadia Mono", Consolas, Menlo, "Roboto Mono", "Droid Sans Mono", var(--font-text);
+}
+
+.librarian {
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -116,8 +120,10 @@
 	gap: var(--size-2-2);
 }
 
+/* A light wash of the accent: the sidebar is --background-secondary itself, so a background color
+   vanished there, while a see-through tint stands out on any pane, theme and mode. */
 .librarian-bubble {
-	background: var(--background-secondary);
+	background: color-mix(in srgb, var(--interactive-accent) 15%, transparent);
 	border-radius: var(--radius-l);
 	padding: var(--size-4-2) var(--size-4-3);
 	max-width: 85%;
@@ -155,6 +161,44 @@
 .librarian-skill-warnings {
 	color: var(--text-warning);
 	font-size: var(--font-ui-small);
+}
+
+/* Skills in the settings: the name wears the chips' skill icon, and the SKILL.md path sits apart
+   from the description, set small and faint in the code font. */
+.librarian-skill .setting-item-name {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.librarian-skill-icon {
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+.librarian-skill-icon .svg-icon,
+.librarian-skill-path-icon .svg-icon {
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.librarian-skill-path {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-2-3);
+	margin-top: var(--size-4-2);
+	font-family: var(--librarian-font-mono);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow-wrap: anywhere;
+}
+
+/* One line tall, so the icon stays level with the first line when the path wraps. */
+.librarian-skill-path-icon {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 0 auto;
+	height: 1lh;
 }
 
 .librarian-msg-images,

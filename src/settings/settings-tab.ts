@@ -1132,21 +1132,33 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		const skills = this.plugin.skills;
 		const n = skills.skills.length;
 		new Setting(el)
-			.setName('Rescan')
-			.setDesc(`${n} ${n === 1 ? 'skill' : 'skills'} found.`)
+			.setName(`${n} ${n === 1 ? 'skill' : 'skills'} found`)
+			.setDesc('Skills are found when the plugin loads. Rescan after adding or changing one.')
 			.addButton((b) =>
 				b.setButtonText('Rescan').onClick(async () => {
 					await skills.scan();
 					this.refreshSettings();
 				}),
 			);
+		// Name with the skill icon the chat chips use, the description, then the SKILL.md path on a
+		// line of its own so the two never run together.
 		for (const skill of skills.skills) {
-			const desc = createFragment((f) => {
-				f.appendText(skill.description);
-				f.createEl('br');
-				f.createEl('code', { text: skill.location });
-			});
-			new Setting(el).setName(skill.name).setDesc(desc);
+			const row = new Setting(el).setName(skill.name).setDesc(skill.description);
+			row.settingEl.addClass('librarian-skill');
+			const icon = createSpan({ cls: 'librarian-skill-icon' });
+			setIcon(icon, 'sparkles');
+			row.nameEl.prepend(icon);
+			const path = row.descEl.createDiv({ cls: 'librarian-skill-path' });
+			setIcon(path.createSpan({ cls: 'librarian-skill-path-icon' }), 'folder');
+			// A narrow pane wraps the path after a slash rather than inside a folder name.
+			const text = path.createSpan();
+			for (const [i, part] of skill.location.split('/').entries()) {
+				if (i > 0) {
+					text.appendText('/');
+					text.createEl('wbr');
+				}
+				text.appendText(part);
+			}
 		}
 		if (skills.diagnostics.length) {
 			const list = el.createEl('ul', { cls: 'librarian-skill-warnings' });
