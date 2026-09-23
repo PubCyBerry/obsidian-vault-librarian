@@ -5,6 +5,7 @@ import {
 	AgentController,
 	type ControllerEvent,
 	hasUnfinishedTurn,
+	SKIPPED_RESULT,
 } from '../src/agent/agent-controller';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { PromptManager } from '../src/agent/prompt';
@@ -142,6 +143,13 @@ function harness(
 
 async function sessionEvents(h: Harness) {
 	return sessions(h);
+}
+
+/** The text of the last message in a request, as the model reads it. */
+function lastText(messages: readonly { content?: unknown }[]): string {
+	const content = messages[messages.length - 1]?.content;
+	if (typeof content === 'string') return content;
+	return ((content ?? []) as { text?: string }[]).map((c) => c.text ?? '').join('');
 }
 
 async function sessions(h: Harness) {
@@ -945,5 +953,218 @@ describe('AGENTS.md of the folders a tool reaches (LIB-TEST-180)', () => {
 		await h.controller.send('second');
 		const result = (await sessions(h)).find((e) => e.type === 'tool_result');
 		expect(result?.content).toContain('<agents_md path="notes/AGENTS.md">');
+	});
+});
+
+describe('messages sent while the agent works (LIB-TEST-186)', () => {
+	it('queues them and sends one at a time, each after the run before it ends by itself', async () => {
+		const h = harness([
+			{ toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] },
+			{ text: 'first answer' },
+			{ text: 'second answer' },
+			{ text: 'third answer' },
+		]);
+		const queues: string[][] = [];
+		const states: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'queue') queues.push(e.queue.map((q) => q.text));
+			if (e.type === 'state') states.push(e.state);
+			if (e.type === 'approval' && e.request) {
+				void h.controller.send('second');
+				void h.controller.send('third');
+				queueMicrotask(() => e.request!.resolve('approve'));
+			}
+		});
+		await h.controller.send('first');
+		expect(h.requests).toHaveLength(4);
+		expect(lastText(h.requests[2]!.messages)).toBe('second');
+		expect(lastText(h.requests[3]!.messages)).toBe('third');
+		const talk = (await sessions(h))
+			.filter((e) => e.type === 'user' || e.type === 'assistant')
+			.map((e) => (e as { content: string }).content);
+		expect(talk).toEqual([
+			'first',
+			'',
+			'first answer',
+			'second',
+			'second answer',
+			'third',
+			'third answer',
+		]);
+		expect(queues).toEqual([['second'], ['second', 'third'], ['third'], []]);
+		// One run as far as the UI goes: Stop never flickers to idle between the queued turns.
+		expect(states.slice(0, -1)).not.toContain('idle');
+		expect(h.controller.state).toBe('idle');
+		expect(h.controller.isRunning).toBe(false);
+	});
+
+	it('Send now lets the running call finish, skips the rest and goes in before the next request', async () => {
+		const h = harness(
+			[
+				{
+					toolCalls: [
+						{ name: 'read', args: { path: 'notes/a.md' } },
+						{ name: 'grep', args: { query: 'alpha' } },
+					],
+				},
+				{ text: 'ok' },
+			],
+			{},
+			{ toolExecution: 'sequential' },
+		);
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request?.name === 'read') {
+				const request = e.request;
+				queueMicrotask(() => {
+					request.resolve('approve');
+					void h.controller.send('steer');
+					h.controller.sendNow(h.controller.queue[0]!.id);
+				});
+			}
+		});
+		await h.controller.send('look');
+		const log = await sessions(h);
+		const results = log.filter((e) => e.type === 'tool_result');
+		expect(results.map((r) => [r.name, r.ok])).toEqual([
+			['read', true],
+			['grep', false],
+		]);
+		expect(results[1]!.content).toContain(SKIPPED_RESULT);
+		const grepId = results[1]!.toolCallId;
+		expect(h.controller.toolStatusOf(grepId)).toBe('skipped');
+		// Only the read asked; the grep never reached the permission gate.
+		expect(log.filter((e) => e.type === 'approval')).toHaveLength(1);
+		expect(h.requests).toHaveLength(2);
+		const second = h.requests[1]!.messages;
+		expect(lastText(second)).toBe('steer');
+		expect(second.slice(-3, -1).map((m) => m.role)).toEqual(['toolResult', 'toolResult']);
+		expect(log.slice(-4).map((e) => e.type)).toEqual([
+			'tool_result',
+			'tool_result',
+			'user',
+			'assistant',
+		]);
+		expect(h.controller.queue).toEqual([]);
+		// Reopened later, the card still reads as skipped.
+		const id = h.controller.session!.id;
+		await h.controller.newSession();
+		await h.controller.openSession(id);
+		expect(h.controller.toolStatusOf(grepId)).toBe('skipped');
+	});
+
+	it('Send now withdraws the approval card that is waiting, and nothing is written', async () => {
+		const h = harness([
+			{ toolCalls: [{ name: 'write', args: { path: 'notes/new.md', content: 'x' } }] },
+			{ text: 'waiting' },
+		]);
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request) {
+				queueMicrotask(() => {
+					void h.controller.send('wait');
+					h.controller.sendNow(h.controller.queue[0]!.id);
+				});
+			}
+		});
+		await h.controller.send('make a note');
+		expect(h.app.vault.text('notes/new.md')).toBeUndefined();
+		const log = await sessions(h);
+		expect(log.some((e) => e.type === 'approval')).toBe(false);
+		expect(log.find((e) => e.type === 'tool_result')?.content).toContain(SKIPPED_RESULT);
+		expect(lastText(h.requests[1]!.messages)).toBe('wait');
+		expect(h.controller.pendingApproval).toBeNull();
+	});
+
+	it('Send now during an answer without tools goes right after it, ahead of older messages', async () => {
+		const h = harness([{ text: 'answer' }, { text: 'to urgent' }, { text: 'to later' }]);
+		let sent = false;
+		h.controller.subscribe((e) => {
+			if (e.type === 'state' && e.state === 'requesting' && !sent) {
+				sent = true;
+				void h.controller.send('later');
+				void h.controller.send('urgent');
+				h.controller.sendNow(h.controller.queue[1]!.id);
+			}
+		});
+		await h.controller.send('question');
+		expect(h.requests).toHaveLength(3);
+		expect(lastText(h.requests[1]!.messages)).toBe('urgent');
+		expect(lastText(h.requests[2]!.messages)).toBe('later');
+	});
+
+	it('Stop hands the queue back instead of sending it', async () => {
+		const h = harness([
+			{ toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] },
+			{ text: 'not reached' },
+		]);
+		const unsent: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'unsent') unsent.push(...e.messages.map((m) => m.text));
+			if (e.type === 'approval' && e.request) {
+				queueMicrotask(() => {
+					void h.controller.send('queued');
+					h.controller.stop();
+				});
+			}
+		});
+		await h.controller.send('go');
+		expect(h.requests).toHaveLength(1);
+		expect(unsent).toEqual(['queued']);
+		expect(h.controller.queue).toEqual([]);
+		const log = await sessions(h);
+		expect(log.some((e) => e.type === 'user' && e.content === 'queued')).toBe(false);
+		expect(h.controller.state).toBe('idle');
+	});
+
+	it('an error hands the queue back, while a run stopped at the iteration limit goes on to it', async () => {
+		const h = harness([{ stopReason: 'error', errorMessage: 'boom' }, { text: 'never' }]);
+		const unsent: string[] = [];
+		let queued = false;
+		h.controller.subscribe((e) => {
+			if (e.type === 'unsent') unsent.push(...e.messages.map((m) => m.text));
+			if (e.type === 'state' && e.state === 'requesting' && !queued) {
+				queued = true;
+				void h.controller.send('after the error');
+			}
+		});
+		await h.controller.send('go');
+		expect(h.requests).toHaveLength(1);
+		expect(unsent).toEqual(['after the error']);
+
+		const h2 = harness(
+			[
+				{ toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] },
+				{ text: 'next answer' },
+			],
+			{ read: 'always_allow' },
+			{ maxIterations: 1 },
+		);
+		let queued2 = false;
+		h2.controller.subscribe((e) => {
+			if (e.type === 'tool-status' && e.status === 'running' && !queued2) {
+				queued2 = true;
+				void h2.controller.send('next');
+			}
+		});
+		await h2.controller.send('go');
+		expect(
+			h2.events.some(
+				(e) =>
+					e.type === 'notice' && e.message.startsWith('Stopped after 1 tool iterations'),
+			),
+		).toBe(true);
+		expect(h2.requests).toHaveLength(2);
+		expect(lastText(h2.requests[1]!.messages)).toBe('next');
+	});
+
+	it('a message that cannot go out comes back instead of vanishing', async () => {
+		const h = harness([{ text: 'x' }]);
+		h.app.secrets.delete('vault-librarian-p');
+		const unsent: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'unsent') unsent.push(...e.messages.map((m) => m.text));
+		});
+		await h.controller.send('hi');
+		expect(unsent).toEqual(['hi']);
+		expect(h.controller.state).toBe('no-key');
 	});
 });

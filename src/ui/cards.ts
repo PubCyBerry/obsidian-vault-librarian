@@ -11,6 +11,7 @@ export const STATUS_LABELS: Record<ToolCardStatus, string> = {
 	rejected: 'Rejected',
 	blocked: 'Tool blocked by settings',
 	expired: 'Approval expired',
+	skipped: 'Skipped',
 };
 
 const TOOL_ICONS: Record<string, string> = {

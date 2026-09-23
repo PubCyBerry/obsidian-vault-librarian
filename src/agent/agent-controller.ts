@@ -50,9 +50,23 @@ export type ToolCardStatus =
 	| 'failed'
 	| 'rejected'
 	| 'blocked'
-	| 'expired';
+	| 'expired'
+	| 'skipped';
 
-export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'expired';
+/** `skip` withdraws the card because the user sent a message that goes before this call. */
+export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'expired' | 'skip';
+
+/** A message sent while a turn runs. `now` puts it before the next tool call (LIB-FEAT-185). */
+export interface QueuedMessage {
+	id: number;
+	text: string;
+	images: string[];
+	now: boolean;
+}
+
+/** The result a call gets when a Send now message goes first. */
+export const SKIPPED_RESULT =
+	'Skipped: the user sent a new message before this call ran. Read it, then call the tool again only if it still applies.';
 
 export interface ApprovalRequest {
 	toolCallId: string;
@@ -94,7 +108,10 @@ export type ControllerEvent =
 	| { type: 'approval'; request: ApprovalRequest | null }
 	| { type: 'usage'; usage: ContextUsage | null }
 	| { type: 'notice'; message: string }
-	| { type: 'error'; message: string };
+	| { type: 'error'; message: string }
+	| { type: 'queue'; queue: readonly QueuedMessage[] }
+	/** Queued messages the run did not send (Stop, an error, a session switch): back to the composer. */
+	| { type: 'unsent'; messages: QueuedMessage[] };
 
 export interface ControllerDeps {
 	app: App;
@@ -191,6 +208,15 @@ export class AgentController {
 	private hiddenDuringRequest = false;
 	private backgroundResumes = 0;
 	private wakeLock: WakeLockSentinel | null = null;
+	/** Messages sent while a turn runs, oldest first. Memory only: they do not survive a restart. */
+	queue: QueuedMessage[] = [];
+	private queueSeq = 0;
+	/** Send now messages handed to Pi for the next request, logged once Pi adds them. */
+	private readonly steered = new Map<AgentMessage, QueuedMessage>();
+	/** Set while a turn and the queued turns after it run; one run as far as the UI goes. */
+	private driving: Promise<void> | null = null;
+	/** The last request of the turn failed for good, so the queue goes back to the composer. */
+	private runFailed = false;
 
 	constructor(readonly deps: ControllerDeps) {}
 
@@ -238,7 +264,7 @@ export class AgentController {
 	}
 
 	get isRunning(): boolean {
-		return this.agent !== null;
+		return this.driving !== null;
 	}
 
 	toolStatusOf(id: string): ToolCardStatus | undefined {
@@ -260,6 +286,11 @@ export class AgentController {
 	/** Starts from the settings defaults, or keeps the model and effort picked before any session. */
 	async newSession(keepSelection = false): Promise<void> {
 		await this.abortAndWait();
+		await this.startSession(keepSelection);
+	}
+
+	/** Creates the session without stopping anything, so the first send can call it mid-run. */
+	private async startSession(keepSelection: boolean): Promise<void> {
 		if (!keepSelection || !this.selection) this.applyDefaultSelection();
 		this.session = await this.deps.sessions.create({
 			providerId: this.selection?.provider.id ?? '',
@@ -290,7 +321,13 @@ export class AgentController {
 			if (event.type === 'tool_result' && !this.toolStatus.has(event.toolCallId)) {
 				this.toolStatus.set(
 					event.toolCallId,
-					event.content === 'Approval expired' ? 'expired' : event.ok ? 'ok' : 'failed',
+					event.content === 'Approval expired'
+						? 'expired'
+						: event.content.includes(SKIPPED_RESULT)
+							? 'skipped'
+							: event.ok
+								? 'ok'
+								: 'failed',
 				);
 			}
 			if (event.type === 'approval' && event.decision === 'rejected')
@@ -351,7 +388,8 @@ export class AgentController {
 
 	/** Recomputes the idle state (key missing, model missing) and the usage indicator. */
 	async refreshReadiness(): Promise<void> {
-		if (this.agent) return;
+		// Between queued turns too: the Stop button must not flicker off and on.
+		if (this.driving) return;
 		if (!this.session && !this.selection) this.applyDefaultSelection();
 		if (!this.selection) {
 			this.emit({ type: 'state', state: 'model-unavailable' });
@@ -419,29 +457,15 @@ export class AgentController {
 
 	// Sending
 
+	/** Sends the message, or queues it while a run is on; the queue follows when the run ends. */
 	async send(text: string, images: string[] = []): Promise<void> {
-		if (this.agent) return;
-		if (!this.session) await this.newSession(/*keepSelection*/ true);
-		if (!this.selection) {
-			this.emit({ type: 'state', state: 'model-unavailable' });
+		const message: QueuedMessage = { id: ++this.queueSeq, text, images, now: false };
+		if (this.driving) {
+			this.queue.push(message);
+			this.emitQueue();
 			return;
 		}
-		const key = this.deps.secrets.get(this.selection.provider.secretId);
-		if (key === null) {
-			this.emit({ type: 'state', state: 'no-key' });
-			return;
-		}
-		await this.deps.sessions.append(this.session!.id, {
-			type: 'user',
-			content: text,
-			images: images.length ? images : undefined,
-		});
-		await this.reloadEvents();
-		const imageContents = await this.imageContents(images);
-		await this.runTurn({
-			excludeLastUser: true,
-			start: (agent) => agent.prompt(text, imageContents),
-		});
+		await this.drive(() => this.sendTurn([message]));
 	}
 
 	/**
@@ -449,12 +473,112 @@ export class AgentController {
 	 * Every completed step is in the session log, so the model picks up from there.
 	 */
 	async resumeTurn(): Promise<boolean> {
-		if (this.agent || !this.session || !this.selection) return false;
+		if (this.driving || !this.session || !this.selection) return false;
 		if (this.deps.secrets.get(this.selection.provider.secretId) === null) return false;
 		if (!hasUnfinishedTurn(this.events)) return false;
 		this.emit({ type: 'notice', message: INTERRUPTED_RESUME_NOTICE });
-		await this.runTurn({ start: (agent) => agent.continue() });
+		await this.drive(async () => {
+			await this.runTurn({ start: (agent) => agent.continue() });
+			return !this.stopRequested && !this.runFailed;
+		});
 		return true;
+	}
+
+	/** Puts a queued message before the next tool call; a model call waiting for approval yields. */
+	sendNow(id: number): void {
+		const item = this.queue.find((q) => q.id === id);
+		if (!item || item.now) return;
+		item.now = true;
+		this.emitQueue();
+		// A shell command asking from inside its run has started already, so it keeps its card.
+		if (this.pendingApproval && !this.pendingApproval.calledFrom)
+			this.pendingApproval.resolve('skip');
+	}
+
+	private emitQueue(): void {
+		this.emit({ type: 'queue', queue: [...this.queue] });
+	}
+
+	/** The Send now messages if there are any, else the oldest message. */
+	private takeNext(): QueuedMessage[] {
+		const now = this.queue.filter((q) => q.now);
+		const taken = now.length ? now : this.queue.slice(0, 1);
+		this.queue = this.queue.filter((q) => !taken.includes(q));
+		this.emitQueue();
+		return taken;
+	}
+
+	/**
+	 * One run as far as the UI goes: the turn `first` starts, then every queued message as a turn
+	 * of its own while the turns end by themselves. Stop, an error or a session switch hands the
+	 * rest back to the composer.
+	 */
+	private async drive(first: () => Promise<boolean>): Promise<void> {
+		let finished = () => {};
+		this.driving = new Promise<void>((resolve) => {
+			finished = resolve;
+		});
+		this.stopRequested = false;
+		try {
+			let clean = await first();
+			while (clean && this.queue.length) clean = await this.sendTurn(this.takeNext());
+		} finally {
+			const unsent = this.queue.splice(0);
+			this.steered.clear();
+			this.driving = null;
+			if (unsent.length) {
+				this.emitQueue();
+				this.emit({ type: 'unsent', messages: unsent });
+			}
+			await this.refreshReadiness();
+			finished();
+		}
+	}
+
+	/** Sends messages as the next turn. True when the turn ended by itself, so the queue may go on. */
+	private async sendTurn(messages: QueuedMessage[]): Promise<boolean> {
+		if (!this.stopRequested && !this.session) await this.startSession(/*keepSelection*/ true);
+		const provider = this.selection?.provider;
+		if (this.stopRequested || !provider || this.deps.secrets.get(provider.secretId) === null) {
+			// Not sent: they go back with the rest of the queue, and the state tells why.
+			this.queue.unshift(...messages);
+			return false;
+		}
+		for (const { text, images } of messages) {
+			await this.deps.sessions.append(this.session!.id, {
+				type: 'user',
+				content: text,
+				images: images.length ? images : undefined,
+			});
+		}
+		await this.reloadEvents();
+		const last = messages[messages.length - 1]!;
+		const imageContents = await this.imageContents(last.images);
+		await this.runTurn({
+			excludeLastUser: true,
+			start: (agent) => agent.prompt(last.text, imageContents),
+		});
+		return !this.stopRequested && !this.runFailed;
+	}
+
+	/** Takes the Send now messages out of the queue as user messages for the next request. */
+	private async takeSteering(): Promise<AgentMessage[]> {
+		const now = this.queue.filter((q) => q.now);
+		if (!now.length) return [];
+		this.queue = this.queue.filter((q) => !q.now);
+		this.emitQueue();
+		const out: AgentMessage[] = [];
+		for (const item of now) {
+			const images = await this.imageContents(item.images);
+			const message: AgentMessage = {
+				role: 'user',
+				content: images.length ? [{ type: 'text', text: item.text }, ...images] : item.text,
+				timestamp: Date.now(),
+			};
+			this.steered.set(message, item);
+			out.push(message);
+		}
+		return out;
 	}
 
 	private async imageContents(images: string[]): Promise<ImageContent[]> {
@@ -491,6 +615,8 @@ export class AgentController {
 		excludeLastUser?: boolean;
 		start: (agent: Agent) => Promise<void>;
 	}): Promise<void> {
+		// Stop pressed while a queued message was being logged: that message stays unanswered.
+		if (this.stopRequested) return;
 		const sessionId = this.session!.id;
 		const model = this.piModel()!;
 		const streamFn = this.streamFn();
@@ -511,7 +637,7 @@ export class AgentController {
 		this.stopReason = null;
 		this.cutRetries = 0;
 		this.retryAfterCut = false;
-		this.stopRequested = false;
+		this.runFailed = false;
 		this.resumeWhenVisible = false;
 		this.backgroundResumes = 0;
 		const createAgent = (messages: AgentMessage[], tools: AgentTool[]) => {
@@ -592,11 +718,12 @@ export class AgentController {
 		this.pendingApproval?.resolve('expired');
 	}
 
+	/** Stops the run and waits until it has handed its queue back. */
 	private async abortAndWait(): Promise<void> {
-		if (!this.agent) return;
-		const agent = this.agent;
+		const driving = this.driving;
+		if (!driving) return;
 		this.stop();
-		await agent.waitForIdle();
+		await driving;
 	}
 
 	async compactNow(streamFn?: StreamFn): Promise<boolean> {
@@ -642,6 +769,11 @@ export class AgentController {
 		args: unknown,
 		signal?: AbortSignal,
 	) {
+		// Checked before every call: a Send now message goes ahead of anything not started yet.
+		if (this.queue.some((q) => q.now)) {
+			this.setToolStatus(toolCallId, 'skipped');
+			return { block: true, reason: SKIPPED_RESULT };
+		}
 		if (!this.deps.tools().some((t) => t.name === name))
 			return { block: true, reason: `Tool ${name} not found` };
 		const gate = await this.authorize(toolCallId, name, args, signal, (status) =>
@@ -711,6 +843,9 @@ export class AgentController {
 		if (permission === 'approval_required') {
 			onStatus('awaiting-approval');
 			const decision = await this.askApproval(toolCallId, name, record, signal, calledFrom);
+			// Not an answer to the card: the call yields to a Send now message, so nothing is logged.
+			if (decision === 'skip')
+				return { ok: false, reason: SKIPPED_RESULT, status: 'skipped' };
 			if (this.session) {
 				await this.deps.sessions.append(this.session.id, {
 					type: 'approval',
@@ -879,6 +1014,7 @@ export class AgentController {
 		const tools = this.exposedTools();
 		const prompt = await this.systemPrompt();
 		const usage = this.deps.context.usage(this.events, model);
+		let messages = current;
 		if (usage.state === 'critical' && !signal?.aborted) {
 			const compacted = await this.compactNow(streamFn);
 			if (compacted) {
@@ -888,10 +1024,12 @@ export class AgentController {
 					systemPrompt: prompt,
 					tools,
 				});
-				return { context: { messages: prepared.messages, tools } };
+				messages = prepared.messages;
 			}
 		}
-		return { context: { messages: current, tools } };
+		// Send now messages go in right after this response's tool results, before the next request.
+		const steering = signal?.aborted ? [] : await this.takeSteering();
+		return { context: { messages, tools }, messages: steering };
 	}
 
 	// Agent events -> session log and UI
@@ -990,6 +1128,7 @@ export class AgentController {
 					}
 					if (m.stopReason === 'error' || m.stopReason === 'aborted') {
 						if (m.stopReason === 'error') {
+							this.runFailed = true;
 							const message = m.errorMessage ?? 'Request failed';
 							await this.deps.sessions.append(sessionId, {
 								type: 'error',
@@ -1027,6 +1166,18 @@ export class AgentController {
 						this.setToolStatus(m.toolCallId, m.isError ? 'failed' : 'ok');
 					}
 					await this.reloadEvents();
+				} else if (m.role === 'user') {
+					// Pi just added a Send now message; the prompt that started the turn is logged by send.
+					const item = this.steered.get(m);
+					if (item) {
+						this.steered.delete(m);
+						await this.deps.sessions.append(sessionId, {
+							type: 'user',
+							content: item.text,
+							images: item.images.length ? item.images : undefined,
+						});
+						await this.reloadEvents();
+					}
 				}
 				break;
 			}

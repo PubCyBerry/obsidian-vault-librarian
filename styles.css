@@ -329,7 +329,8 @@
 }
 
 .librarian-tool.is-blocked,
-.librarian-tool.is-expired {
+.librarian-tool.is-expired,
+.librarian-tool.is-skipped {
 	opacity: 0.7;
 }
 
@@ -645,15 +646,33 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-faint);
 }
 
-/* The touch target stays a full button; only a small accent disc around the arrow is drawn, so the
-   send control weighs about as much as the + glyph and the ring next to it. Padding is pinned
-   because Obsidian gives every plain button 20px of side padding on tablets, which squeezed the
-   disc into a sliver. */
+/* The touch target stays a full button; only a small disc is drawn, so the send control weighs
+   about as much as the + glyph and the ring next to it. Padding is pinned because Obsidian gives
+   every plain button 20px of side padding on tablets, which squeezed the disc into a sliver. The
+   button keeps its box while hidden: its width opens and closes and slides the ring (LIB-FEAT-181). */
 .librarian .librarian-composer-row .librarian-send {
 	width: var(--librarian-tool-size);
+	min-width: 0;
+	margin-left: 0;
 	padding: 0;
 	color: var(--text-on-accent);
 	-webkit-tap-highlight-color: transparent;
+	transition:
+		width 200ms cubic-bezier(0.2, 0, 0, 1),
+		margin-left 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Hidden: no width, and the row gap before it cancelled, so the ring rests at the edge. The
+   view-wide is-hidden rule would drop the box at once and leave nothing to animate. Leaving plays
+   the appearing curves backwards: the disc shrinks first, then the ring closes the gap. */
+.librarian .librarian-composer-row .librarian-send.is-hidden {
+	display: inline-flex;
+	width: 0;
+	margin-left: calc(-1 * var(--size-2-2));
+	pointer-events: none;
+	transition:
+		width 200ms cubic-bezier(1, 0, 0.8, 1),
+		margin-left 200ms cubic-bezier(1, 0, 0.8, 1);
 }
 
 /* No fill or focus ring on the button itself: the disc is the whole visual, so a touch does not
@@ -669,22 +688,152 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-on-accent);
 }
 
-.librarian-composer-row .librarian-send > svg {
+/* Appearing, a dot shows at once and grows into the disc. */
+.librarian-send-disc {
 	--librarian-send-size: calc(var(--librarian-ring-size) + 4px);
-	width: 14px;
-	height: 14px;
-	box-sizing: content-box;
-	padding: calc((var(--librarian-send-size) - 14px) / 2);
+	flex: 0 0 auto;
+	display: grid;
+	place-items: center;
+	width: var(--librarian-send-size);
+	height: var(--librarian-send-size);
 	border-radius: 50%;
 	background: var(--interactive-accent);
+	transition:
+		transform 200ms cubic-bezier(0.3, 0, 0.2, 1),
+		opacity 60ms linear,
+		background-color 240ms ease;
 }
 
-.librarian-composer-row .librarian-send:hover > svg {
+.librarian-send:hover .librarian-send-disc {
 	background: var(--interactive-accent-hover);
 }
 
-.librarian-composer-row .librarian-send.is-running > svg {
+.librarian-send.is-running .librarian-send-disc {
 	background: var(--background-modifier-error);
+}
+
+/* Disappearing, the disc shrinks to a dot that fades as the slot closes. */
+.librarian-send.is-hidden .librarian-send-disc {
+	transform: scale(0.2);
+	opacity: 0;
+	transition:
+		transform 200ms cubic-bezier(0.8, 0, 0.7, 1),
+		opacity 60ms linear 140ms,
+		background-color 240ms ease;
+}
+
+/* Both glyphs share one cell. The stop square is a white box, so shrunk and rounded it is a dot. */
+.librarian-send-arrow,
+.librarian-send-stop {
+	grid-area: 1 / 1;
+}
+
+.librarian-send-arrow svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* Send: the square folds into a white dot, then the arrow grows out of it. */
+.librarian-send-arrow {
+	display: flex;
+	transform: scale(1);
+	transition: transform 120ms ease-out 120ms;
+}
+
+.librarian-send-stop {
+	width: 10px;
+	height: 10px;
+	background: var(--text-on-accent);
+	transform: scale(0.4);
+	border-radius: 50%;
+	opacity: 0;
+	transition:
+		transform 120ms ease-in,
+		border-radius 120ms ease-in,
+		opacity 60ms linear 120ms;
+}
+
+/* Stop: the arrow shrinks away as the dot appears, then the dot opens into the square. */
+.librarian-send.is-running .librarian-send-arrow {
+	transform: scale(0);
+	transition: transform 120ms ease-in;
+}
+
+.librarian-send.is-running .librarian-send-stop {
+	transform: scale(1);
+	border-radius: 2px;
+	opacity: 1;
+	transition:
+		opacity 60ms linear,
+		transform 120ms ease-out 120ms,
+		border-radius 120ms ease-out 120ms;
+}
+
+/* A button that appears takes its glyph and color at once; the view removes this right away. */
+.librarian-send.is-instant .librarian-send-disc,
+.librarian-send.is-instant .librarian-send-arrow,
+.librarian-send.is-instant .librarian-send-stop {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.librarian .librarian-composer-row .librarian-send,
+	.librarian .librarian-composer-row .librarian-send.is-hidden,
+	.librarian .librarian-send .librarian-send-disc,
+	.librarian .librarian-send .librarian-send-arrow,
+	.librarian .librarian-send .librarian-send-stop {
+		transition: none;
+	}
+}
+
+/* Messages sent while the agent works wait here, above the composer (LIB-FEAT-184). A long queue
+   scrolls in place instead of pushing the conversation away. */
+.librarian-queue {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	max-height: 30vh;
+	overflow-y: auto;
+	padding: 0 var(--size-4-3);
+}
+
+.librarian-queued .librarian-bubble {
+	opacity: 0.6;
+}
+
+/* Send now: quiet text left of the bubble, no fill (LIB-FEAT-185). The selector depth beats
+   Obsidian's plain-button rules, the tablet padding included. */
+.librarian .librarian-queue .librarian-send-now {
+	align-self: center;
+	flex: 0 0 auto;
+	height: auto;
+	min-height: 32px;
+	padding: 0 var(--size-2-2);
+	border: none;
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+}
+
+.librarian .librarian-queue .librarian-send-now:hover,
+.librarian .librarian-queue .librarian-send-now:focus-visible {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-accent);
+}
+
+.librarian .librarian-queue .librarian-send-now.is-sending {
+	cursor: default;
+	color: var(--text-muted);
+}
+
+.librarian.is-mobile .librarian-queue .librarian-send-now {
+	min-height: 44px;
 }
 
 /* Model picker modal */

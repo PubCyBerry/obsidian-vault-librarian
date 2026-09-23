@@ -15,6 +15,7 @@ import type {
 	AgentController,
 	ApprovalRequest,
 	ControllerEvent,
+	QueuedMessage,
 	ToolCardStatus,
 } from '../agent/agent-controller';
 import { vaultReferenceReader } from '../agent/prompt';
@@ -34,7 +35,9 @@ import {
 	toolIcon,
 } from './cards';
 import {
+	ATTACHED_BLOCK,
 	applyMention,
+	draftOf,
 	folderBlock,
 	type MentionTarget,
 	mentionLabel,
@@ -50,9 +53,6 @@ export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
-/** Blocks the composer appends below the typed text; the bubble shows each as a chip instead. */
-const ATTACHED_BLOCK =
-	/\n*<(attached_note|attached_file|attached_folder|skill_content) (?:path|name)="([^"]+)"(?: \/>|>[\s\S]*?<\/\1>)/g;
 const CHIP_ICONS: Record<string, string> = {
 	attached_note: 'file-text',
 	attached_file: 'file',
@@ -214,6 +214,9 @@ export class LibrarianView extends ItemView {
 	private imagesEl!: HTMLElement;
 	private inputEl!: HTMLTextAreaElement;
 	private sendButton!: HTMLButtonElement;
+	/** The send slot shows Stop: a run is on and the composer is empty. */
+	private stopMode = false;
+	private queueEl!: HTMLElement;
 	private imageNoticeEl!: HTMLElement;
 	private ringEl!: HTMLElement;
 	private popoverEl!: HTMLElement;
@@ -270,6 +273,8 @@ export class LibrarianView extends ItemView {
 			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 		});
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
+		// Messages sent while the agent works, waiting above the composer (LIB-FEAT-184).
+		this.queueEl = root.createDiv({ cls: 'librarian-queue is-hidden' });
 		this.buildComposer(root);
 		this.unsubscribe = this.controller.subscribe((e) => this.onControllerEvent(e));
 		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
@@ -315,6 +320,7 @@ export class LibrarianView extends ItemView {
 		this.renderModelSelect();
 		this.renderActiveNote();
 		if (this.controller.session) this.renderEvents(this.controller.events);
+		this.renderQueue(this.controller.queue);
 		await this.controller.refreshReadiness();
 	}
 
@@ -496,14 +502,17 @@ export class LibrarianView extends ItemView {
 		this.popoverEl = row.createDiv({ cls: 'librarian-context-popover is-hidden' });
 		this.ringEl.addEventListener('mouseenter', () => this.showPopover(true));
 		this.ringEl.addEventListener('mouseleave', () => this.showPopover(false));
-		// Appears only when there is something to send; becomes Stop while the agent runs.
+		// Appears only when there is something to send; Stop while the agent runs and the input is
+		// empty. It keeps its box while hidden so CSS can grow it from a dot and slide the ring.
 		this.sendButton = row.createEl('button', {
 			cls: 'librarian-send is-hidden',
-			attr: { 'aria-label': 'Send' },
+			attr: { 'aria-label': 'Send', 'aria-hidden': 'true', tabindex: '-1' },
 		});
-		setIcon(this.sendButton, 'arrow-up');
+		const disc = this.sendButton.createSpan({ cls: 'librarian-send-disc' });
+		setIcon(disc.createSpan({ cls: 'librarian-send-arrow' }), 'arrow-up');
+		disc.createSpan({ cls: 'librarian-send-stop' });
 		this.sendButton.addEventListener('click', () => {
-			if (this.controller.isRunning) this.controller.stop();
+			if (this.stopMode) this.controller.stop();
 			else void this.submit();
 		});
 	}
@@ -654,21 +663,29 @@ export class LibrarianView extends ItemView {
 			);
 		const state = this.controller.state;
 		const running = this.controller.isRunning;
+		// While the agent runs, Send queues the message (LIB-FEAT-184).
 		const canSend =
-			!running &&
 			state !== 'no-key' &&
 			state !== 'model-unavailable' &&
-			state !== 'awaiting-approval' &&
 			!blockedByImages &&
 			(this.inputEl.value.trim().length > 0 || this.pendingImages.length > 0);
 		const show = running || canSend;
-		this.sendButton.toggleClass('is-hidden', !show);
-		this.sendButton.toggleClass('is-running', running);
-		this.sendButton.empty();
-		setIcon(this.sendButton, running ? 'square' : 'arrow-up');
-		this.sendButton.setAttr('aria-label', running ? 'Stop' : 'Send');
-		this.inputEl.disabled =
-			state === 'no-key' || state === 'model-unavailable' || state === 'awaiting-approval';
+		this.stopMode = running && !canSend;
+		const button = this.sendButton;
+		if (show && button.hasClass('is-hidden')) {
+			// Appearing, it wears its glyph at once; only a change while shown morphs through the dot.
+			button.addClass('is-instant');
+			button.toggleClass('is-running', this.stopMode);
+			button.getBoundingClientRect();
+			button.removeClass('is-instant');
+		} else if (show) {
+			button.toggleClass('is-running', this.stopMode);
+		}
+		button.toggleClass('is-hidden', !show);
+		button.setAttr('aria-hidden', String(!show));
+		button.setAttr('tabindex', show ? '0' : '-1');
+		button.setAttr('aria-label', this.stopMode ? 'Stop' : 'Send');
+		this.inputEl.disabled = state === 'no-key' || state === 'model-unavailable';
 	}
 
 	async submit() {
@@ -1023,10 +1040,12 @@ export class LibrarianView extends ItemView {
 		this.pendingImages = [];
 		this.inputEl.value = '';
 		this.closeSuggestions();
+		// Started before the redraw so the button morphs from Send to Stop instead of leaving.
+		const sending = this.controller.send(text, images);
 		this.renderImages();
 		this.hideNotice();
 		if (this.historyMode) await this.toggleHistory();
-		await this.controller.send(text, images);
+		await sending;
 	}
 
 	async newSession() {
@@ -1069,7 +1088,47 @@ export class LibrarianView extends ItemView {
 			case 'error':
 				this.renderError(event.message);
 				break;
+			case 'queue':
+				this.renderQueue(event.queue);
+				break;
+			case 'unsent':
+				this.restoreUnsent(event.messages);
+				break;
 		}
+	}
+
+	/** Messages waiting for the run, each with Send now on its left (LIB-FEAT-184, LIB-FEAT-185). */
+	private renderQueue(queue: readonly QueuedMessage[]) {
+		this.queueEl.empty();
+		this.queueEl.toggleClass('is-hidden', queue.length === 0);
+		for (const item of queue) {
+			const row = this.queueEl.createDiv({
+				cls: 'librarian-msg librarian-msg-user librarian-queued',
+			});
+			if (item.now) {
+				row.createSpan({ cls: 'librarian-send-now is-sending', text: 'Sending' });
+			} else {
+				const now = row.createEl('button', { cls: 'librarian-send-now', text: 'Send now' });
+				now.addEventListener('click', () => this.controller.sendNow(item.id));
+			}
+			this.renderBubble(row, item.text, item.images);
+		}
+		this.queueEl.scrollTop = this.queueEl.scrollHeight;
+	}
+
+	/** Messages the run did not send go back into the composer, ahead of what is there already. */
+	private restoreUnsent(messages: QueuedMessage[]) {
+		const drafts = messages.map((m) => draftOf(m.text));
+		this.inputEl.value = [...drafts.map((d) => d.text), this.inputEl.value.trim()]
+			.filter(Boolean)
+			.join('\n\n');
+		for (const target of drafts.flatMap((d) => d.mentions))
+			if (!this.pendingMentions.some((m) => m.path === target.path))
+				this.pendingMentions.push(target);
+		this.renderMentions();
+		for (const path of messages.flatMap((m) => m.images))
+			if (!this.pendingImages.includes(path)) this.pendingImages.push(path);
+		this.renderImages();
 	}
 
 	private renderState(state: AgentController['state']) {
@@ -1218,9 +1277,20 @@ export class LibrarianView extends ItemView {
 
 	private renderUser(index: number, event: Extract<SessionEvent, { type: 'user' }>) {
 		const wrap = this.messagesEl.createDiv({ cls: 'librarian-msg librarian-msg-user' });
+		this.renderBubble(wrap, event.content, event.images ?? []);
+		const rewind = wrap.createEl('button', {
+			cls: 'clickable-icon librarian-rewind',
+			attr: { 'aria-label': 'Rewind to here' },
+		});
+		setIcon(rewind, 'undo-2');
+		rewind.addEventListener('click', () => this.confirmRewind(index));
+	}
+
+	/** A user message as the conversation shows it: the typed text, then its chips and images. */
+	private renderBubble(wrap: HTMLElement, content: string, images: readonly string[]) {
 		const bubble = wrap.createDiv({ cls: 'librarian-bubble' });
 		const chips: { tag: string; id: string }[] = [];
-		const shown = event.content.replace(ATTACHED_BLOCK, (_m, tag: string, id: string) => {
+		const shown = content.replace(ATTACHED_BLOCK, (_m, tag: string, id: string) => {
 			chips.push({ tag, id });
 			return '';
 		});
@@ -1230,9 +1300,9 @@ export class LibrarianView extends ItemView {
 			setIcon(chip.createSpan(), CHIP_ICONS[tag] ?? 'file-text');
 			chip.createSpan({ text: ` ${id}` });
 		}
-		if (event.images?.length) {
+		if (images.length) {
 			const row = bubble.createDiv({ cls: 'librarian-msg-images' });
-			for (const path of event.images) {
+			for (const path of images) {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (file instanceof TFile)
 					row.createEl('img', {
@@ -1245,12 +1315,6 @@ export class LibrarianView extends ItemView {
 					});
 			}
 		}
-		const rewind = wrap.createEl('button', {
-			cls: 'clickable-icon librarian-rewind',
-			attr: { 'aria-label': 'Rewind to here' },
-		});
-		setIcon(rewind, 'undo-2');
-		rewind.addEventListener('click', () => this.confirmRewind(index));
 	}
 
 	private renderAssistant(
@@ -1486,7 +1550,11 @@ export class LibrarianView extends ItemView {
 			async () => {
 				const result = await this.controller.rewind(index);
 				if (!result) return;
-				this.inputEl.value = result.userText;
+				// Ahead of anything already there, such as queued messages the rewind handed back.
+				this.inputEl.value = [result.userText, this.inputEl.value.trim()]
+					.filter(Boolean)
+					.join('\n\n');
+				this.updateSendEnabled();
 				this.inputEl.focus();
 				if (result.unchanged.length) {
 					const block = this.messagesEl.createDiv({ cls: 'librarian-error is-stored' });

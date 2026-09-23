@@ -55,6 +55,31 @@ export function rankMentions(
 		.map((x) => x.t);
 }
 
+/** Blocks the composer appends below the typed text; the bubble shows each as a chip instead. */
+export const ATTACHED_BLOCK =
+	/\n*<(attached_note|attached_file|attached_folder|skill_content) (?:path|name)="([^"]+)"(?: \/>|>[\s\S]*?<\/\1>)/g;
+
+/**
+ * A message the composer built, turned back into what the composer held: the typed text, the
+ * note and folder chips, and `/skill <name>` for a skill message. The `<imported>` blocks of
+ * `@path` references drop off; sending again brings them back.
+ */
+export function draftOf(message: string): { text: string; mentions: MentionTarget[] } {
+	const mentions: MentionTarget[] = [];
+	let skill = '';
+	// Blocks first: an attached note may itself contain an <imported> tag.
+	const typed = message.replace(ATTACHED_BLOCK, (_m, tag: string, id: string) => {
+		if (tag === 'skill_content') skill = id;
+		else mentions.push({ path: id, kind: tag === 'attached_folder' ? 'folder' : 'file' });
+		return '';
+	});
+	const cut = typed.indexOf('\n\n<imported path="');
+	let text = (cut < 0 ? typed : typed.slice(0, cut)).trim();
+	if (skill)
+		text = text === `Use the ${skill} skill.` ? `/skill ${skill}` : `/skill ${skill} ${text}`;
+	return { text, mentions };
+}
+
 /** A mentioned folder contributes its note list, not the notes themselves. */
 export function folderBlock(path: string, notes: readonly string[], limit = 200): string {
 	const shown = notes.slice(0, limit).map((p) => `- ${p}`);

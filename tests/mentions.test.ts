@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyMention,
+	draftOf,
 	folderBlock,
 	type MentionTarget,
 	mentionLabel,
@@ -46,6 +47,46 @@ describe('@mentions (LIB-TEST-127)', () => {
 		const block = folderBlock('a', ['a/x.md', 'a/y.md', 'a/z.md'], 2);
 		expect(block).toBe(
 			'<attached_folder path="a">\n- a/x.md\n- a/y.md\n(1 more notes not listed)\n</attached_folder>',
+		);
+	});
+});
+
+describe('a queued message handed back to the composer (LIB-TEST-186)', () => {
+	it('keeps the typed text and turns the attached blocks back into chips', () => {
+		const message = [
+			'compare @plan with the folder',
+			'',
+			'<attached_note path="10-projects/plan.md">',
+			'# Plan <imported path="x">quoted inside the note</imported>',
+			'</attached_note>',
+			'',
+			'<attached_folder path="10-projects">',
+			'- 10-projects/plan.md',
+			'</attached_folder>',
+			'',
+			'<attached_file path="assets/a.pdf" />',
+			'',
+			'<imported path="notes/ref.md">',
+			'ref body',
+			'</imported>',
+		].join('\n');
+		expect(draftOf(message)).toEqual({
+			text: 'compare @plan with the folder',
+			mentions: [
+				{ path: '10-projects/plan.md', kind: 'file' },
+				{ path: '10-projects', kind: 'folder' },
+				{ path: 'assets/a.pdf', kind: 'file' },
+			],
+		});
+	});
+
+	it('gives a skill message back as the command that made it', () => {
+		const block = '<skill_content name="obsidian-markdown">\nbody\n</skill_content>';
+		expect(draftOf(`make a table\n\n${block}`).text).toBe(
+			'/skill obsidian-markdown make a table',
+		);
+		expect(draftOf(`Use the obsidian-markdown skill.\n\n${block}`).text).toBe(
+			'/skill obsidian-markdown',
 		);
 	});
 });

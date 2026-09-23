@@ -11,6 +11,10 @@ Results land in `window.__e2e` (turn.js) and `window.__e2e2` (write-rewind-trans
 `turn.js` sends one message and auto-approves every tool call; `write-rewind-transport.js` clicks a source link,
 creates a note and rewinds it, sends a turn over the requestUrl transport, and renders the settings tab.
 
+`queue.js` drives the chat view like a user while the agent works: a message queued during a run and sent
+after it, **Send now** skipping the next call and going in after the tool results, and Stop handing the
+queue back to the composer. It auto-approves every tool call and leaves the results in `window.__queue`.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:
