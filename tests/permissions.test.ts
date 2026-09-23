@@ -17,8 +17,11 @@ function manager() {
 describe('tool permissions', () => {
 	it('LIB-TEST-001/199: a new install reads without asking and asks before anything else', () => {
 		const { perms } = manager();
-		for (const tool of TOOL_GROUPS[0]!.tools) expect(perms.get(tool)).toBe('always_allow');
-		for (const tool of ['write', 'edit', 'bash', 'outline__search', 'webdav_read', 'skill:x'])
+		for (const tool of [...TOOL_GROUPS[0]!.tools, 'webdav_ls', 'webdav_read'])
+			expect(perms.get(tool)).toBe('always_allow');
+		// MCP tools that only read get Always allow from the MCP manager (LIB-TEST-212); without
+		// it an unknown name asks.
+		for (const tool of ['write', 'edit', 'bash', 'outline__search', 'webdav_write', 'skill:x'])
 			expect(perms.get(tool)).toBe('approval_required');
 		expect(DEFAULT_SETTINGS.toolPermissions.byTool.read).toBe('always_allow');
 	});

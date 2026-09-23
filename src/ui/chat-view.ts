@@ -44,6 +44,7 @@ import {
 	mentionQuery,
 	rankMentions,
 } from './mentions';
+import { segment, setChecked } from './segmented';
 import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session-list';
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
@@ -140,17 +141,17 @@ class ModelPickerModal extends Modal {
 				attr: { role: 'radiogroup', 'aria-label': 'Effort' },
 			});
 			for (const level of levels) {
-				const b = seg.createEl('button', { text: level, attr: { role: 'radio' } });
-				b.toggleClass('is-active', level === this.controller.thinkingLevel);
-				b.setAttr('aria-checked', String(level === this.controller.thinkingLevel));
-				b.addEventListener(
-					'click',
+				const option = segment(
+					seg,
+					level,
 					() =>
 						void this.controller.setThinkingLevel(level).then(() => {
 							this.onChange();
 							this.render();
 						}),
 				);
+				option.setText(level);
+				setChecked(option, level === this.controller.thinkingLevel);
 			}
 		}
 	}
@@ -280,9 +281,11 @@ export class LibrarianView extends ItemView {
 		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
 		this.renderMcpBanner();
 		this.registerEvent(this.app.workspace.on('file-open', () => this.renderActiveNote()));
-		if (Platform.isPhone) {
+		// Phones and tablets alike: Obsidian keeps the app full height while the keyboard rises on
+		// both, so the composer has to ride up on its own there too (styles.css).
+		if (Platform.isMobile) {
 			// Obsidian dispatches these on window from the native keyboard. What is recorded here
-			// is only for the /layout command, which reports the phone layout numbers.
+			// is only for the /layout command, which reports the mobile layout numbers.
 			const k = () =>
 				getComputedStyle(document.documentElement).getPropertyValue('--keyboard-height');
 			this.registerDomEvent(window, 'keyboardWillShow' as keyof WindowEventMap, () => {
@@ -304,14 +307,14 @@ export class LibrarianView extends ItemView {
 					getComputedStyle(this.composerEl).paddingBottom,
 				);
 			};
-			requestAnimationFrame(rememberClosed);
+			window.requestAnimationFrame(rememberClosed);
 			const observer = new MutationObserver(() => {
 				const on = document.body.hasClass('keyboard-animating');
 				if (on && !this.animatingSince) this.animatingSince = Date.now();
 				if (!on && this.animatingSince) {
 					this.keyboardLog += `, animating ${Date.now() - this.animatingSince} ms, safe after=${safe()}`;
 					this.animatingSince = 0;
-					requestAnimationFrame(rememberClosed);
+					window.requestAnimationFrame(rememberClosed);
 				}
 			});
 			observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
@@ -398,7 +401,7 @@ export class LibrarianView extends ItemView {
 		if (this.pickModelEl) {
 			this.pickModelEl.createSpan({ text: 'Pick a model to continue' });
 			const select = this.pickModelEl.createEl('select', { cls: 'dropdown' });
-			select.createEl('option', { value: '', text: 'Choose…' });
+			select.createEl('option', { value: '', text: 'Choose a model' });
 			for (const { provider, model } of options) {
 				select.createEl('option', {
 					value: `${provider.id}\u0000${model.id}`,

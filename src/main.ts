@@ -87,6 +87,7 @@ export default class LibrarianPlugin extends Plugin {
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
 				return skill ? skillKey(skill.name) : null;
 			},
+			() => this.mcp.readOnlyTools(),
 		);
 		const mutation = {
 			before: (id: string, path: string) => this.controller.beforeMutation(id, path),
@@ -233,7 +234,12 @@ export default class LibrarianPlugin extends Plugin {
 			name: 'Open chat in main area',
 			callback: () => void this.activateView('tab'),
 		});
-		this.addSettingTab(new LibrarianSettingTab(this.app, this));
+		const settingTab = new LibrarianSettingTab(this.app, this);
+		this.addSettingTab(settingTab);
+		// Obsidian 1.13 draws the tab from its definitions and never calls display(), so the
+		// tab is told here when a server's state or the skill list changes.
+		this.register(this.mcp.subscribe(() => settingTab.refresh()));
+		this.register(this.skills.subscribe(() => settingTab.refresh()));
 
 		this.addCommand({
 			id: 'open',

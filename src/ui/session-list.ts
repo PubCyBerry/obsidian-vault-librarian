@@ -2,6 +2,16 @@ import { Modal, setIcon } from 'obsidian';
 import type LibrarianPlugin from '../main';
 import type { SessionMetadata } from '../session/session-types';
 
+/**
+ * Obsidian's own button row for a modal, with Cancel in it. The caller adds the main button
+ * after it: it sits rightmost on desktop and topmost on a phone, where the row stacks.
+ */
+export function modalButtons(el: HTMLElement, cancel: () => void): HTMLElement {
+	const row = el.createDiv({ cls: 'modal-button-container' });
+	row.createEl('button', { cls: 'mod-cancel', text: 'Cancel' }).addEventListener('click', cancel);
+	return row;
+}
+
 export class ConfirmModal extends Modal {
 	constructor(
 		app: LibrarianPlugin['app'],
@@ -16,7 +26,7 @@ export class ConfirmModal extends Modal {
 	onOpen() {
 		this.titleEl.setText(this.title);
 		this.body(this.contentEl);
-		const row = this.contentEl.createDiv({ cls: 'librarian-modal-buttons' });
+		const row = modalButtons(this.contentEl, () => this.close());
 		const ok = row.createEl('button', { cls: 'mod-warning', text: this.confirmText });
 		ok.addEventListener(
 			'click',
@@ -26,8 +36,6 @@ export class ConfirmModal extends Modal {
 					await this.onConfirm();
 				})(),
 		);
-		const cancel = row.createEl('button', { text: 'Cancel' });
-		cancel.addEventListener('click', () => this.close());
 	}
 
 	onClose() {
@@ -60,7 +68,7 @@ export class TextPromptModal extends Modal {
 		input.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') void submit();
 		});
-		const row = this.contentEl.createDiv({ cls: 'librarian-modal-buttons' });
+		const row = modalButtons(this.contentEl, () => this.close());
 		const ok = row.createEl('button', { cls: 'mod-cta', text: 'Save' });
 		ok.addEventListener('click', () => void submit());
 		input.focus();

@@ -32,4 +32,16 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		rules: {
+			// Example addresses and IDs shown as placeholders are not sentences.
+			'obsidianmd/ui/sentence-case': [
+				'warn',
+				{
+					enforceCamelCaseLower: true,
+					ignoreRegex: ['^https?://', '^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$'],
+				},
+			],
+		},
+	},
 );

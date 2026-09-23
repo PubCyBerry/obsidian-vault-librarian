@@ -58,6 +58,7 @@ export class ToolPermissionManager {
 	private extraGroups: () => ToolGroup[] = () => [];
 	private alwaysAsk: () => ReadonlySet<string> = () => new Set();
 	private keyFor: (tool: string, args: unknown) => string | null = () => null;
+	private readsOnly: () => ReadonlySet<string> = () => new Set();
 
 	constructor(
 		private readonly settings: () => LibrarianSettings,
@@ -66,16 +67,20 @@ export class ToolPermissionManager {
 
 	/**
 	 * `keyFor` may name another settings key that governs one concrete call, such as a skill's
-	 * key when `read` opens a file inside that skill's folder.
+	 * key when `read` opens a file inside that skill's folder. `readsOnly` names extra tools that
+	 * only fetch or read, such as an MCP server's search and get tools: with nothing stored they
+	 * run without asking, like the built-in read-only tools (LIB-FEAT-210).
 	 */
 	attachExtras(
 		groups: () => ToolGroup[],
 		alwaysAsk: () => ReadonlySet<string>,
 		keyFor?: (tool: string, args: unknown) => string | null,
+		readsOnly?: () => ReadonlySet<string>,
 	): void {
 		this.extraGroups = groups;
 		this.alwaysAsk = alwaysAsk;
 		if (keyFor) this.keyFor = keyFor;
+		if (readsOnly) this.readsOnly = readsOnly;
 	}
 
 	/** The settings key a call is judged and "Always allow" is stored under. */
@@ -88,7 +93,9 @@ export class ToolPermissionManager {
 	}
 
 	get(tool: string): ToolPermission {
-		return this.settings().toolPermissions.byTool[tool] ?? 'approval_required';
+		const stored = this.settings().toolPermissions.byTool[tool];
+		if (stored) return stored;
+		return this.readsOnly().has(tool) ? 'always_allow' : 'approval_required';
 	}
 
 	/** False for tools a server marks destructive: they can be allowed once or blocked, never always. */

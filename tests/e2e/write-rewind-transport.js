@@ -77,20 +77,17 @@
 		};
 		p.settings.providers[0].transport = 'auto';
 		await p.saveSettings();
-		// 4. Settings tab renders the five sections in order.
-		app.setting.open();
-		app.setting.openTabById('vault-librarian');
-		await new Promise((r) => setTimeout(r, 300));
+		// 4. The settings tab defines its pages in order. Obsidian 1.13 draws them in a window of
+		// its own, so the definitions are read rather than this window's DOM.
+		const pages = app.setting.pluginTabs
+			.find((t) => t.id === 'vault-librarian')
+			.getSettingDefinitions();
+		const permissions = pages.find((pg) => pg.name === 'Tool permissions');
 		out.steps.settings = {
-			headings: [
-				...document.querySelectorAll(
-					'.librarian-settings .setting-item-heading .setting-item-name',
-				),
-			].map((e) => e.textContent),
-			groups: document.querySelectorAll('.librarian-tool-permission-group').length,
-			rows: document.querySelectorAll('.librarian-tool-permission-row').length,
+			pages: pages.map((pg) => `${pg.name}${pg.displayValue ? ` (${pg.displayValue})` : ''}`),
+			permissionLists: permissions.items.map((s) => s.heading).filter(Boolean),
+			permissionRows: permissions.items.reduce((n, s) => n + (s.items?.length ?? 0), 0),
 		};
-		app.setting.close();
 	} catch (error) {
 		out.error = String(error?.stack || error);
 	} finally {

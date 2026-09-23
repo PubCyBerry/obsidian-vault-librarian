@@ -171,7 +171,11 @@ export interface LibrarianSettings {
 	readLineLimit: number;
 }
 
-/** A new install reads without asking and asks before anything that changes or runs (LIB-ADR-026). */
+/**
+ * A new install reads without asking and asks before anything that changes or runs (LIB-ADR-026),
+ * on the WebDAV storage too; MCP tools that only read get the same default from McpManager
+ * (LIB-ADR-029).
+ */
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 	byTool: {
 		ls: 'always_allow',
@@ -181,6 +185,8 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		get_active_note: 'always_allow',
 		tool_search: 'always_allow',
 		skill_search: 'always_allow',
+		webdav_ls: 'always_allow',
+		webdav_read: 'always_allow',
 		write: 'approval_required',
 		edit: 'approval_required',
 		bash: 'approval_required',

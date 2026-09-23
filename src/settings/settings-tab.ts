@@ -7,7 +7,11 @@ import {
 	PluginSettingTab,
 	requireApiVersion,
 	Setting,
+	type SettingDefinitionGroup,
 	type SettingDefinitionItem,
+	type SettingDefinitionList,
+	type SettingDefinitionRender,
+	SettingGroup,
 	setIcon,
 	setTooltip,
 } from 'obsidian';
@@ -17,10 +21,10 @@ import {
 	PERMISSION_DESCRIPTIONS,
 	PERMISSION_ICONS,
 	PERMISSION_LABELS,
-	TOOL_GROUPS,
 } from '../permissions/tool-permission-manager';
 import { type ServerModel, testConnection } from '../provider/transport';
-import { SKILL_KEY_PREFIX, SKILL_SEARCH_NAME } from '../skills/skill-manager';
+import type { SessionSummary } from '../session/session-types';
+import { SKILL_SEARCH_NAME, SKILLS_GROUP_ID, type Skill, skillKey } from '../skills/skill-manager';
 import { isValidSecretId } from '../storage/secret-store';
 import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
 import {
@@ -36,7 +40,13 @@ import {
 	type ThinkingLevel,
 	type ToolPermission,
 } from '../types';
-import { renderSessionList } from '../ui/session-list';
+import { segment, setChecked } from '../ui/segmented';
+import {
+	ConfirmModal,
+	confirmDeleteSession,
+	modalButtons,
+	renameSession,
+} from '../ui/session-list';
 import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
@@ -50,14 +60,65 @@ const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	error: 'Error',
 };
 
+/** The line under the Set all row of each tool group. */
+function groupNote(groupId: string): string {
+	if (groupId === 'read')
+		return 'They only read the vault. A new install runs them without asking.';
+	if (groupId === 'write') return 'They change notes in the vault. A new install asks first.';
+	if (groupId === 'shell')
+		return 'bash runs commands inside the plugin, curl and obsidian among them. A new install asks first.';
+	if (groupId === 'webdav')
+		return 'They reach the WebDAV storage. A new install lists and reads without asking and asks before any change.';
+	return 'Tools of this server, their results marked untrusted. A new install runs the ones that only read without asking.';
+}
+
+type Row = SettingDefinitionRender;
+type Section = SettingDefinitionGroup | SettingDefinitionList;
+
+/** One navigable page of the Librarian tab, in Obsidian's declarative settings format. */
+interface Page {
+	name: string;
+	desc: string;
+	displayValue?: string;
+	status?: 'warning' | null;
+	items: Section[];
+}
+
+/** Lets the rows of one permission list and its Set all choice keep each other up to date. */
+interface ListHooks {
+	fill: () => void;
+	rows: (() => void)[];
+}
+
+const listHooks = (): ListHooks => ({ fill: () => {}, rows: [] });
+
+/** A validation message under the row on Obsidian 1.13 and later, a notice before that. */
+function invalid(setting: Setting, message: string): void {
+	if (requireApiVersion('1.13.0')) setting.setErrorMessage(message);
+	else new Notice(message);
+}
+
+function clearError(setting: Setting): void {
+	if (requireApiVersion('1.13.0')) setting.setErrorMessage(null);
+}
+
+/** Matches a list's search box against the row name and a plain-text description. */
+function rowMatches(def: { name: string; desc?: unknown }, query: string): boolean {
+	const q = query.trim().toLowerCase();
+	if (!q) return true;
+	const desc = typeof def.desc === 'string' ? def.desc : '';
+	return `${def.name}\n${desc}`.toLowerCase().includes(q);
+}
+
 class McpServerEditorModal extends Modal {
 	private draft: McpServerConfig;
+	private key = '';
 
 	constructor(
 		app: App,
 		private readonly plugin: LibrarianPlugin,
 		private readonly existing: McpServerConfig | null,
-		private readonly onSaved: (server: McpServerConfig) => Promise<void>,
+		private readonly onSaved: (server: McpServerConfig, key: string) => Promise<void>,
 	) {
 		super(app);
 		this.draft = existing ? { ...existing } : newMcpServer('');
@@ -66,21 +127,43 @@ class McpServerEditorModal extends Modal {
 	onOpen() {
 		const el = this.contentEl;
 		el.empty();
+		this.modalEl.addClass('librarian-modal');
 		this.titleEl.setText(this.existing ? 'Edit MCP server' : 'Add MCP server');
-		new Setting(el).setName('Name').addText((t) =>
-			t.setValue(this.draft.name).onChange((v) => {
-				this.draft.name = v;
-				if (!this.existing) this.draft.id = newMcpServer(v).id;
-			}),
+		const name: Setting = new Setting(el).setName('Name').addText((t) =>
+			t
+				.setPlaceholder('My server')
+				.setValue(this.draft.name)
+				.onChange((v) => {
+					this.draft.name = v;
+					if (!this.existing) this.draft.id = newMcpServer(v).id;
+					clearError(name);
+				}),
 		);
-		new Setting(el)
+		const url: Setting = new Setting(el)
 			.setName('URL')
 			.setDesc('Streamable HTTP endpoint of the server, usually ending in /mcp.')
 			.addText((t) =>
-				t.setValue(this.draft.url).onChange((v) => {
-					this.draft.url = v.trim();
-				}),
+				t
+					.setPlaceholder('https://example.com/mcp')
+					.setValue(this.draft.url)
+					.onChange((v) => {
+						this.draft.url = v.trim();
+						clearError(url);
+					}),
 			);
+		url.settingEl.addClass('librarian-wide-input');
+		const saved =
+			!!this.existing && !!this.plugin.secrets.get(apiKeySecretId(this.existing.id));
+		const key = new Setting(el)
+			.setName('API key')
+			.setDesc('Kept on this device only.')
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.setPlaceholder(saved ? 'Saved on this device' : 'Paste the key');
+				t.onChange((v) => {
+					this.key = v.trim();
+				});
+			});
 		new Setting(el)
 			.setName('Authentication')
 			.setDesc('Sign in through the browser, or paste an API key once per device.')
@@ -90,31 +173,31 @@ class McpServerEditorModal extends Modal {
 					.setValue(this.draft.auth)
 					.onChange((v) => {
 						this.draft.auth = v as McpServerConfig['auth'];
+						key.settingEl.toggle(v === 'apiKey');
 					}),
 			);
-		const note = el.createDiv({ cls: 'librarian-modal-note' });
-		const buttons = el.createDiv({ cls: 'librarian-modal-buttons' });
-		const cancel = buttons.createEl('button', { text: 'Cancel' });
-		cancel.addEventListener('click', () => this.close());
-		const save = buttons.createEl('button', { cls: 'mod-cta', text: 'Save' });
-		save.addEventListener(
-			'click',
-			() =>
-				void (async () => {
-					const name = this.draft.name.trim();
-					if (!name) return note.setText('Name is required.');
-					if (!/^https?:\/\//.test(this.draft.url))
-						return note.setText('The URL must start with http or https.');
-					if (!MCP_SERVER_ID_PATTERN.test(this.draft.id))
-						return note.setText('Name must contain a letter or digit.');
-					const taken = this.plugin.settings.mcpServers.some(
-						(s) => s.id === this.draft.id && s !== this.existing,
-					);
-					if (taken) return note.setText('This name is already used.');
-					await this.onSaved({ ...this.draft, name });
-					this.close();
-				})(),
+		// The key row belongs after the choice that shows it.
+		el.appendChild(key.settingEl);
+		key.settingEl.toggle(this.draft.auth === 'apiKey');
+		const buttons = modalButtons(el, () => this.close());
+		buttons
+			.createEl('button', { cls: 'mod-cta', text: 'Save' })
+			.addEventListener('click', () => void this.save(name, url));
+	}
+
+	private async save(name: Setting, url: Setting) {
+		const trimmed = this.draft.name.trim();
+		if (!trimmed) return invalid(name, 'Name is required.');
+		if (!MCP_SERVER_ID_PATTERN.test(this.draft.id))
+			return invalid(name, 'Name must contain a letter or digit.');
+		const taken = this.plugin.settings.mcpServers.some(
+			(s) => s.id === this.draft.id && s !== this.existing,
 		);
+		if (taken) return invalid(name, 'This name is already used.');
+		if (!/^https?:\/\//.test(this.draft.url))
+			return invalid(url, 'The URL must start with http or https.');
+		await this.onSaved({ ...this.draft, name: trimmed }, this.key);
+		this.close();
 	}
 
 	onClose() {
@@ -151,6 +234,8 @@ const THINKING_FORMATS = [
 	'string-thinking',
 	'ant-ling',
 ];
+
+const DEFAULT_API = 'openai-completions';
 
 function slug(s: string): string {
 	return s
@@ -242,6 +327,19 @@ function renderCompat(container: HTMLElement, compat: ProviderCompat, title: str
 		});
 }
 
+/** Parses a JSON object typed into a text area; empty is undefined, anything else is null. */
+function jsonObject(text: string): Record<string, unknown> | undefined | null {
+	if (!text.trim()) return undefined;
+	try {
+		const parsed = JSON.parse(text) as unknown;
+		return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 class ModelEditorModal extends Modal {
 	private readonly draft: ModelConfig;
 
@@ -259,25 +357,37 @@ class ModelEditorModal extends Modal {
 		this.titleEl.setText(this.draft.id ? `Edit model ${this.draft.id}` : 'Add model');
 		const el = this.contentEl;
 		const d = this.draft;
-		new Setting(el)
+		const idSetting: Setting = new Setting(el)
 			.setName('ID')
 			.setDesc('The model ID sent to the API.')
-			.addText((t) => t.setValue(d.id).onChange((v) => (d.id = v.trim())));
-		new Setting(el)
-			.setName('Display name')
-			.addText((t) => t.setValue(d.name).onChange((v) => (d.name = v.trim())));
-		new Setting(el)
-			.setName('API override')
-			.setDesc('Leave empty to use the provider API.')
 			.addText((t) =>
-				t.setValue(d.api ?? '').onChange((v) => (d.api = v.trim() || undefined)),
+				t
+					.setPlaceholder('qwen3-32b')
+					.setValue(d.id)
+					.onChange((v) => {
+						d.id = v.trim();
+						clearError(idSetting);
+					}),
 			);
+		new Setting(el).setName('Display name').addText((t) =>
+			t
+				.setPlaceholder('Same as the ID')
+				.setValue(d.name === d.id ? '' : d.name)
+				.onChange((v) => (d.name = v.trim())),
+		);
+		new Setting(el).setName('API override').addText((t) =>
+			t
+				.setPlaceholder('Provider API')
+				.setValue(d.api ?? '')
+				.onChange((v) => (d.api = v.trim() || undefined)),
+		);
 		new Setting(el)
 			.setName('Tool calling')
 			.setDesc('Librarian only lists models that can call tools.')
 			.addToggle((t) => t.setValue(d.toolCalling).onChange((v) => (d.toolCalling = v)));
 		new Setting(el)
 			.setName('Reasoning')
+			.setDesc('Lets you pick an effort level in the chat.')
 			.addToggle((t) => t.setValue(d.reasoning).onChange((v) => (d.reasoning = v)));
 		new Setting(el).setName('Accepts images').addToggle((t) =>
 			t.setValue(d.input.includes('image')).onChange((v) => {
@@ -285,7 +395,7 @@ class ModelEditorModal extends Modal {
 			}),
 		);
 		numberInput(
-			new Setting(el).setName('Context window'),
+			new Setting(el).setName('Context window').setDesc('Tokens the model can take in.'),
 			d.contextWindow,
 			(v) => (d.contextWindow = v ?? d.contextWindow),
 		);
@@ -304,6 +414,7 @@ class ModelEditorModal extends Modal {
 		for (const level of THINKING_LEVELS) {
 			const current = d.thinkingLevelMap?.[level];
 			new Setting(thinking).setName(level).addText((t) => {
+				t.setPlaceholder('Default');
 				t.setValue(current === null ? '-' : (current ?? ''));
 				t.onChange((v) => {
 					d.thinkingLevelMap = d.thinkingLevelMap ?? {};
@@ -320,45 +431,40 @@ class ModelEditorModal extends Modal {
 			numberInput(new Setting(cost).setName(key), d.cost[key], (v) => (d.cost[key] = v ?? 0));
 		}
 
-		const samplingSetting = new Setting(el)
-			.setName('Sampling parameters')
-			.setDesc('JSON object merged into the request body, e.g. {"top_k": 20}.');
 		let samplingText = d.samplingParams ? JSON.stringify(d.samplingParams) : '';
-		samplingSetting.addTextArea((t) =>
-			t.setValue(samplingText).onChange((v) => (samplingText = v)),
-		);
+		const sampling: Setting = new Setting(el)
+			.setName('Sampling parameters')
+			.setDesc('JSON object merged into the request body.')
+			.addTextArea((t) =>
+				t
+					.setPlaceholder('{"top_k": 20}')
+					.setValue(samplingText)
+					.onChange((v) => {
+						samplingText = v;
+						clearError(sampling);
+					}),
+			);
 
 		d.compat = d.compat ?? {};
 		const compat = d.compat;
 		renderCompat(el, compat, 'Compatibility override');
 
-		const buttons = el.createDiv({ cls: 'librarian-modal-buttons' });
-		const save = buttons.createEl('button', { cls: 'mod-cta', text: 'Save' });
-		save.addEventListener('click', () => {
-			if (!d.id) {
-				new Notice('The model needs an ID.');
-				return;
-			}
-			if (!d.name) d.name = d.id;
-			if (samplingText.trim()) {
-				try {
-					const parsed = JSON.parse(samplingText) as unknown;
-					if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-						throw new Error('not an object');
-					d.samplingParams = parsed as Record<string, unknown>;
-				} catch {
-					new Notice('Sampling parameters must be a JSON object.');
-					return;
-				}
-			} else {
-				delete d.samplingParams;
-			}
-			if (Object.keys(compat).length === 0) delete d.compat;
-			this.onSave(d);
-			this.close();
-		});
-		const cancel = buttons.createEl('button', { text: 'Cancel' });
-		cancel.addEventListener('click', () => this.close());
+		// Outside the scrolling content, so Save stays in view on a long form.
+		const buttons = modalButtons(this.modalEl, () => this.close());
+		buttons
+			.createEl('button', { cls: 'mod-cta', text: 'Save' })
+			.addEventListener('click', () => {
+				if (!d.id) return invalid(idSetting, 'The model needs an ID.');
+				if (!d.name) d.name = d.id;
+				const params = jsonObject(samplingText);
+				if (params === null)
+					return invalid(sampling, 'Sampling parameters must be a JSON object.');
+				if (params) d.samplingParams = params;
+				else delete d.samplingParams;
+				if (Object.keys(compat).length === 0) delete d.compat;
+				this.onSave(d);
+				this.close();
+			});
 	}
 
 	onClose() {
@@ -415,47 +521,68 @@ class ProviderEditorModal extends Modal {
 		this.titleEl.setText(this.isNew ? 'Add provider' : `Edit provider ${this.draft.name}`);
 		const el = this.contentEl;
 		const d = this.draft;
-		let idSetting: Setting;
-		new Setting(el).setName('Name').addText((t) =>
-			t.setValue(d.name).onChange((v) => {
-				d.name = v.trim();
-				if (this.isNew) {
-					d.id = slug(d.name);
-					d.secretId = `vault-librarian-${d.id}`;
-					idSetting.setDesc(`ID ${d.id || '?'}, key stored as ${d.secretId}`);
-				}
-			}),
-		);
-		idSetting = new Setting(el)
-			.setName('ID')
-			.setDesc(`ID ${d.id || '?'}, key stored as ${d.secretId}`);
-		if (this.isNew) {
-			idSetting.addText((t) =>
-				t.setValue(d.id).onChange((v) => {
-					d.id = slug(v);
-					d.secretId = `vault-librarian-${d.id}`;
-					idSetting.setDesc(`ID ${d.id || '?'}, key stored as ${d.secretId}`);
+		// A new provider's ID follows its name until the ID is typed.
+		let typedId = '';
+		let idText: { setPlaceholder(p: string): unknown } | null = null;
+		const nameSetting: Setting = new Setting(el).setName('Name').addText((t) =>
+			t
+				.setPlaceholder('My server')
+				.setValue(d.name)
+				.onChange((v) => {
+					d.name = v.trim();
+					clearError(nameSetting);
+					if (this.isNew && !typedId) {
+						d.id = slug(d.name);
+						idText?.setPlaceholder(d.id || 'my-server');
+					}
 				}),
-			);
-		}
-		new Setting(el)
+		);
+		if (!this.isNew) nameSetting.setDesc(`ID ${d.id}`);
+		const idSetting: Setting | null = this.isNew
+			? new Setting(el)
+					.setName('ID')
+					.setDesc(
+						'Lowercase letters, digits and dashes. Sessions and the keychain name the provider by it.',
+					)
+					.addText((t) => {
+						idText = t;
+						t.setPlaceholder(d.id || 'my-server').onChange((v) => {
+							typedId = v.trim();
+							d.id = slug(typedId || d.name);
+							if (idSetting) clearError(idSetting);
+						});
+					})
+			: null;
+		const baseUrl = new Setting(el)
 			.setName('Base URL')
-			.setDesc('The endpoint root such as the /v1 URL of an OpenAI-compatible server.')
-			.addText((t) => t.setValue(d.baseUrl).onChange((v) => (d.baseUrl = v.trim())));
+			.setDesc('The root of an OpenAI-compatible API, such as its /v1 address.')
+			.addText((t) =>
+				t
+					.setPlaceholder('https://api.example.com/v1')
+					.setValue(d.baseUrl)
+					.onChange((v) => (d.baseUrl = v.trim())),
+			);
+		baseUrl.settingEl.addClass('librarian-wide-input');
 		new Setting(el)
 			.setName('API')
+			.setDesc('Request format of the endpoint.')
 			.addText((t) =>
-				t.setValue(d.api).onChange((v) => (d.api = v.trim() || 'openai-completions')),
+				t
+					.setPlaceholder(DEFAULT_API)
+					.setValue(d.api === DEFAULT_API ? '' : d.api)
+					.onChange((v) => (d.api = v.trim() || DEFAULT_API)),
 			);
 		const stored = this.plugin.secrets.get(d.secretId);
 		new Setting(el)
 			.setName('API key')
-			.setDesc(stored === null ? 'Not set on this device' : 'Stored on this device')
+			.setDesc(
+				stored === null
+					? 'Kept on this device only.'
+					: 'Saved on this device. Type a new key to replace it.',
+			)
 			.addText((t) => {
 				t.inputEl.type = 'password';
-				t.setPlaceholder(
-					stored === null ? 'Enter the key' : 'Leave empty to keep the stored key',
-				);
+				t.setPlaceholder(stored === null ? 'Paste the key' : 'Saved on this device');
 				t.onChange((v) => {
 					this.apiKeyInput = v;
 					this.apiKeyTouched = true;
@@ -463,28 +590,36 @@ class ProviderEditorModal extends Modal {
 			});
 		new Setting(el)
 			.setName('Auth header')
-			.setDesc('Send Authorization: Bearer <key>.')
+			.setDesc('Send the key as a bearer token.')
 			.addToggle((t) => t.setValue(d.authHeader).onChange((v) => (d.authHeader = v)));
-		new Setting(el).setName('Transport').addDropdown((dd) => {
-			dd.addOption('auto', 'Auto');
-			dd.addOption('requestUrl', 'Non-streaming (Obsidian)');
-			dd.addOption('fetch', 'Streaming (browser)');
-			dd.setValue(d.transport);
-			dd.onChange((v) => (d.transport = v as ProviderConfig['transport']));
-		});
-		new Setting(el).setName('Test connection').addButton((b) =>
-			b.setButtonText('Test').onClick(async () => {
-				const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
-				b.setDisabled(true);
-				const result = await testConnection(d, key);
-				b.setDisabled(false);
-				new Notice(
-					result.ok
-						? `Connection OK. ${result.models.length} models available.`
-						: `Connection failed: ${result.message}`,
-				);
-			}),
-		);
+		new Setting(el)
+			.setName('Transport')
+			.setDesc(
+				'Auto streams, and waits for the whole answer when the server blocks streaming.',
+			)
+			.addDropdown((dd) => {
+				dd.addOption('auto', 'Auto');
+				dd.addOption('requestUrl', 'Non-streaming (Obsidian)');
+				dd.addOption('fetch', 'Streaming (browser)');
+				dd.setValue(d.transport);
+				dd.onChange((v) => (d.transport = v as ProviderConfig['transport']));
+			});
+		new Setting(el)
+			.setName('Connection')
+			.setDesc('Asks the server for its models with this key.')
+			.addButton((b) =>
+				b.setButtonText('Test').onClick(async () => {
+					const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
+					b.setDisabled(true);
+					const result = await testConnection(d, key);
+					b.setDisabled(false);
+					new Notice(
+						result.ok
+							? `Connection OK. ${result.models.length} models available.`
+							: `Connection failed: ${result.message}`,
+					);
+				}),
+			);
 
 		renderCompat(el, d.compat, 'Compatibility');
 
@@ -495,16 +630,16 @@ class ProviderEditorModal extends Modal {
 			new Setting(req).setName('Temperature'),
 			r.temperature,
 			(v) => (r.temperature = v),
-			'default',
+			'Default',
 		);
-		numberInput(new Setting(req).setName('Top p'), r.topP, (v) => (r.topP = v), 'default');
-		numberInput(new Setting(req).setName('Top k'), r.topK, (v) => (r.topK = v), 'default');
-		numberInput(new Setting(req).setName('Min p'), r.minP, (v) => (r.minP = v), 'default');
+		numberInput(new Setting(req).setName('Top p'), r.topP, (v) => (r.topP = v), 'Default');
+		numberInput(new Setting(req).setName('Top k'), r.topK, (v) => (r.topK = v), 'Default');
+		numberInput(new Setting(req).setName('Min p'), r.minP, (v) => (r.minP = v), 'Default');
 		numberInput(
-			new Setting(req).setName('Max output tokens').setDesc('Empty uses the model maximum.'),
+			new Setting(req).setName('Max output tokens'),
 			r.maxTokens,
 			(v) => (r.maxTokens = v),
-			'model max',
+			'Model maximum',
 		);
 		new Setting(req).setName('Default thinking level').addDropdown((dd) => {
 			for (const level of THINKING_LEVELS) dd.addOption(level, level);
@@ -518,19 +653,29 @@ class ProviderEditorModal extends Modal {
 			new Setting(req).setName('Timeout (ms)'),
 			r.timeoutMs,
 			(v) => (r.timeoutMs = v ?? 120000),
+			'120000',
 		);
 		numberInput(
 			new Setting(req).setName('Max retries'),
 			r.maxRetries,
 			(v) => (r.maxRetries = v ?? 2),
+			'2',
 		);
 		let extraText = r.extraBody ? JSON.stringify(r.extraBody) : '';
-		new Setting(req)
+		const extra: Setting = new Setting(req)
 			.setName('Extra request body')
 			.setDesc(
-				'JSON object merged into every request. Cannot override model, messages, tools, tool_choice or stream.',
+				'JSON object merged into every request. It cannot override model, messages, tools, tool_choice or stream.',
 			)
-			.addTextArea((t) => t.setValue(extraText).onChange((v) => (extraText = v)));
+			.addTextArea((t) =>
+				t
+					.setPlaceholder('{"chat_template_kwargs": {}}')
+					.setValue(extraText)
+					.onChange((v) => {
+						extraText = v;
+						clearError(extra);
+					}),
+			);
 
 		new Setting(el)
 			.setName('Models')
@@ -581,59 +726,49 @@ class ProviderEditorModal extends Modal {
 		this.modelsEl = el.createDiv({ cls: 'librarian-model-list' });
 		this.renderModels();
 
-		const buttons = el.createDiv({ cls: 'librarian-modal-buttons' });
-		const save = buttons.createEl('button', { cls: 'mod-cta', text: 'Save' });
-		save.addEventListener(
+		// Outside the scrolling content, so Save stays in view on a long form.
+		const buttons = modalButtons(this.modalEl, () => this.close());
+		buttons.createEl('button', { cls: 'mod-cta', text: 'Save' }).addEventListener(
 			'click',
 			() =>
 				void (async () => {
-					if (!d.name || !d.id) {
-						new Notice('The provider needs a name.');
-						return;
-					}
+					const idRow = idSetting ?? nameSetting;
+					if (!d.name || !d.id) return invalid(nameSetting, 'The provider needs a name.');
+					if (this.isNew) d.secretId = `vault-librarian-${d.id}`;
 					// The id prefixes the secret id, so both follow SecretStorage's character rule.
-					if (!isValidSecretId(d.id) || !isValidSecretId(d.secretId)) {
-						new Notice(
+					if (!isValidSecretId(d.id) || !isValidSecretId(d.secretId))
+						return invalid(
+							idRow,
 							'The provider ID may only use lowercase letters, digits and dashes.',
 						);
-						return;
+					if (this.isNew && this.plugin.settings.providers.some((p) => p.id === d.id))
+						return invalid(idRow, `A provider with id ${d.id} already exists.`);
+					const body = jsonObject(extraText);
+					if (body === null) {
+						req.open = true;
+						return invalid(extra, 'Extra request body must be a JSON object.');
 					}
-					if (this.isNew && this.plugin.settings.providers.some((p) => p.id === d.id)) {
-						new Notice(`A provider with id ${d.id} already exists.`);
-						return;
-					}
-					if (extraText.trim()) {
-						try {
-							const parsed = JSON.parse(extraText) as unknown;
-							if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-								throw new Error('not an object');
-							r.extraBody = parsed as Record<string, unknown>;
-						} catch {
-							new Notice('Extra request body must be a JSON object.');
-							return;
-						}
-					} else {
-						delete r.extraBody;
-					}
+					if (body) r.extraBody = body;
+					else delete r.extraBody;
 					if (this.apiKeyTouched)
 						this.plugin.secrets.set(d.secretId, this.apiKeyInput.trim());
 					await this.onSave(d);
 					this.close();
 				})(),
 		);
-		const cancel = buttons.createEl('button', { text: 'Cancel' });
-		cancel.addEventListener('click', () => this.close());
 	}
 
 	private renderModels() {
 		this.modelsEl.empty();
 		if (!this.draft.models.length)
-			this.modelsEl.createDiv({ cls: 'setting-item-description', text: 'No models yet.' });
+			new Setting(this.modelsEl).setDesc(
+				'No models yet. Add them from the list the server gives, or by ID.',
+			);
 		this.draft.models.forEach((model, i) => {
 			new Setting(this.modelsEl)
 				.setName(model.name || model.id)
 				.setDesc(
-					`${model.id}, ${model.contextWindow.toLocaleString('en-US')} ctx, ${model.toolCalling ? 'tools' : 'no tools'}${model.input.includes('image') ? ', images' : ''}`,
+					`${model.id}, ${model.contextWindow.toLocaleString('en-US')} context, ${model.toolCalling ? 'tools' : 'no tools'}${model.input.includes('image') ? ', images' : ''}`,
 				)
 				.addExtraButton((b) =>
 					b
@@ -663,149 +798,90 @@ class ProviderEditorModal extends Modal {
 	}
 }
 
+/**
+ * The Librarian tab. On Obsidian 1.13 and later it is a set of pages in the declarative settings
+ * format, so every row, group and list looks and behaves like Obsidian's own settings, on a phone
+ * too. Earlier versions draw the same definitions into one scrolling tab.
+ */
 export class LibrarianSettingTab extends PluginSettingTab {
+	/** Whether rows show their execution and listing choices. Not saved: off after a restart. */
+	private showAdvanced = false;
+	/** Sessions for the Sessions page, read when that page is drawn; null until then. */
+	private sessionList: SessionSummary[] | null = null;
+
 	constructor(
 		app: App,
 		private readonly plugin: LibrarianPlugin,
 	) {
 		super(app, plugin);
+		this.icon = 'book-open';
 	}
 
-	private unsubscribe: (() => void)[] = [];
-	/** Whether the permission rows show their execution and listing choices. Not saved: off after a restart. */
-	private showAdvanced = false;
-
+	/** Only Obsidian before 1.13 calls this; later versions draw getSettingDefinitions(). */
 	display(): void {
 		this.renderLegacy();
-		for (const u of this.unsubscribe) u();
-		this.unsubscribe = [
-			this.plugin.mcp.subscribe(() => this.refreshSettings()),
-			this.plugin.skills.subscribe(() => this.refreshSettings()),
-		];
-	}
-
-	hide(): void {
-		for (const u of this.unsubscribe) u();
-		this.unsubscribe = [];
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
-		// Custom sections retain their existing controls while participating in settings search.
-		const sections = [
-			{
-				name: 'Providers',
-				desc: 'Endpoints, API keys and the models Librarian may use.',
-				aliases: [
-					'API key',
-					'Base URL',
-					'Default model',
-					'Transport',
-					'Models',
-					'Connection',
-					'Compatibility',
-				],
-				render: (el: HTMLElement) => this.renderProviders(el),
-			},
-			{
-				name: 'Agent',
-				desc: 'Tool iterations, vault instructions and your own system prompt.',
-				aliases: [
-					'Max tool iterations',
-					'Repeated failure limit',
-					'AGENTS.md',
-					'Custom system prompt',
-				],
-				render: (el: HTMLElement) => this.renderAgent(el),
-			},
-			{
-				name: 'MCP servers',
-				desc: 'Remote tool servers and how you sign in to them.',
-				aliases: ['MCP', 'OAuth', 'Sign in', 'Remote tools'],
-				render: (el: HTMLElement) => this.renderMcpServers(el),
-			},
-			{
-				name: 'WebDAV storage',
-				desc: 'One WebDAV server, such as a NAS, the agent may reach.',
-				aliases: ['WebDAV', 'NAS', 'Synology', 'Remote storage', 'Password'],
-				render: (el: HTMLElement) => this.renderWebDav(el),
-			},
-			{
-				name: 'Skills',
-				desc: 'SKILL.md folders the agent may open.',
-				aliases: ['SKILL.md', 'Agent Skills', 'Rescan'],
-				render: (el: HTMLElement) => this.renderSkills(el),
-			},
-			{
-				name: 'Tool permissions',
-				desc: 'What each tool may do without asking.',
-				aliases: [
-					'Read',
-					'Write',
-					'Ask first',
-					'Blocked',
-					'Commands',
-					'Shell',
-					...TOOL_GROUPS.flatMap((group) => group.tools),
-				],
-				render: (el: HTMLElement) => this.renderToolPermissions(el),
-			},
-			{
-				name: 'Context',
-				desc: 'When to warn about the context window and when to compact it.',
-				aliases: [
-					'Warning at',
-					'Compact at',
-					'Preserve recent turns',
-					'Reserved output tokens',
-					'Safety margin tokens',
-				],
-				render: (el: HTMLElement) => this.renderContext(el),
-			},
-			{
-				name: 'Sessions',
-				desc: 'Where conversations and rewind snapshots are kept.',
-				aliases: ['Storage', 'History', 'Snapshots', 'Rewind'],
-				render: (el: HTMLElement) => this.renderSessions(el),
-			},
-		];
-		// One navigable page per section: eight of them stacked ran past seven thousand pixels.
-		// The page itself carries no aliases, so the section sits inside it as a single item that
-		// does, which is what Obsidian's settings search matches on.
-		return sections.map((section) => ({
-			type: 'page' as const,
-			name: section.name,
-			desc: section.desc,
-			items: [
-				{
-					name: section.name,
-					aliases: section.aliases,
-					render: (setting: Setting) => {
-						setting.settingEl.empty();
-						setting.settingEl.addClass('librarian-settings-section');
-						section.render(setting.settingEl);
-					},
-				},
-			],
-		}));
+		// Each page is one navigable entry; eight of them stacked on one page ran past 7,000 px.
+		return this.pages().map((page) => ({ type: 'page' as const, ...page }));
 	}
 
-	private refreshSettings() {
+	/** Redraws after a change that adds or removes rows, or that a page entry summarizes. */
+	refresh(): void {
 		if (requireApiVersion('1.13.0')) this.update();
-		else this.renderLegacy();
+		else if (this.containerEl.isConnected) this.renderLegacy();
 	}
 
+	private pages(): Page[] {
+		return [
+			this.providersPage(),
+			this.agentPage(),
+			this.mcpPage(),
+			this.webdavPage(),
+			this.skillsPage(),
+			this.permissionsPage(),
+			this.contextPage(),
+			this.sessionsPage(),
+		];
+	}
+
+	/** The same definitions as the pages, drawn in one tab with SettingGroup (Obsidian 1.11). */
 	private renderLegacy(): void {
 		const { containerEl } = this;
 		containerEl.empty();
-		containerEl.addClass('librarian-settings');
-		this.renderProviders(containerEl);
-		this.renderAgent(containerEl);
-		this.renderMcpServers(containerEl);
-		this.renderWebDav(containerEl);
-		this.renderSkills(containerEl);
-		this.renderToolPermissions(containerEl);
-		this.renderContext(containerEl);
-		this.renderSessions(containerEl);
+		for (const page of this.pages()) {
+			new Setting(containerEl).setName(page.name).setHeading();
+			for (const section of page.items) {
+				const shown =
+					typeof section.visible === 'function' ? section.visible() : section.visible;
+				if (shown === false) continue;
+				const group = new SettingGroup(containerEl);
+				if (section.heading) group.setHeading(section.heading);
+				for (const button of section.extraButtons ?? []) group.addExtraButton(button);
+				const list = section.type === 'list' ? (section as SettingDefinitionList) : null;
+				const add = list?.addItem;
+				if (add)
+					group.addExtraButton((b) =>
+						b
+							.setIcon('plus')
+							.setTooltip(add.name)
+							.onClick(() => add.action(b.extraSettingsEl)),
+					);
+				const rows = (section.items ?? []) as Row[];
+				const empty = list?.emptyState;
+				if (!rows.length && empty)
+					group.addSetting((s) => {
+						s.setDesc(empty);
+					});
+				for (const row of rows)
+					group.addSetting((s) => {
+						s.setName(row.name);
+						if (row.desc) s.setDesc(row.desc);
+						row.render(s, group);
+					});
+			}
+		}
 	}
 
 	private async save() {
@@ -813,641 +889,986 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		await this.plugin.controller.recalculateUsage();
 	}
 
-	private renderProviders(el: HTMLElement) {
-		new Setting(el)
-			.setName('Providers')
-			.setHeading()
-			.addButton((b) =>
-				b
-					.setButtonText('Add provider')
-					.setCta()
-					.onClick(() => {
-						new ProviderEditorModal(this.app, this.plugin, null, async (p) => {
-							this.plugin.settings.providers.push(p);
-							if (!this.plugin.settings.activeProviderId && p.models[0]) {
-								this.plugin.settings.activeProviderId = p.id;
-								this.plugin.settings.activeModelId = p.models[0].id;
-							}
-							await this.save();
-							this.refreshSettings();
-						}).open();
-					}),
-			);
+	// Providers
+
+	private providersPage(): Page {
 		const s = this.plugin.settings;
-		if (!s.providers.length)
-			el.createDiv({
-				cls: 'setting-item-description',
-				text: 'Add an OpenAI-compatible provider to start.',
-			});
-		s.providers.forEach((provider, i) => {
-			new Setting(el)
-				.setName(provider.name)
-				.setDesc(
-					`${provider.baseUrl || 'no URL'}, ${provider.models.length} ${provider.models.length === 1 ? 'model' : 'models'}, ${provider.transport}`,
-				)
-				.addExtraButton((b) =>
-					b
-						.setIcon('pencil')
-						.setTooltip('Edit')
-						.onClick(() => {
-							new ProviderEditorModal(
-								this.app,
-								this.plugin,
-								provider,
-								async (updated) => {
-									s.providers[i] = updated;
-									await this.save();
-									this.refreshSettings();
-								},
-							).open();
-						}),
-				)
-				.addExtraButton((b) =>
-					b
-						.setIcon('trash-2')
-						.setTooltip('Delete')
-						.onClick(() => {
-							const modal = new Modal(this.app);
-							modal.titleEl.setText(`Delete provider ${provider.name}?`);
-							modal.contentEl.createEl('p', {
-								text: 'Its API key on this device is cleared. Sessions that used it are kept.',
-							});
-							const row = modal.contentEl.createDiv({
-								cls: 'librarian-modal-buttons',
-							});
-							const ok = row.createEl('button', {
-								cls: 'mod-warning',
-								text: 'Delete',
-							});
-							ok.addEventListener(
-								'click',
-								() =>
-									void (async () => {
-										modal.close();
-										this.plugin.secrets.clear(provider.secretId);
-										s.providers.splice(i, 1);
-										if (s.activeProviderId === provider.id) {
-											s.activeProviderId = null;
-											s.activeModelId = null;
-										}
-										await this.save();
-										this.refreshSettings();
-									})(),
-							);
-							row.createEl('button', { text: 'Cancel' }).addEventListener(
-								'click',
-								() => modal.close(),
-							);
-							modal.open();
-						}),
-				);
-		});
 		const selectable = this.plugin.providers.listSelectable();
-		if (selectable.length) {
-			new Setting(el)
-				.setName('Default model')
-				.setDesc('Used for new sessions.')
-				.addDropdown((d) => {
+		const active = selectable.find(
+			({ provider, model }) =>
+				provider.id === s.activeProviderId && model.id === s.activeModelId,
+		);
+		const keyMissing = (p: ProviderConfig) =>
+			p.authHeader && this.plugin.secrets.get(p.secretId) === null;
+		const many = new Set(selectable.map((o) => o.provider.id)).size > 1;
+		const defaultModel: Row = {
+			name: 'Default model',
+			desc: selectable.length
+				? 'Used for new sessions.'
+				: 'Add a model that can call tools to a provider first.',
+			aliases: ['Model'],
+			render: (setting) => {
+				if (!selectable.length) return;
+				setting.addDropdown((d) => {
+					if (!active) d.addOption('', 'Choose a model');
 					for (const { provider, model } of selectable)
 						d.addOption(
 							`${provider.id}\u0000${model.id}`,
-							`${provider.name} / ${model.name}`,
+							many ? `${model.name} (${provider.name})` : model.name,
 						);
-					d.setValue(`${s.activeProviderId ?? ''}\u0000${s.activeModelId ?? ''}`);
+					d.setValue(active ? `${active.provider.id}\u0000${active.model.id}` : '');
 					d.onChange(async (v) => {
 						const [providerId, modelId] = v.split('\u0000');
-						s.activeProviderId = providerId ?? null;
-						s.activeModelId = modelId ?? null;
+						if (!providerId || !modelId) return;
+						s.activeProviderId = providerId;
+						s.activeModelId = modelId;
 						await this.save();
+						this.refresh();
 					});
 				});
-		}
-	}
-
-	private renderAgent(el: HTMLElement) {
-		new Setting(el).setName('Agent').setHeading();
-		const s = this.plugin.settings;
-		numberInput(
-			new Setting(el)
-				.setName('Max tool iterations')
-				.setDesc(
-					'Turns with tool calls before the agent stops and waits for you. Empty means no limit.',
-				),
-			s.maxIterations > 0 ? s.maxIterations : undefined,
-			async (v) => {
-				s.maxIterations = v !== undefined && v > 0 ? Math.floor(v) : 0;
-				await this.save();
 			},
-			'No limit',
-		);
-		numberInput(
-			new Setting(el)
-				.setName('Repeated failure limit')
-				.setDesc('Stop when the same tool call fails this many times.'),
-			s.repeatedFailureLimit,
-			async (v) => {
-				s.repeatedFailureLimit = v ?? 3;
-				await this.save();
-			},
-		);
-		new Setting(el)
-			.setName('Tool execution')
-			.setDesc(
-				'How the calls of one response run. A batch that holds a sequential tool runs one call at a time either way; each tool has its own mode in its permission row.',
-			)
-			.addDropdown((d) =>
-				d
-					.addOptions({ parallel: 'Parallel', sequential: 'Sequential' })
-					.setValue(s.toolExecution)
-					.onChange(async (v) => {
-						s.toolExecution = v === 'sequential' ? 'sequential' : 'parallel';
-						await this.save();
-					}),
-			);
-		new Setting(el)
-			.setName('Open chat in')
-			.setDesc('Where a new chat view opens. An open chat is reused wherever it is.')
-			.addDropdown((d) =>
-				d
-					.addOptions({ sidebar: 'Right sidebar', tab: 'Main area' })
-					.setValue(s.chatLocation)
-					.onChange(async (v) => {
-						s.chatLocation = v === 'tab' ? 'tab' : 'sidebar';
-						await this.save();
-					}),
-			);
-		new Setting(el)
-			.setName('Commands folder')
-			.setDesc(
-				'Notes in this folder become /name commands. $ARGUMENTS takes the rest of the line.',
-			)
-			.addText((t) =>
-				t.setValue(s.commandsFolder).onChange(async (v) => {
-					s.commandsFolder = v.trim().replace(/^\/+|\/+$/g, '');
-					await this.save();
-				}),
-			);
-		const agentsMdDesc =
-			'Read AGENTS.md at the vault root as instructions, and the AGENTS.md of each folder, in the vault or on the WebDAV storage, the first time the agent reaches it.';
-		const agentsMd = new Setting(el).setName('Use AGENTS.md').setDesc(agentsMdDesc);
-		if (!this.app.vault.getFileByPath('AGENTS.md'))
-			agentsMd.setDesc(`${agentsMdDesc} No AGENTS.md at the vault root.`);
-		agentsMd.addToggle((t) =>
-			t.setValue(s.useVaultAgentsMd).onChange(async (v) => {
-				s.useVaultAgentsMd = v;
-				await this.save();
-			}),
-		);
-		new Setting(el)
-			.setName('Custom system prompt')
-			.setDesc('Applied below the vault root instructions file.')
-			.addTextArea((t) => {
-				t.inputEl.rows = 6;
-				t.setValue(s.customSystemPrompt).onChange(async (v) => {
-					s.customSystemPrompt = v;
-					await this.save();
-				});
-			});
-		const order = el.createDiv({ cls: 'setting-item-description librarian-prompt-order' });
-		order.createDiv({ text: 'Prompt order' });
-		const list = order.createEl('ol');
-		list.createEl('li', { text: 'Librarian built-in instructions' });
-		list.createEl('li', { text: 'Vault root AGENTS.md' });
-		list.createEl('li', { text: 'Your custom system prompt' });
-	}
-
-	private renderMcpServers(el: HTMLElement) {
-		new Setting(el)
-			.setName('MCP servers')
-			.setHeading()
-			.setDesc(
-				'Remote servers over streamable HTTP. Their tools ask first and their results are marked untrusted.',
-			)
-			.addButton((b) =>
-				b.setButtonText('Add server').onClick(() => {
-					new McpServerEditorModal(this.app, this.plugin, null, async (server) => {
-						this.plugin.settings.mcpServers.push(server);
-						await this.save();
-						await this.plugin.mcp.connect(server.id);
-						this.refreshSettings();
-					}).open();
-				}),
-			);
-		const mcp = this.plugin.mcp;
-		for (const server of this.plugin.settings.mcpServers) {
-			const state = mcp.state(server.id);
-			const status = MCP_STATUS_LABELS[state.status];
-			const detail =
-				state.status === 'ready' ? `${state.tools.length} tools` : (state.message ?? '');
-			const row = new Setting(el)
-				.setName(server.name)
-				.setDesc(`${server.url}, ${status}${detail ? `, ${detail}` : ''}`);
-			row.settingEl.addClass('librarian-mcp-server');
-			row.addToggle((t) =>
-				t
-					.setTooltip('Enabled')
-					.setValue(server.enabled)
-					.onChange(async (v) => {
-						server.enabled = v;
-						await this.save();
-						await mcp.connect(server.id);
-						this.refreshSettings();
-					}),
-			);
-			if (server.auth === 'apiKey') {
-				const has = !!this.plugin.secrets.get(apiKeySecretId(server.id));
-				let pendingKey = '';
-				row.addText((t) => {
-					t.inputEl.type = 'password';
-					t.setPlaceholder(has ? 'API key saved on this device' : 'API key');
-					t.onChange((v) => {
-						pendingKey = v;
-					});
-				});
-				row.addButton((b) =>
-					b.setButtonText('Save key').onClick(async () => {
-						const key = pendingKey.trim();
-						if (!key) return;
-						this.plugin.secrets.set(apiKeySecretId(server.id), key);
-						await mcp.connect(server.id);
-						this.refreshSettings();
-					}),
-				);
-			} else if (server.auth === 'oauth') {
-				row.addButton((b) =>
-					b
-						.setButtonText(state.status === 'ready' ? 'Sign out' : 'Sign in')
-						.onClick(async () => {
-							if (state.status === 'ready') await mcp.signOut(server.id);
-							else await mcp.signIn(server.id);
-							this.refreshSettings();
+		};
+		return {
+			name: 'Providers',
+			desc: 'Endpoints, API keys and the models Librarian may use.',
+			displayValue: active?.model.name ?? '',
+			status:
+				s.providers.length && (!active || keyMissing(active.provider)) ? 'warning' : null,
+			items: [
+				{ type: 'group', visible: s.providers.length > 0, items: [defaultModel] },
+				{
+					type: 'list',
+					heading: 'Providers',
+					addItem: { name: 'Add provider', action: () => this.editProvider(null) },
+					emptyState: 'Add an OpenAI-compatible server to start.',
+					items: s.providers.map(
+						(provider): Row => ({
+							name: provider.name,
+							desc: `${provider.baseUrl || 'No base URL'}, ${provider.models.length} ${provider.models.length === 1 ? 'model' : 'models'}`,
+							aliases: ['API key', 'Base URL', 'Transport', 'Compatibility'],
+							render: (setting) => {
+								if (keyMissing(provider))
+									setting.descEl.createDiv({
+										cls: 'librarian-setting-warning',
+										text: 'No API key on this device',
+									});
+								setting
+									.addExtraButton((b) =>
+										b
+											.setIcon('pencil')
+											.setTooltip('Edit')
+											.onClick(() => this.editProvider(provider)),
+									)
+									.addExtraButton((b) =>
+										b
+											.setIcon('trash-2')
+											.setTooltip('Delete')
+											.onClick(() => this.deleteProvider(provider)),
+									);
+							},
 						}),
-				);
-			} else {
-				row.addButton((b) =>
-					b.setButtonText('Reconnect').onClick(async () => {
-						await mcp.connect(server.id);
-						this.refreshSettings();
-					}),
-				);
+					),
+				},
+			],
+		};
+	}
+
+	private editProvider(provider: ProviderConfig | null) {
+		const s = this.plugin.settings;
+		new ProviderEditorModal(this.app, this.plugin, provider, async (saved) => {
+			const i = provider ? s.providers.indexOf(provider) : -1;
+			if (i >= 0) s.providers[i] = saved;
+			else s.providers.push(saved);
+			const firstModel = saved.models.find((m) => m.toolCalling);
+			if (!s.activeProviderId && firstModel) {
+				s.activeProviderId = saved.id;
+				s.activeModelId = firstModel.id;
 			}
-			row.addExtraButton((b) =>
-				b
-					.setIcon('pencil')
-					.setTooltip('Edit')
-					.onClick(() => {
-						new McpServerEditorModal(this.app, this.plugin, server, async (updated) => {
-							Object.assign(server, updated);
+			await this.save();
+			this.refresh();
+		}).open();
+	}
+
+	private deleteProvider(provider: ProviderConfig) {
+		const s = this.plugin.settings;
+		new ConfirmModal(
+			this.app,
+			`Delete provider ${provider.name}?`,
+			(el) =>
+				el.createEl('p', {
+					text: 'Its API key on this device is cleared. Sessions that used it are kept.',
+				}),
+			'Delete',
+			async () => {
+				this.plugin.secrets.clear(provider.secretId);
+				s.providers.splice(s.providers.indexOf(provider), 1);
+				if (s.activeProviderId === provider.id) {
+					s.activeProviderId = null;
+					s.activeModelId = null;
+				}
+				await this.save();
+				this.refresh();
+			},
+		).open();
+	}
+
+	// Agent
+
+	private agentPage(): Page {
+		const s = this.plugin.settings;
+		const agentsMdDesc =
+			'Follow AGENTS.md at the vault root, and the AGENTS.md of each folder the agent reaches in the vault or on the WebDAV storage.';
+		return {
+			name: 'Agent',
+			desc: 'Tool iterations, vault instructions and where the chat opens.',
+			items: [
+				{
+					type: 'group',
+					heading: 'Agent loop',
+					items: [
+						{
+							name: 'Max tool iterations',
+							desc: 'Turns with tool calls before the agent stops and waits for you.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									s.maxIterations > 0 ? s.maxIterations : undefined,
+									async (v) => {
+										s.maxIterations =
+											v !== undefined && v > 0 ? Math.floor(v) : 0;
+										await this.save();
+									},
+									'No limit',
+								),
+						},
+						{
+							name: 'Repeated failure limit',
+							desc: 'Stop when the same tool call fails this many times.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									s.repeatedFailureLimit,
+									async (v) => {
+										s.repeatedFailureLimit = v ?? 3;
+										await this.save();
+									},
+									'3',
+								),
+						},
+						{
+							name: 'Tool execution',
+							desc: 'How the calls in one response run. A batch with a sequential tool in it runs one call at a time; each tool can be set under Tool permissions.',
+							render: (setting) =>
+								void setting.addDropdown((d) =>
+									d
+										.addOptions({
+											parallel: 'Parallel',
+											sequential: 'Sequential',
+										})
+										.setValue(s.toolExecution)
+										.onChange(async (v) => {
+											s.toolExecution =
+												v === 'sequential' ? 'sequential' : 'parallel';
+											await this.save();
+										}),
+								),
+						},
+					],
+				},
+				{
+					type: 'group',
+					heading: 'Instructions',
+					items: [
+						{
+							name: 'Use AGENTS.md',
+							desc: this.app.vault.getFileByPath('AGENTS.md')
+								? agentsMdDesc
+								: `${agentsMdDesc} No AGENTS.md at the vault root.`,
+							render: (setting) =>
+								void setting.addToggle((t) =>
+									t.setValue(s.useVaultAgentsMd).onChange(async (v) => {
+										s.useVaultAgentsMd = v;
+										await this.save();
+									}),
+								),
+						},
+						{
+							name: 'Custom system prompt',
+							desc: 'Your own instructions. They come after the built-in instructions and the vault root AGENTS.md.',
+							render: (setting) => {
+								setting.settingEl.addClass('librarian-prompt-setting');
+								setting.addTextArea((t) => {
+									t.inputEl.rows = 6;
+									t.setPlaceholder(
+										'For example: Keep answers short and cite the notes you read.',
+									);
+									t.setValue(s.customSystemPrompt).onChange(async (v) => {
+										s.customSystemPrompt = v;
+										await this.save();
+									});
+								});
+							},
+						},
+					],
+				},
+				{
+					type: 'group',
+					heading: 'Chat',
+					items: [
+						{
+							name: 'Open chat in',
+							desc: 'Where a new chat opens. An open chat stays where it is.',
+							render: (setting) =>
+								void setting.addDropdown((d) =>
+									d
+										.addOptions({ sidebar: 'Right sidebar', tab: 'Main area' })
+										.setValue(s.chatLocation)
+										.onChange(async (v) => {
+											s.chatLocation = v === 'tab' ? 'tab' : 'sidebar';
+											await this.save();
+										}),
+								),
+						},
+						{
+							name: 'Commands folder',
+							desc: 'Each note in it becomes a /name command. $ARGUMENTS takes the rest of the line.',
+							render: (setting) =>
+								void setting.addText((t) =>
+									t
+										.setPlaceholder('Librarian/commands')
+										.setValue(s.commandsFolder)
+										.onChange(async (v) => {
+											s.commandsFolder = v.trim().replace(/^\/+|\/+$/g, '');
+											await this.save();
+										}),
+								),
+						},
+					],
+				},
+			],
+		};
+	}
+
+	// MCP servers
+
+	private mcpPage(): Page {
+		const servers = this.plugin.settings.mcpServers;
+		const mcp = this.plugin.mcp;
+		const troubled = servers.some(
+			(server) =>
+				server.enabled && ['needs-sign-in', 'error'].includes(mcp.state(server.id).status),
+		);
+		return {
+			name: 'MCP servers',
+			desc: 'Remote tool servers and how you sign in to them.',
+			displayValue: servers.length
+				? `${servers.length} ${servers.length === 1 ? 'server' : 'servers'}`
+				: '',
+			status: troubled ? 'warning' : null,
+			items: [
+				{
+					type: 'list',
+					heading: 'Servers',
+					addItem: { name: 'Add server', action: () => this.editMcpServer(null) },
+					emptyState:
+						'No servers yet. Their tools ask first, and their results are marked untrusted.',
+					items: servers.map((server) => this.mcpServerRow(server)),
+				},
+			],
+		};
+	}
+
+	private mcpServerRow(server: McpServerConfig): Row {
+		const mcp = this.plugin.mcp;
+		return {
+			name: server.name,
+			desc: server.url,
+			aliases: ['MCP', 'OAuth', 'Sign in', 'API key'],
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-mcp-server');
+				const state = mcp.state(server.id);
+				const label = MCP_STATUS_LABELS[state.status];
+				// A reason says more than the state it explains, such as a missing key.
+				const text =
+					state.status === 'ready'
+						? `${label}, ${state.tools.length} tools`
+						: state.status === 'error'
+							? `${label}: ${state.message ?? 'unknown'}`
+							: state.status === 'needs-sign-in'
+								? (state.message ?? label)
+								: label;
+				setting.descEl.createDiv({ cls: `librarian-mcp-status is-${state.status}`, text });
+				setting.addToggle((t) =>
+					t
+						.setTooltip('Enabled')
+						.setValue(server.enabled)
+						.onChange(async (v) => {
+							server.enabled = v;
 							await this.save();
 							await mcp.connect(server.id);
-							this.refreshSettings();
-						}).open();
-					}),
-			);
-			row.addExtraButton((b) =>
-				b
-					.setIcon('trash')
-					.setTooltip('Remove')
-					.onClick(async () => {
-						await mcp.remove(server.id);
-						await this.plugin.controller.recalculateUsage();
-						this.refreshSettings();
-					}),
-			);
-		}
-		if (this.plugin.settings.mcpServers.length === 0)
-			el.createDiv({ cls: 'librarian-modal-note', text: 'No MCP servers yet.' });
+							this.refresh();
+						}),
+				);
+				if (server.enabled) {
+					const keyMissing =
+						server.auth === 'apiKey' &&
+						!this.plugin.secrets.get(apiKeySecretId(server.id));
+					const label =
+						server.auth === 'oauth'
+							? state.status === 'ready'
+								? 'Sign out'
+								: 'Sign in'
+							: keyMissing
+								? 'Add key'
+								: 'Reconnect';
+					setting.addButton((b) =>
+						b.setButtonText(label).onClick(async () => {
+							if (keyMissing) return this.editMcpServer(server);
+							if (server.auth === 'oauth' && state.status === 'ready')
+								await mcp.signOut(server.id);
+							else if (server.auth === 'oauth') await mcp.signIn(server.id);
+							else await mcp.connect(server.id);
+							this.refresh();
+						}),
+					);
+				}
+				setting
+					.addExtraButton((b) =>
+						b
+							.setIcon('pencil')
+							.setTooltip('Edit')
+							.onClick(() => this.editMcpServer(server)),
+					)
+					.addExtraButton((b) =>
+						b
+							.setIcon('trash-2')
+							.setTooltip('Remove')
+							.onClick(() =>
+								new ConfirmModal(
+									this.app,
+									`Remove MCP server ${server.name}?`,
+									(el) =>
+										el.createEl('p', {
+											text: 'Its sign-in and its tool permissions are removed too.',
+										}),
+									'Remove',
+									async () => {
+										await mcp.remove(server.id);
+										await this.plugin.controller.recalculateUsage();
+										this.refresh();
+									},
+								).open(),
+							),
+					);
+			},
+		};
 	}
+
+	private editMcpServer(existing: McpServerConfig | null) {
+		const mcp = this.plugin.mcp;
+		new McpServerEditorModal(this.app, this.plugin, existing, async (saved, key) => {
+			if (existing) Object.assign(existing, saved);
+			else this.plugin.settings.mcpServers.push(saved);
+			if (key && saved.auth === 'apiKey')
+				this.plugin.secrets.set(apiKeySecretId(saved.id), key);
+			await this.save();
+			await mcp.connect(saved.id);
+			this.refresh();
+		}).open();
+	}
+
+	// WebDAV storage
 
 	/** One WebDAV storage. The password goes to this device's SecretStorage only. */
-	private renderWebDav(el: HTMLElement) {
-		new Setting(el)
-			.setName('WebDAV storage')
-			.setHeading()
-			.setDesc(
-				'Files on a WebDAV server such as a network drive. The agent reaches them through the WebDAV tools on desktop and phone.',
-			);
+	private webdavPage(): Page {
 		const w = this.plugin.settings.webdav;
-		new Setting(el).setName('Enabled').addToggle((t) =>
-			t.setValue(w.enabled).onChange(async (v) => {
-				w.enabled = v;
-				await this.save();
-				// The storage group under Tool permissions comes and goes with this.
-				this.refreshSettings();
-			}),
-		);
-		new Setting(el)
-			.setName('URL')
-			.setDesc('WebDAV address of the folder the agent may reach. Storage paths start here.')
-			.addText((t) =>
-				t.setValue(w.url).onChange(async (v) => {
-					w.url = v.trim();
-					await this.save();
-				}),
-			);
-		new Setting(el).setName('User name').addText((t) =>
-			t.setValue(w.username).onChange(async (v) => {
-				w.username = v.trim();
-				await this.save();
-			}),
-		);
 		const saved = !!this.plugin.secrets.get(WEBDAV_SECRET_ID);
 		let pending = '';
-		new Setting(el)
-			.setName('Password')
-			.setDesc('Kept on this device only.')
-			.addText((t) => {
-				t.inputEl.type = 'password';
-				t.setPlaceholder(saved ? 'Password saved on this device' : 'Password');
-				t.onChange((v) => {
-					pending = v;
-				});
-			})
-			.addButton((b) =>
-				b.setButtonText('Save password').onClick(() => {
-					if (!pending) return;
-					this.plugin.secrets.set(WEBDAV_SECRET_ID, pending);
-					this.refreshSettings();
-				}),
-			);
-		new Setting(el).setName('Test connection').addButton((b) =>
-			b.setButtonText('Test connection').onClick(async () => {
-				try {
-					const client = new WebDavClient({
-						url: w.url,
-						username: w.username,
-						password: this.plugin.secrets.get(WEBDAV_SECRET_ID),
-					});
-					new Notice(
-						(await client.stat('')) ? 'Connected to the storage.' : 'Not found: /',
-					);
-				} catch (error) {
-					new Notice(error instanceof Error ? error.message : String(error));
-				}
-			}),
-		);
+		return {
+			name: 'WebDAV storage',
+			desc: 'One WebDAV server, such as a NAS, the agent may reach.',
+			displayValue: w.enabled ? 'On' : 'Off',
+			status: w.enabled && (!w.url.trim() || (!!w.username && !saved)) ? 'warning' : null,
+			items: [
+				{
+					type: 'group',
+					items: [
+						{
+							name: 'Enabled',
+							desc: 'The agent reaches these files through the WebDAV tools, on desktop and phone.',
+							aliases: ['WebDAV', 'NAS', 'Synology', 'Remote storage'],
+							render: (setting) =>
+								void setting.addToggle((t) =>
+									t.setValue(w.enabled).onChange(async (v) => {
+										w.enabled = v;
+										await this.save();
+										// The storage group under Tool permissions comes and goes with this.
+										this.refresh();
+									}),
+								),
+						},
+						{
+							name: 'URL',
+							desc: 'Address of the folder the agent may reach. Storage paths start here.',
+							render: (setting) => {
+								setting.settingEl.addClass('librarian-wide-input');
+								setting.addText((t) =>
+									t
+										.setPlaceholder('https://nas.example.com/webdav')
+										.setValue(w.url)
+										.onChange(async (v) => {
+											w.url = v.trim();
+											await this.save();
+										}),
+								);
+							},
+						},
+						{
+							name: 'User name',
+							render: (setting) =>
+								void setting.addText((t) =>
+									t
+										.setPlaceholder('Optional')
+										.setValue(w.username)
+										.onChange(async (v) => {
+											w.username = v.trim();
+											await this.save();
+										}),
+								),
+						},
+						{
+							name: 'Password',
+							desc: 'Kept on this device only.',
+							render: (setting) =>
+								void setting
+									.setClass('librarian-secret-input')
+									.addText((t) => {
+										t.inputEl.type = 'password';
+										t.setPlaceholder(
+											saved
+												? 'Saved on this device'
+												: 'Not saved on this device',
+										);
+										t.onChange((v) => {
+											pending = v;
+										});
+									})
+									.addButton((b) =>
+										b.setButtonText('Save').onClick(() => {
+											if (!pending) return;
+											this.plugin.secrets.set(WEBDAV_SECRET_ID, pending);
+											new Notice('Password saved on this device.');
+											this.refresh();
+										}),
+									),
+						},
+						{
+							name: 'Connection',
+							desc: 'Checks the address, the user name and the password.',
+							render: (setting) =>
+								void setting.addButton((b) =>
+									b.setButtonText('Test').onClick(async () => {
+										b.setDisabled(true);
+										try {
+											const client = new WebDavClient({
+												url: w.url,
+												username: w.username,
+												password: this.plugin.secrets.get(WEBDAV_SECRET_ID),
+											});
+											new Notice(
+												(await client.stat(''))
+													? 'Connected to the storage.'
+													: 'Not found: /',
+											);
+										} catch (error) {
+											new Notice(
+												error instanceof Error
+													? error.message
+													: String(error),
+											);
+										} finally {
+											b.setDisabled(false);
+										}
+									}),
+								),
+						},
+					],
+				},
+			],
+		};
 	}
 
-	/** Discovered skills with their diagnostics; their permissions sit under Tool permissions. */
-	private renderSkills(el: HTMLElement) {
-		new Setting(el)
-			.setName('Skills')
-			.setHeading()
-			.setDesc(
-				'Folders named .agents/skills at the vault root or inside a folder, one subfolder with a SKILL.md per skill. Each skill asks first and is deferred, found through skill_search, until you change it under Tool permissions.',
-			);
-		const skills = this.plugin.skills;
-		const n = skills.skills.length;
-		new Setting(el)
-			.setName(`${n} ${n === 1 ? 'skill' : 'skills'} found`)
-			.setDesc('Skills are found when the plugin loads. Rescan after adding or changing one.')
-			.addButton((b) =>
-				b.setButtonText('Rescan').onClick(async () => {
-					await skills.scan();
-					this.refreshSettings();
-				}),
-			);
-		// Name with the skill icon the chat chips use, the description, then the SKILL.md path on a
-		// line of its own so the two never run together.
-		for (const skill of skills.skills) {
-			const row = new Setting(el).setName(skill.name).setDesc(skill.description);
-			row.settingEl.addClass('librarian-skill');
-			const icon = createSpan({ cls: 'librarian-skill-icon' });
-			setIcon(icon, 'sparkles');
-			row.nameEl.prepend(icon);
-			const path = row.descEl.createDiv({ cls: 'librarian-skill-path' });
-			setIcon(path.createSpan({ cls: 'librarian-skill-path-icon' }), 'folder');
-			// A narrow pane wraps the path after a slash rather than inside a folder name.
-			const text = path.createSpan();
-			for (const [i, part] of skill.location.split('/').entries()) {
-				if (i > 0) {
-					text.appendText('/');
-					text.createEl('wbr');
-				}
-				text.appendText(part);
-			}
-		}
-		if (skills.diagnostics.length) {
-			const list = el.createEl('ul', { cls: 'librarian-skill-warnings' });
-			for (const d of skills.diagnostics)
-				list.createEl('li', { text: `${d.location}: ${d.message}` });
-		}
-	}
+	// Skills
 
-	private renderToolPermissions(el: HTMLElement) {
-		new Setting(el)
-			.setName('Tool permissions')
-			.setHeading()
-			.setDesc(
-				'On a new install the read-only tools run without asking and every other tool asks first. Blocked tools are hidden from the model.',
-			);
-		const perms = this.plugin.permissions;
-		new Setting(el)
-			.setName('Execution and listing')
-			.setDesc(
-				'Show how each tool runs, and whether the model sees it upfront or finds it with tool_search.',
-			)
-			.addToggle((t) =>
-				t.setValue(this.showAdvanced).onChange((v) => {
-					this.showAdvanced = v;
-					wrap.toggleClass('is-advanced', v);
-				}),
-			);
-		const wrap = el.createDiv({ cls: 'librarian-tool-permissions' });
-		wrap.toggleClass('is-advanced', this.showAdvanced);
-		for (const group of perms.groups()) {
-			const groupEl = wrap.createEl('details', { cls: 'librarian-tool-permission-group' });
-			groupEl.open = true;
-			const summary = groupEl.createEl('summary');
-			summary.createSpan({ cls: 'librarian-group-label', text: `${group.label} ` });
-			summary.createSpan({ cls: 'librarian-group-count', text: String(group.tools.length) });
-			const select = summary.createEl('select', {
-				cls: 'dropdown',
-				attr: { 'aria-label': `${group.label} permission` },
+	/** Found skills, each with its permission and, when asked, its listing. */
+	private skillsPage(): Page {
+		const { skills, diagnostics } = this.plugin.skills;
+		const hooks = listHooks();
+		const sections: Section[] = [];
+		if (skills.length)
+			sections.push({
+				type: 'group',
+				items: [
+					this.bulkRow(
+						SKILLS_GROUP_ID,
+						'All skills',
+						'A new skill asks first, and the model finds it with skill_search.',
+						hooks,
+					),
+					this.advancedRow(
+						'Listing',
+						'Choose for each skill whether the model sees it upfront or finds it with skill_search.',
+					),
+				],
 			});
-			select.addEventListener('click', (e) => e.stopPropagation());
-			const fill = () => {
-				select.empty();
-				const display = perms.getGroupDisplay(group.id);
-				if (display === 'mixed')
-					select.createEl('option', {
-						value: 'mixed',
-						text: 'Mixed',
-						attr: { disabled: 'true' },
-					}).selected = true;
-				for (const p of PERMISSIONS) {
-					const option = select.createEl('option', {
-						value: p,
-						text: PERMISSION_LABELS[p],
-					});
-					if (display === p) option.selected = true;
+		sections.push({
+			type: 'list',
+			heading: 'Found skills',
+			extraButtons: [
+				(b) =>
+					b
+						.setIcon('refresh-cw')
+						.setTooltip('Rescan')
+						// The skill manager announces the new list, which redraws the page.
+						.onClick(() => void this.plugin.skills.scan()),
+			],
+			...(skills.length > 5
+				? { search: { placeholder: 'Search skills', match: rowMatches } }
+				: {}),
+			emptyState:
+				'No skills found. A skill is a folder with a SKILL.md, inside a folder named .agents/skills at the vault root or in any folder. Rescan after adding one.',
+			items: skills.map((skill) => this.skillRow(skill, hooks)),
+		});
+		if (diagnostics.length)
+			sections.push({
+				type: 'group',
+				heading: 'Problems',
+				items: diagnostics.map(
+					(d): Row => ({
+						name: d.location,
+						desc: d.message,
+						render: (setting) => setting.settingEl.addClass('librarian-skill-problem'),
+					}),
+				),
+			});
+		return {
+			name: 'Skills',
+			desc: 'SKILL.md folders, and what each skill may do.',
+			displayValue: `${skills.length} ${skills.length === 1 ? 'skill' : 'skills'}`,
+			status: diagnostics.length ? 'warning' : null,
+			items: sections,
+		};
+	}
+
+	/** Name with the skill icon the chat chips use, the description, then the path on its own line. */
+	private skillRow(skill: Skill, hooks: ListHooks): Row {
+		const key = skillKey(skill.name);
+		return {
+			name: skill.name,
+			desc: skill.description,
+			aliases: [skill.location],
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-skill');
+				const icon = createSpan({ cls: 'librarian-skill-icon' });
+				setIcon(icon, 'sparkles');
+				setting.nameEl.prepend(icon);
+				const path = setting.descEl.createDiv({ cls: 'librarian-skill-path' });
+				setIcon(path.createSpan({ cls: 'librarian-skill-path-icon' }), 'folder');
+				// A narrow pane wraps the path after a slash rather than inside a folder name.
+				const text = path.createSpan();
+				for (const [i, part] of skill.location.split('/').entries()) {
+					if (i > 0) {
+						text.appendText('/');
+						text.createEl('wbr');
+					}
+					text.appendText(part);
 				}
-			};
-			fill();
-			const rows: (() => void)[] = [];
-			select.addEventListener(
-				'change',
+				if (this.showAdvanced) this.listingSelect(setting, key);
+				this.permissionControl(setting, key, hooks);
+			},
+		};
+	}
+
+	// Tool permissions
+
+	private permissionsPage(): Page {
+		const perms = this.plugin.permissions;
+		const labels = this.toolLabels();
+		const sections: Section[] = [
+			{
+				type: 'group',
+				items: [
+					this.advancedRow(
+						'Execution and listing',
+						'Show how each tool runs, and whether the model sees it upfront or finds it with tool_search.',
+					),
+				],
+			},
+		];
+		for (const group of perms.groups()) {
+			// Skills have their own page.
+			if (group.id === SKILLS_GROUP_ID) continue;
+			const hooks = listHooks();
+			sections.push({
+				type: 'list',
+				heading: group.label,
+				emptyState: 'Its tools show here once the server connects.',
+				items: group.tools.length
+					? [
+							this.bulkRow(group.id, 'Set all', groupNote(group.id), hooks),
+							...group.tools.map((tool) =>
+								this.toolRow(tool, labels.get(tool) ?? tool, hooks),
+							),
+						]
+					: [],
+			});
+		}
+		return {
+			name: 'Tool permissions',
+			desc: 'What each tool may do without asking.',
+			items: sections,
+		};
+	}
+
+	/**
+	 * What the chat's tool cards call each tool. An MCP tool drops its server's name, which its
+	 * group heading already shows.
+	 */
+	private toolLabels(): Map<string, string> {
+		const labels = new Map<string, string>([
+			[TOOL_SEARCH_NAME, 'Find tools'],
+			[SKILL_SEARCH_NAME, 'Find skills'],
+		]);
+		for (const { tool } of this.plugin.registry.entries()) {
+			const server = this.plugin.settings.mcpServers.find((s) =>
+				tool.name.startsWith(`${s.id}__`),
+			);
+			const prefix = server ? `${server.name}: ` : '';
+			labels.set(
+				tool.name,
+				prefix && tool.label.startsWith(prefix)
+					? tool.label.slice(prefix.length)
+					: tool.label,
+			);
+		}
+		return labels;
+	}
+
+	private toolRow(tool: string, label: string, hooks: ListHooks): Row {
+		return {
+			name: label,
+			desc: label === tool ? '' : tool,
+			aliases: [tool],
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-tool-row');
+				if (this.showAdvanced) {
+					this.executionSelect(setting, tool);
+					// The two searches are how deferred things are found, so they are always listed.
+					if (tool !== TOOL_SEARCH_NAME && tool !== SKILL_SEARCH_NAME)
+						this.listingSelect(setting, tool);
+				}
+				this.permissionControl(setting, tool, hooks);
+			},
+		};
+	}
+
+	/** First row of a permission list: one choice for every row in it, Mixed when they differ. */
+	private bulkRow(groupId: string, name: string, desc: string, hooks: ListHooks): Row {
+		const perms = this.plugin.permissions;
+		return {
+			name,
+			desc,
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-bulk-row');
+				setting.addDropdown((d) => {
+					d.selectEl.setAttr('aria-label', `${name} permission`);
+					const fill = () => {
+						const display = perms.getGroupDisplay(groupId);
+						d.selectEl.empty();
+						if (display === 'mixed')
+							d.selectEl.createEl('option', {
+								value: 'mixed',
+								text: 'Mixed',
+								attr: { disabled: 'true' },
+							});
+						for (const p of PERMISSIONS) d.addOption(p, PERMISSION_LABELS[p]);
+						d.setValue(display);
+					};
+					fill();
+					hooks.fill = fill;
+					d.onChange(async (v) => {
+						if (v === 'mixed') return;
+						await perms.setGroup(groupId, v as ToolPermission);
+						for (const refresh of hooks.rows) refresh();
+						fill();
+						await this.plugin.controller.recalculateUsage();
+					});
+				});
+			},
+		};
+	}
+
+	/** Shows or hides the execution and listing choices; one switch for this page and the other. */
+	private advancedRow(name: string, desc: string): Row {
+		return {
+			name,
+			desc,
+			render: (setting) =>
+				void setting.addToggle((t) =>
+					t.setValue(this.showAdvanced).onChange((v) => {
+						this.showAdvanced = v;
+						this.refresh();
+					}),
+				),
+		};
+	}
+
+	/** Three icon radios: Always allow, Ask first, Blocked. The tooltip names each and says what it does. */
+	private permissionControl(setting: Setting, key: string, hooks: ListHooks) {
+		const perms = this.plugin.permissions;
+		const group = setting.controlEl.createDiv({
+			cls: 'librarian-segmented',
+			attr: { role: 'radiogroup', 'aria-label': `${key} permission` },
+		});
+		const options = PERMISSIONS.map((p) => {
+			const locked = p === 'always_allow' && !perms.canAlwaysAllow(key);
+			const why = locked
+				? 'The server marks this tool destructive.'
+				: PERMISSION_DESCRIPTIONS[p];
+			const el = segment(
+				group,
+				PERMISSION_LABELS[p],
 				() =>
 					void (async () => {
-						if (select.value === 'mixed') return;
-						await perms.setGroup(group.id, select.value as ToolPermission);
-						for (const r of rows) r();
-						fill();
+						await perms.setTool(key, p);
+						refresh();
+						hooks.fill();
+						// No hover on a phone or tablet: the tap itself shows what the icon means.
+						if (Platform.isMobile) new Notice(`${PERMISSION_LABELS[p]}: ${why}`);
 						await this.plugin.controller.recalculateUsage();
 					})(),
 			);
-			for (const tool of group.tools) {
-				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
-				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
-				// A skill row is a permission and a listing: it is not a tool that runs on its own.
-				const skill = tool.startsWith(SKILL_KEY_PREFIX);
-				if (!skill) {
-					const exec = row.createEl('select', {
-						cls: 'dropdown librarian-tool-execution',
-						attr: { 'aria-label': `${tool} execution` },
-					});
-					exec.createEl('option', { value: 'parallel', text: 'Parallel' });
-					exec.createEl('option', { value: 'sequential', text: 'Sequential' });
-					exec.value = this.plugin.toolExecutionOf(tool);
-					exec.addEventListener('change', () => {
-						this.plugin.settings.toolExecutionByTool[tool] =
-							exec.value === 'sequential' ? 'sequential' : 'parallel';
-						void this.save();
-					});
-				}
-				// The two searches are how deferred things are found, so they are always listed.
-				if (tool !== TOOL_SEARCH_NAME && tool !== SKILL_SEARCH_NAME) {
-					const deferred = row.createEl('select', {
-						cls: 'dropdown librarian-tool-deferred',
-						attr: { 'aria-label': `${tool} listing` },
-					});
-					deferred.createEl('option', { value: 'listed', text: 'Listed' });
-					deferred.createEl('option', { value: 'deferred', text: 'Deferred' });
-					deferred.value = this.plugin.toolDeferredOf(tool) ? 'deferred' : 'listed';
-					deferred.addEventListener('change', () => {
-						this.plugin.settings.toolDeferredByTool[tool] =
-							deferred.value === 'deferred';
-						void this.save();
-					});
-				}
-				const seg = row.createDiv({
-					cls: 'librarian-segmented',
-					attr: { role: 'radiogroup', 'aria-label': `${tool} permission` },
-				});
-				const buttons = PERMISSIONS.map((p) => {
-					// Icon only; the label and its meaning live in the hover tooltip.
-					const b = seg.createEl('button', {
-						attr: { role: 'radio', 'aria-label': PERMISSION_LABELS[p] },
-					});
-					setIcon(b, PERMISSION_ICONS[p]);
-					const why =
-						p === 'always_allow' && !perms.canAlwaysAllow(tool)
-							? 'The server marks this tool destructive.'
-							: PERMISSION_DESCRIPTIONS[p];
-					setTooltip(b, `${PERMISSION_LABELS[p]}\n${why}`, {
-						classes: ['librarian-tooltip'],
-					});
-					if (p === 'always_allow' && !perms.canAlwaysAllow(tool)) {
-						// A disabled button gets no mouse events, so the native title carries the reason.
-						b.disabled = true;
-						b.setAttr('title', why);
-					}
-					b.addEventListener(
-						'click',
-						() =>
-							void (async () => {
-								await perms.setTool(tool, p);
-								refresh();
-								fill();
-								// No hover on a phone: the tap itself shows what the icon means.
-								if (Platform.isMobile)
-									new Notice(`${PERMISSION_LABELS[p]}: ${why}`);
-								await this.plugin.controller.recalculateUsage();
-							})(),
-					);
-					return { p, b };
-				});
-				const refresh = () => {
-					const current = perms.get(tool);
-					for (const { p, b } of buttons) {
-						b.toggleClass('is-active', p === current);
-						b.setAttr('aria-checked', String(p === current));
-					}
-				};
-				refresh();
-				rows.push(refresh);
+			setIcon(el, PERMISSION_ICONS[p]);
+			setTooltip(el, `${PERMISSION_LABELS[p]}\n${why}`, { classes: ['librarian-tooltip'] });
+			if (locked) {
+				el.addClass('is-disabled');
+				el.setAttr('aria-disabled', 'true');
 			}
-		}
-	}
-
-	private renderContext(el: HTMLElement) {
-		new Setting(el).setName('Context').setHeading();
-		const c = this.plugin.settings.context;
-		numberInput(
-			new Setting(el).setName('Warning at (%)').setDesc('Of the usable input budget.'),
-			Math.round(c.warningAt * 100),
-			async (v) => {
-				c.warningAt = Math.min(100, Math.max(1, v ?? 70)) / 100;
-				await this.save();
-			},
-		);
-		numberInput(
-			new Setting(el).setName('Compact at (%)').setDesc('Of the usable input budget.'),
-			Math.round(c.compactAt * 100),
-			async (v) => {
-				c.compactAt = Math.min(100, Math.max(1, v ?? 85)) / 100;
-				await this.save();
-			},
-		);
-		numberInput(
-			new Setting(el).setName('Preserve recent turns'),
-			c.preserveRecentTurns,
-			async (v) => {
-				c.preserveRecentTurns = Math.max(1, v ?? 6);
-				await this.save();
-			},
-		);
-		numberInput(
-			new Setting(el)
-				.setName('Reserved output tokens')
-				.setDesc('Empty uses the model maximum.'),
-			c.reserveOutputTokens === 'model-max' ? undefined : c.reserveOutputTokens,
-			async (v) => {
-				c.reserveOutputTokens = v === undefined ? 'model-max' : v;
-				await this.save();
-			},
-			'model max',
-		);
-		numberInput(
-			new Setting(el)
-				.setName('Safety margin tokens')
-				.setDesc('Capped at 10% of the context window.'),
-			c.safetyMarginTokens,
-			async (v) => {
-				c.safetyMarginTokens = v ?? 4096;
-				await this.save();
-			},
-		);
-	}
-
-	private renderSessions(el: HTMLElement) {
-		new Setting(el)
-			.setName('Sessions')
-			.setHeading()
-			.setDesc(
-				'Open a conversation in the chat, rename it, or delete it with its rewind snapshots.',
-			);
-		const list = el.createDiv({ cls: 'librarian-settings-sessions' });
-		void renderSessionList(list, this.plugin, async (session) => {
-			// The settings window covers the chat, so it closes before the session opens there.
-			(this.app as unknown as { setting: { close(): void } }).setting.close();
-			const view = await this.plugin.activateView();
-			await view?.openSession(session.id);
+			return { p, el };
 		});
-		new Setting(el)
-			.setName('Storage')
-			.setDesc(
-				`Sessions are stored as JSONL files in ${this.plugin.sessions.sessionsDir}. Snapshots for rewind live next to them.`,
-			);
+		const refresh = () => {
+			const current = perms.get(key);
+			for (const { p, el } of options) setChecked(el, p === current);
+		};
+		refresh();
+		hooks.rows.push(refresh);
+	}
+
+	private executionSelect(setting: Setting, tool: string) {
+		setting.addDropdown((d) => {
+			d.selectEl.addClass('librarian-tool-execution');
+			d.selectEl.setAttr('aria-label', `${tool} execution`);
+			d.addOptions({ parallel: 'Parallel', sequential: 'Sequential' })
+				.setValue(this.plugin.toolExecutionOf(tool))
+				.onChange((v) => {
+					this.plugin.settings.toolExecutionByTool[tool] =
+						v === 'sequential' ? 'sequential' : 'parallel';
+					void this.save();
+				});
+		});
+	}
+
+	private listingSelect(setting: Setting, key: string) {
+		setting.addDropdown((d) => {
+			d.selectEl.addClass('librarian-tool-deferred');
+			d.selectEl.setAttr('aria-label', `${key} listing`);
+			d.addOptions({ listed: 'Listed', deferred: 'Deferred' })
+				.setValue(this.plugin.toolDeferredOf(key) ? 'deferred' : 'listed')
+				.onChange((v) => {
+					this.plugin.settings.toolDeferredByTool[key] = v === 'deferred';
+					void this.save();
+				});
+		});
+	}
+
+	// Context
+
+	private contextPage(): Page {
+		const c = this.plugin.settings.context;
+		return {
+			name: 'Context',
+			desc: 'When to warn about the context window and when to compact it.',
+			items: [
+				{
+					type: 'group',
+					items: [
+						{
+							name: 'Warning at (%)',
+							desc: 'The context ring warns at this share of the usable input.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									Math.round(c.warningAt * 100),
+									async (v) => {
+										c.warningAt = Math.min(100, Math.max(1, v ?? 70)) / 100;
+										await this.save();
+									},
+									'70',
+								),
+						},
+						{
+							name: 'Compact at (%)',
+							desc: 'Older turns are summarized at this share of the usable input.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									Math.round(c.compactAt * 100),
+									async (v) => {
+										c.compactAt = Math.min(100, Math.max(1, v ?? 85)) / 100;
+										await this.save();
+									},
+									'85',
+								),
+						},
+						{
+							name: 'Preserve recent turns',
+							desc: 'The latest turns stay word for word when older ones are summarized.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									c.preserveRecentTurns,
+									async (v) => {
+										c.preserveRecentTurns = Math.max(1, v ?? 6);
+										await this.save();
+									},
+									'6',
+								),
+						},
+						{
+							name: 'Reserved output tokens',
+							desc: 'Room held back for the answer. The usable input is what the window has left after this and the margin.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									c.reserveOutputTokens === 'model-max'
+										? undefined
+										: c.reserveOutputTokens,
+									async (v) => {
+										c.reserveOutputTokens = v === undefined ? 'model-max' : v;
+										await this.save();
+									},
+									'Model maximum',
+								),
+						},
+						{
+							name: 'Safety margin tokens',
+							desc: 'Extra room, capped at 10% of the context window.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									c.safetyMarginTokens,
+									async (v) => {
+										c.safetyMarginTokens = v ?? 4096;
+										await this.save();
+									},
+									'4096',
+								),
+						},
+					],
+				},
+			],
+		};
+	}
+
+	// Sessions
+
+	private sessionsPage(): Page {
+		const list = this.sessionList;
+		const current = this.plugin.controller.session?.id;
+		return {
+			name: 'Sessions',
+			desc: 'Past conversations, and where they are kept with their rewind snapshots.',
+			displayValue: list
+				? `${list.length} ${list.length === 1 ? 'session' : 'sessions'}`
+				: '',
+			items: [
+				{
+					type: 'list',
+					// There from the first draw: a redraw after the list arrives keeps the header.
+					search: { placeholder: 'Search sessions', match: rowMatches },
+					emptyState: list ? 'No sessions yet.' : 'Loading sessions',
+					items: (list ?? []).map((session) =>
+						this.sessionRow(session, session.id === current),
+					),
+				},
+				{
+					type: 'group',
+					items: [
+						{
+							name: 'Storage',
+							desc: `Each session is a JSONL file in ${this.plugin.sessions.sessionsDir}. Rewind snapshots are kept next to them.`,
+							aliases: ['History', 'Snapshots', 'Rewind'],
+							// Drawn whenever the page is: the list is read then, not at startup.
+							render: () => void this.loadSessions(),
+						},
+					],
+				},
+			],
+		};
+	}
+
+	/** A row opens its session in the chat; the pencil renames it and the bin deletes it. */
+	private sessionRow(session: SessionSummary, isCurrent: boolean): Row {
+		return {
+			name: session.title,
+			desc: `${session.providerId || '?'}/${session.modelId || '?'}, ${new Date(session.updatedAt).toLocaleString()}`,
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-session-setting');
+				setting.settingEl.toggleClass('is-current', isCurrent);
+				const info = setting.infoEl;
+				info.setAttr('role', 'button');
+				info.setAttr('tabindex', '0');
+				info.addEventListener('click', () => void this.openSession(session));
+				info.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter') void this.openSession(session);
+				});
+				setting
+					.addExtraButton((b) =>
+						b
+							.setIcon('pencil')
+							.setTooltip('Rename')
+							.onClick(() =>
+								renameSession(this.plugin, session, () => this.loadSessions()),
+							),
+					)
+					.addExtraButton((b) =>
+						b
+							.setIcon('trash-2')
+							.setTooltip('Delete')
+							.onClick(() =>
+								confirmDeleteSession(this.plugin, session, () =>
+									this.loadSessions(),
+								),
+							),
+					);
+			},
+		};
+	}
+
+	/** Reads the session list and redraws only when it changed, so the redraw's own read stops. */
+	private async loadSessions(): Promise<void> {
+		const list = await this.plugin.sessions.list();
+		const key = (l: SessionSummary[]) =>
+			l.map((s) => `${s.id} ${s.updatedAt} ${s.title}`).join('\n');
+		if (this.sessionList && key(list) === key(this.sessionList)) return;
+		this.sessionList = list;
+		this.refresh();
+	}
+
+	private async openSession(session: SessionSummary) {
+		// The settings window covers the chat, so it closes before the session opens there.
+		(this.app as unknown as { setting: { close(): void } }).setting.close();
+		const view = await this.plugin.activateView();
+		await view?.openSession(session.id);
 	}
 }

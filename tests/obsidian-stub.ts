@@ -112,8 +112,14 @@ export class Menu {}
 export class Modal {}
 export class ItemView {}
 export class Plugin {}
-export class PluginSettingTab {}
+export class PluginSettingTab {
+	constructor(public app: unknown) {}
+}
 export class Setting {}
+export class SettingGroup {}
+export function requireApiVersion() {
+	return true;
+}
 /** Base of a navigable settings page; the real one also gives rootEl and titlebarEl. */
 export class SettingPage {
 	title = '';

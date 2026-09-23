@@ -17,6 +17,84 @@ export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {
 	return tool.annotations?.readOnlyHint === true || tool.annotations?.idempotentHint === true;
 }
 
+/** Verbs that open the name of a tool that fetches or reads: `search`, `getJiraIssue`, `list_collections`. */
+const READ_VERBS = new Set([
+	'search',
+	'find',
+	'lookup',
+	'read',
+	'get',
+	'fetch',
+	'list',
+	'ls',
+	'view',
+	'describe',
+	'discover',
+]);
+
+/** Words that mark a change anywhere in a name: `getOrCreateFolder` and `executeRead` change things. */
+const CHANGE_WORDS = new Set([
+	'create',
+	'add',
+	'update',
+	'edit',
+	'set',
+	'delete',
+	'remove',
+	'move',
+	'rename',
+	'write',
+	'upload',
+	'send',
+	'post',
+	'put',
+	'patch',
+	'insert',
+	'replace',
+	'append',
+	'import',
+	'submit',
+	'transition',
+	'assign',
+	'invite',
+	'share',
+	'publish',
+	'archive',
+	'restore',
+	'merge',
+	'execute',
+	'run',
+	'invoke',
+]);
+
+/**
+ * Whether a tool only fetches or reads. The server's own word decides when it gives one
+ * (`readOnlyHint`, and `destructiveHint` which always means a change); otherwise the name has to
+ * open with a read verb, in its first two words so `jira_get_issue` counts, and hold no word
+ * that changes things. These run without asking and in parallel on a new install (LIB-ADR-029).
+ */
+export function readsOnly(tool: Pick<Tool, 'name' | 'annotations'>): boolean {
+	const hints = tool.annotations;
+	if (hints?.destructiveHint === true || hints?.readOnlyHint === false) return false;
+	if (hints?.readOnlyHint === true) return true;
+	const words = tool.name
+		.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter(Boolean);
+	return (
+		words.slice(0, 2).some((w) => READ_VERBS.has(w)) && !words.some((w) => CHANGE_WORDS.has(w))
+	);
+}
+
+/** A token response, kept so every caller of one refresh gets its own copy. */
+interface SharedResponse {
+	status: number;
+	statusText: string;
+	headers: [string, string][];
+	body: string;
+}
+
 export type McpStatus =
 	| 'disabled'
 	| 'disconnected'
@@ -131,6 +209,13 @@ export class McpManager {
 	private readonly rejected = new Set<string>();
 	/** Desktop sign-ins listening on 127.0.0.1, with the state sent in their authorization URL. */
 	private readonly signIns = new Map<string, { loopback: Loopback; state?: string }>();
+	/**
+	 * Token refreshes by request body, which holds the refresh token. Parallel calls that all hit
+	 * 401 share one refresh: the server rotates the refresh token, so a second refresh with the
+	 * old one would be refused and the sign-in wiped. Kept a minute after it ends, for a call
+	 * that read the old token just before the new one was saved.
+	 */
+	private readonly refreshes = new Map<string, Promise<SharedResponse>>();
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly deps: McpManagerDeps) {}
@@ -329,6 +414,15 @@ export class McpManager {
 		return out;
 	}
 
+	/** Exposed names of tools that only fetch or read; with nothing stored they run without asking. */
+	readOnlyTools(): Set<string> {
+		const out = new Set<string>();
+		for (const server of this.servers())
+			for (const tool of this.state(server.id).tools)
+				if (readsOnly(tool)) out.add(exposedToolName(server.id, tool.name));
+		return out;
+	}
+
 	/** Agent tools for every ready server. Results carry an untrusted-content marker. */
 	tools(): AgentTool[] {
 		const out: AgentTool[] = [];
@@ -342,8 +436,8 @@ export class McpManager {
 					label: `${server.name}: ${tool.title ?? tool.name}`,
 					description: `[${server.name}] ${tool.description ?? tool.name}`,
 					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
-					// Sequential even for read-only tools: parallel 401s would race the single refresh token.
-					executionMode: 'sequential',
+					// Reads run side by side: parallel 401s share one token refresh (fetchFor).
+					executionMode: readsOnly(tool) ? 'parallel' : 'sequential',
 					execute: async (_toolCallId, args, signal) => {
 						const call = () =>
 							connection.client.callTool(
@@ -410,7 +504,7 @@ export class McpManager {
 	}
 
 	private fetchFor(id: string): (url: string | URL, init?: RequestInit) => Promise<Response> {
-		return async (url, init) => {
+		const send = async (url: string | URL, init?: RequestInit): Promise<Response> => {
 			if (this.fallback.has(id)) return requestUrlFetch(url, init);
 			const startedAt = Date.now();
 			try {
@@ -421,6 +515,38 @@ export class McpManager {
 				this.fallback.add(id);
 				return requestUrlFetch(url, init);
 			}
+		};
+		return async (url, init) => {
+			const body = init?.body instanceof URLSearchParams ? init.body : null;
+			if (init?.method !== 'POST' || body?.get('grant_type') !== 'refresh_token')
+				return send(url, init);
+			const key = `${String(url)}\n${body.toString()}`;
+			let shared = this.refreshes.get(key);
+			if (!shared) {
+				shared = send(url, init).then(async (r) => {
+					const headers: [string, string][] = [];
+					r.headers.forEach((value, name) => {
+						headers.push([name, value]);
+					});
+					return {
+						status: r.status,
+						statusText: r.statusText,
+						headers,
+						body: await r.text(),
+					};
+				});
+				this.refreshes.set(key, shared);
+				shared.then(
+					() => window.setTimeout(() => this.refreshes.delete(key), 60_000),
+					() => this.refreshes.delete(key),
+				);
+			}
+			const r = await shared;
+			return new Response(r.body, {
+				status: r.status,
+				statusText: r.statusText,
+				headers: r.headers,
+			});
 		};
 	}
 

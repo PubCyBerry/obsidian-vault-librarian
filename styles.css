@@ -158,11 +158,6 @@ body {
 	gap: var(--size-4-2);
 }
 
-.librarian-skill-warnings {
-	color: var(--text-warning);
-	font-size: var(--font-ui-small);
-}
-
 /* Skills in the settings: the name wears the chips' skill icon, and the SKILL.md path sits apart
    from the description, set small and faint in the code font. */
 .librarian-skill .setting-item-name {
@@ -515,14 +510,15 @@ body.is-phone .librarian-composer {
 }
 
 /*
- * Phone keyboard. During Obsidian's keyboard-animating phase the app container is still full height,
- * so the composer rides up on its own padding with the keyboard's timing and lands where the
- * shrunken container puts it afterwards.
+ * Phone and tablet keyboard. During Obsidian's keyboard-animating phase the app container is still
+ * full height on both (app.css keys it on .is-mobile), so the composer rides up on its own padding
+ * with the keyboard's timing and lands where the shrunken container puts it afterwards. While this
+ * was scoped to phones, a tablet's composer waited behind the keyboard and then jumped.
  */
 /* While the keyboard closes, --keyboard-height is already 0, so the first term is the plain margin
    and the composer would drop behind the navbar; the padding the view measured while the keyboard
    was closed keeps it in place instead. */
-body.is-phone.keyboard-animating .librarian-composer {
+body.is-mobile.keyboard-animating .librarian-composer {
 	padding-bottom: max(
 		calc(var(--keyboard-height, 0px) + var(--size-4-3)),
 		var(--librarian-closed-padding, var(--size-4-3))
@@ -530,7 +526,7 @@ body.is-phone.keyboard-animating .librarian-composer {
 	transition: padding-bottom 350ms cubic-bezier(0.22, 0.25, 0, 1);
 }
 
-body.is-phone.is-ios.keyboard-animating .librarian-composer {
+body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	transition-duration: 300ms;
 	transition-timing-function: cubic-bezier(0.12, 0, 0.44, 0.99);
 }
@@ -1072,28 +1068,17 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 
 /* Modals */
 
-.librarian-modal-buttons {
-	display: flex;
-	gap: var(--size-4-2);
-	justify-content: flex-end;
-	margin-top: var(--size-4-3);
-}
-
 .librarian-modal-input {
 	width: 100%;
 }
 
+/* A long form scrolls inside; Obsidian's button row sits under it, outside the scroll. */
 .librarian-modal .modal-content {
-	max-height: 70vh;
+	max-height: 65vh;
 	overflow-y: auto;
 }
 
-/* Settings */
-
-.librarian-settings-section {
-	display: block;
-	border-top: none;
-}
+/* Settings. Rows, groups and lists are Obsidian's own; these rules cover what they lack. */
 
 .librarian-settings-details {
 	margin: var(--size-4-2) 0;
@@ -1103,120 +1088,149 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 }
 
 .librarian-settings-details > summary {
-	cursor: pointer;
+	cursor: var(--cursor);
 	padding: var(--size-4-2) 0;
 	font-weight: var(--font-semibold);
 }
 
-.librarian-tool-permission-group {
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-m);
-	padding: 0 var(--size-4-3);
-	margin-bottom: var(--size-4-2);
-}
-
-.librarian-tool-permission-group > summary {
-	display: flex;
-	align-items: center;
-	gap: var(--size-2-2);
-	padding: var(--size-4-2) 0;
-	cursor: pointer;
-	list-style: none;
-}
-
-.librarian-group-label {
-	font-weight: var(--font-semibold);
-}
-
-.librarian-group-count {
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-	background: var(--background-secondary);
-	border-radius: var(--radius-s);
-	padding: 0 var(--size-2-2);
-}
-
-.librarian-tool-permission-group > summary select {
-	margin-left: auto;
-}
-
-.librarian-tool-permission-row {
-	display: flex;
+/* With the execution and listing choices shown, the controls wrap instead of squeezing the name. */
+.librarian-tool-row .setting-item-control,
+.librarian-skill .setting-item-control {
 	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--size-2-2) var(--size-4-2);
-	padding: var(--size-2-2) 0;
-	border-top: 1px solid var(--background-modifier-border);
+	justify-content: flex-end;
 }
 
-.librarian-tool-permission-name {
-	font-family: var(--font-monospace);
-	flex: 1 1 200px;
-	min-width: 0;
-	word-break: break-all;
+/* An address or a folder path gets the room of the row instead of a short fixed input. */
+.setting-item.librarian-wide-input .setting-item-control {
+	flex: 1 1 50%;
 }
 
-/* Execution and listing are advanced choices; the rows show them only when the toggle is on. */
-.librarian-tool-permissions:not(.is-advanced) .librarian-tool-execution,
-.librarian-tool-permissions:not(.is-advanced) .librarian-tool-deferred {
-	display: none;
+.setting-item.librarian-wide-input .setting-item-control input {
+	width: 100%;
 }
 
-/* A long tool name pushes the control onto its own line, right-aligned, instead of clipping it. */
-.librarian-tool-permission-row .librarian-segmented {
-	flex: 0 0 auto;
-	margin-left: auto;
+/* The prompt editor sits under its name, as wide as the row. */
+.setting-item.librarian-prompt-setting {
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--size-4-2);
 }
 
+.setting-item.librarian-prompt-setting .setting-item-control {
+	width: 100%;
+}
+
+.setting-item.librarian-prompt-setting textarea {
+	width: 100%;
+	min-height: 8lh;
+	resize: vertical;
+}
+
+.librarian-setting-warning {
+	color: var(--text-warning);
+	margin-top: var(--size-2-1);
+}
+
+/* An MCP server's state under its address, colored like the tool card states. */
+.librarian-mcp-status {
+	margin-top: var(--size-2-1);
+}
+
+.librarian-mcp-status.is-ready {
+	color: var(--text-success);
+}
+
+.librarian-mcp-status.is-needs-sign-in {
+	color: var(--text-warning);
+}
+
+.librarian-mcp-status.is-error {
+	color: var(--text-error);
+}
+
+.librarian-mcp-server .setting-item-description,
+.librarian-session-setting .setting-item-description {
+	overflow-wrap: anywhere;
+}
+
+/* The tool ID sits under the label the chat's cards use, in the code font. */
+.librarian-tool-row .setting-item-description {
+	font-family: var(--librarian-font-mono);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-skill-problem .setting-item-description {
+	color: var(--text-warning);
+}
+
+.librarian-session-setting .setting-item-info {
+	cursor: var(--cursor);
+}
+
+.librarian-session-setting.is-current .setting-item-name {
+	color: var(--text-accent);
+}
+
+/* Segmented control: icon or text radios in one bordered strip. */
 .librarian-segmented {
 	display: inline-flex;
+	flex: 0 0 auto;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-m);
 	overflow: hidden;
 }
 
-/* Icon-only radio buttons; the label and meaning are in the hover tooltip. */
-.librarian-segmented button {
-	border: none;
-	border-radius: 0;
-	box-shadow: none;
-	background: transparent;
+.librarian-segment {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	min-height: 36px;
 	min-width: 36px;
 	padding: 0 var(--size-4-2);
 	color: var(--text-muted);
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
+	font-size: var(--font-ui-small);
+	cursor: var(--cursor);
+	user-select: none;
 }
 
-.librarian-segmented button .svg-icon {
+.librarian-segment .svg-icon {
 	width: var(--icon-s);
 	height: var(--icon-s);
 }
 
-.librarian-segmented button:hover:not(:disabled) {
+.librarian-segment:hover:not(.is-disabled) {
 	background: var(--background-modifier-hover);
 	color: var(--text-normal);
 }
 
+.librarian-segment:focus-visible {
+	outline: 2px solid var(--background-modifier-border-focus);
+	outline-offset: -2px;
+}
+
 /*
  * These must outrank the hover rule above. A phone keeps :hover on whatever was tapped last, so
- * without the hover variant the button just chosen shows the hover grey and the row looks unset.
+ * without the hover variant the option just chosen shows the hover grey and the row looks unset.
  */
-.librarian-segmented button.is-active {
+.librarian-segment.is-active {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
 }
 
-.librarian-segmented button.is-active:hover:not(:disabled) {
+.librarian-segment.is-active:hover:not(.is-disabled) {
 	background: var(--interactive-accent-hover);
 	color: var(--text-on-accent);
 }
 
-.librarian-segmented button:disabled {
+.librarian-segment.is-disabled {
 	opacity: 0.4;
 	cursor: not-allowed;
+}
+
+/* A finger needs 44px on phones and tablets alike. */
+body.is-mobile .librarian-segment {
+	min-height: 44px;
+	min-width: 44px;
 }
 
 .tooltip.librarian-tooltip {
@@ -1224,13 +1238,39 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	text-align: left;
 }
 
-.librarian-prompt-order ol {
-	margin: var(--size-2-1) 0 0;
-	padding-left: var(--size-4-4);
-}
-
 .librarian-model-list {
 	margin-bottom: var(--size-4-3);
+}
+
+/*
+ * Phones keep list rows on one line (app.css). A row whose name and controls do not fit moves the
+ * controls to a line of their own rather than squeezing the name into a narrow column; an MCP
+ * server row always does. Selector depth beats app.css's list control rule (0,5,0).
+ */
+body.is-phone .modal .setting-item.librarian-tool-row,
+body.is-phone .modal .setting-item.librarian-skill,
+body.is-phone .modal .setting-item.librarian-mcp-server,
+body.is-phone .modal .setting-item.librarian-bulk-row {
+	flex-wrap: wrap;
+}
+
+/* The server's switch and buttons, and a Set all dropdown (which the long note beside it would
+   squeeze to a few letters), take the line under the name. */
+body.is-phone .modal .setting-item.librarian-mcp-server .setting-item-control,
+body.is-phone .modal .setting-item.librarian-bulk-row .setting-item-control {
+	flex: 1 1 100%;
+	justify-content: flex-start;
+}
+
+/* A password field and its Save button: the button keeps its size so the placeholder fits. */
+body.is-phone .modal .setting-item.librarian-secret-input .setting-item-control button {
+	flex: 0 0 auto;
+	width: auto;
+}
+
+body.is-phone .modal .setting-item.librarian-secret-input .setting-item-control input {
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 /* Narrow layouts and phones */
@@ -1238,59 +1278,6 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 @media (max-width: 480px) {
 	.librarian-bubble {
 		max-width: 100%;
-	}
-
-	/* Icon buttons are narrow, so the name and the control share one line; a column would turn the
-	   name's flex-basis into height. */
-	/* Name on its own line, the three controls wrap below it; a nowrap row squeezed the name to
-	   one letter per line once the execution and listing selects joined the permission buttons. */
-	.librarian-tool-permission-name {
-		flex: 1 1 100%;
-		word-break: break-word;
-	}
-
-	.librarian-tool-permission-row .librarian-segmented {
-		margin-left: 0;
-	}
-
-	.librarian-tool-permission-row select.dropdown {
-		flex: 0 1 auto;
-		min-width: 0;
-		width: auto;
-	}
-
-	.librarian-segmented button {
-		min-height: 44px;
-		min-width: 44px;
-	}
-
-	/* Name and URL on top, toggle and buttons below, instead of a squeezed info column. */
-	.librarian-mcp-server.setting-item {
-		flex-direction: column;
-		align-items: stretch;
-	}
-
-	.librarian-mcp-server .setting-item-control {
-		justify-content: flex-start;
-		flex-wrap: wrap;
-	}
-
-	.librarian-tool-permission-group > summary {
-		flex-wrap: wrap;
-	}
-
-	.librarian-tool-permission-group > summary select {
-		margin-left: 0;
-		width: 100%;
-	}
-
-	.librarian-modal .setting-item {
-		flex-direction: column;
-		align-items: stretch;
-	}
-
-	.librarian-modal .setting-item-control {
-		justify-content: flex-start;
 	}
 }
 

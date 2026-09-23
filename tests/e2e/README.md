@@ -9,7 +9,7 @@ app.vault.adapter.read("turn.js").then((s) => (0, eval)(s));
 
 Results land in `window.__e2e` (turn.js) and `window.__e2e2` (write-rewind-transport.js).
 `turn.js` sends one message and auto-approves every tool call; `write-rewind-transport.js` clicks a source link,
-creates a note and rewinds it, sends a turn over the requestUrl transport, and renders the settings tab.
+creates a note and rewinds it, sends a turn over the requestUrl transport, and reads the settings tab's page definitions.
 
 `queue.js` drives the chat view like a user while the agent works: a message queued during a run and sent
 after it, **Send now** skipping the next call and going in after the tool results, and Stop handing the

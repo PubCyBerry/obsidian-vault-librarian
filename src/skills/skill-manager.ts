@@ -13,6 +13,8 @@ import {
 export const SKILLS_DIR = '.agents/skills';
 export const SKILL_KEY_PREFIX = 'skill:';
 export const SKILL_SEARCH_NAME = 'skill_search';
+/** Permission group of the skills. The Skills settings page shows it; Tool permissions does not. */
+export const SKILLS_GROUP_ID = 'skills';
 const MAX_SCAN_DEPTH = 3;
 const MAX_RESOURCES = 50;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -184,7 +186,7 @@ export function createSkillSearchTool(skills: readonly Skill[]): AgentTool {
 /** One permission group for the settings screen, keyed like the tools; none when no skill exists. */
 export function skillGroups(skills: readonly Skill[]): SkillGroup[] {
 	return skills.length
-		? [{ id: 'skills', label: 'Skills', tools: skills.map((s) => skillKey(s.name)) }]
+		? [{ id: SKILLS_GROUP_ID, label: 'Skills', tools: skills.map((s) => skillKey(s.name)) }]
 		: [];
 }
 
