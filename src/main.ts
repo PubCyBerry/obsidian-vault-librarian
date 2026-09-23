@@ -1,6 +1,8 @@
 import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
 import { ACTIVE_TURN_KEY, AgentController, hasUnfinishedTurn } from './agent/agent-controller';
-import { PromptManager } from './agent/prompt';
+import { NestedAgentsMd } from './agent/nested-agents-md';
+import { PromptManager, vaultReferenceReader } from './agent/prompt';
+import { expandReferences } from './agent/references';
 import { ContextManager } from './context/context-manager';
 import { McpManager } from './mcp/mcp-manager';
 import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
@@ -9,7 +11,6 @@ import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
 import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
-
 import { createShellTool, ShellSession } from './shell/shell-tool';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
@@ -88,19 +89,36 @@ export default class LibrarianPlugin extends Plugin {
 			hidden: this.skills.hiddenReader(),
 			mutation,
 		};
+		// A fresh client per call picks up changed settings and this device's password.
+		const webdavClient = () =>
+			new WebDavClient({
+				url: this.settings.webdav.url,
+				username: this.settings.webdav.username,
+				password: this.secrets.get(WEBDAV_SECRET_ID),
+			});
 		const webdavTools = () =>
-			this.webdavOn()
-				? createWebDavTools({
-						...vaultDeps,
-						// A fresh client per call picks up changed settings and this device's password.
-						client: () =>
-							new WebDavClient({
-								url: this.settings.webdav.url,
-								username: this.settings.webdav.username,
-								password: this.secrets.get(WEBDAV_SECRET_ID),
-							}),
-					})
-				: [];
+			this.webdavOn() ? createWebDavTools({ ...vaultDeps, client: webdavClient }) : [];
+		const nestedAgentsMd = new NestedAgentsMd({
+			vault: async (folder) => {
+				const file = this.app.vault.getFileByPath(`${folder}/AGENTS.md`);
+				if (!file) return null;
+				const text = (await this.app.vault.cachedRead(file)).trim();
+				if (!text) return null;
+				// `@path` works here as it does in the root file.
+				return (await expandReferences(text, file.path, vaultReferenceReader(this.app)))
+					.text;
+			},
+			storage: () =>
+				this.webdavOn()
+					? async (folder) => {
+							const { data } = await webdavClient().get(
+								folder ? `${folder}/AGENTS.md` : 'AGENTS.md',
+							);
+							return new TextDecoder().decode(data);
+						}
+					: null,
+			activePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+		});
 		this.shell = new ShellSession({
 			app: this.app,
 			resultLimit: () => this.settings.toolResultMaxChars,
@@ -146,6 +164,7 @@ export default class LibrarianPlugin extends Plugin {
 			transport: this.transport,
 			prompt: new PromptManager(this.app),
 			secrets: this.secrets,
+			nestedAgentsMd,
 			tools: () => this.registry.visible(),
 			// Blocked skills stay out of the catalog; without read the model could not open one anyway.
 			skillCatalog: () =>

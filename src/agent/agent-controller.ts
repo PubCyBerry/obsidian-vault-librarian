@@ -28,6 +28,7 @@ import type {
 import type { SecretStore } from '../storage/secret-store';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
 import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
+import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { BUILT_IN_SYSTEM_PROMPT, type PromptManager } from './prompt';
 
 export type AgentUiState =
@@ -110,6 +111,8 @@ export interface ControllerDeps {
 	tools: () => AgentTool[];
 	/** `<available_skills>` for the system prompt; empty when none is usable. */
 	skillCatalog: () => string;
+	/** AGENTS.md files below the vault root and on the storage, delivered as tools reach them. */
+	nestedAgentsMd?: NestedAgentsMd;
 }
 
 const RETRY_DELAY_MS = 1500;
@@ -264,6 +267,7 @@ export class AgentController {
 			thinkingLevel: this.thinkingLevel,
 		});
 		this.toolStatus.clear();
+		this.deps.nestedAgentsMd?.reset();
 		await this.reloadEvents();
 		this.emit({ type: 'session', session: this.session });
 		await this.refreshReadiness();
@@ -279,6 +283,8 @@ export class AgentController {
 		this.selection = this.deps.providers.getModel(summary.providerId, summary.modelId);
 		if (this.selection && !this.selection.model.toolCalling) this.selection = undefined;
 		this.thinkingLevel = summary.thinkingLevel ?? 'off';
+		// A resumed conversation gets each folder's AGENTS.md again, as it now reads.
+		this.deps.nestedAgentsMd?.reset();
 		await this.reloadEvents();
 		for (const { event } of this.events) {
 			if (event.type === 'tool_result' && !this.toolStatus.has(event.toolCallId)) {
@@ -299,6 +305,7 @@ export class AgentController {
 		this.session = null;
 		this.events = [];
 		this.usage = null;
+		this.deps.nestedAgentsMd?.reset();
 		this.emit({ type: 'session', session: null });
 		this.emit({ type: 'events', events: [] });
 		this.emit({ type: 'usage', usage: null });
@@ -606,6 +613,8 @@ export class AgentController {
 			);
 			if (!result) return false;
 			await this.deps.sessions.append(this.session.id, { type: 'compaction', ...result });
+			// The summary may have dropped the folders' AGENTS.md; the next visit delivers them again.
+			this.deps.nestedAgentsMd?.reset();
 			if (result.method === 'truncate') {
 				this.emit({
 					type: 'notice',
@@ -790,7 +799,8 @@ export class AgentController {
 		content: readonly { type: string }[],
 		isError: boolean,
 	) {
-		let text = textOf(content);
+		// Only Librarian writes the AGENTS.md tag; one inside a note or a page must not pass for it.
+		let text = neutralizeTags(textOf(content));
 		if (isError && !text.startsWith('Error:')) text = `Error: ${text}`;
 		const max = this.deps.settings().toolResultMaxChars;
 		if (text.length > max) {
@@ -798,6 +808,9 @@ export class AgentController {
 			text = `${text.slice(0, max)}\n[truncated ${dropped} characters; narrow the request to see more]`;
 			this.truncatedResults.add(toolCallId);
 		}
+		// Appended after the cut, so a long result never pushes the folder's rules out.
+		if (this.deps.settings().useVaultAgentsMd && this.deps.nestedAgentsMd)
+			text += await this.deps.nestedAgentsMd.blockFor(name, args);
 		const key = `${name}:${JSON.stringify(args ?? {})}`;
 		if (isError) this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
 		else this.failures.delete(key);

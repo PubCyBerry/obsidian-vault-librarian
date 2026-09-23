@@ -919,14 +919,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					await this.save();
 				}),
 			);
-		const agentsMd = new Setting(el)
-			.setName('Use vault root AGENTS.md')
-			.setDesc('Read AGENTS.md at the vault root as vault-local instructions.');
-		const status = this.app.vault.getFileByPath('AGENTS.md') ? '' : 'AGENTS.md not found';
-		if (status)
-			agentsMd.setDesc(
-				`Read AGENTS.md at the vault root as vault-local instructions. ${status}.`,
-			);
+		const agentsMdDesc =
+			'Read AGENTS.md at the vault root as instructions, and the AGENTS.md of each folder, in the vault or on the WebDAV storage, the first time the agent reaches it.';
+		const agentsMd = new Setting(el).setName('Use AGENTS.md').setDesc(agentsMdDesc);
+		if (!this.app.vault.getFileByPath('AGENTS.md'))
+			agentsMd.setDesc(`${agentsMdDesc} No AGENTS.md at the vault root.`);
 		agentsMd.addToggle((t) =>
 			t.setValue(s.useVaultAgentsMd).onChange(async (v) => {
 				s.useVaultAgentsMd = v;
