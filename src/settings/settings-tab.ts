@@ -672,6 +672,10 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					'Write',
 					'Ask first',
 					'Blocked',
+					'HTTP',
+					'Web',
+					'Commands',
+					'Script',
 					...TOOL_GROUPS.flatMap((group) => group.tools),
 				],
 				render: (el: HTMLElement) => this.renderToolPermissions(el),
@@ -1190,19 +1194,23 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			for (const tool of group.tools) {
 				const row = groupEl.createDiv({ cls: 'librarian-tool-permission-row' });
 				row.createSpan({ cls: 'librarian-tool-permission-name', text: tool });
-				const exec = row.createEl('select', {
-					cls: 'dropdown librarian-tool-execution',
-					attr: { 'aria-label': `${tool} execution` },
-				});
-				exec.createEl('option', { value: 'parallel', text: 'Parallel' });
-				exec.createEl('option', { value: 'sequential', text: 'Sequential' });
-				exec.value = this.plugin.toolExecutionOf(tool);
-				exec.addEventListener('change', () => {
-					this.plugin.settings.toolExecutionByTool[tool] =
-						exec.value === 'sequential' ? 'sequential' : 'parallel';
-					void this.save();
-				});
-				if (tool !== 'tool_search' && !tool.startsWith('skill:')) {
+				// A site or a command row is a permission only: it is not a tool that runs or lists.
+				const target = tool.startsWith('http:') || tool.startsWith('command:');
+				if (!target) {
+					const exec = row.createEl('select', {
+						cls: 'dropdown librarian-tool-execution',
+						attr: { 'aria-label': `${tool} execution` },
+					});
+					exec.createEl('option', { value: 'parallel', text: 'Parallel' });
+					exec.createEl('option', { value: 'sequential', text: 'Sequential' });
+					exec.value = this.plugin.toolExecutionOf(tool);
+					exec.addEventListener('change', () => {
+						this.plugin.settings.toolExecutionByTool[tool] =
+							exec.value === 'sequential' ? 'sequential' : 'parallel';
+						void this.save();
+					});
+				}
+				if (!target && tool !== 'tool_search' && !tool.startsWith('skill:')) {
 					const deferred = row.createEl('select', {
 						cls: 'dropdown librarian-tool-deferred',
 						attr: { 'aria-label': `${tool} listing` },

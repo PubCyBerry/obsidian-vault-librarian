@@ -16,7 +16,33 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
 	{ id: 'write', label: 'Write tools', tools: ['write', 'edit'] },
 ];
 
+/** run_js with the web and command tools, plus each site and command that has its own row. */
+export function scriptGroup(settings: LibrarianSettings): ToolGroup {
+	const keys = Object.keys(settings.toolPermissions.byTool);
+	return {
+		id: 'script',
+		label: 'Scripts, web and commands',
+		tools: [
+			'run_js',
+			'http_request',
+			...keys.filter((k) => k.startsWith('http:')).sort(),
+			'list_commands',
+			'run_command',
+			...keys.filter((k) => k.startsWith('command:')).sort(),
+		],
+	};
+}
+
 export type ToolGroupDisplayPermission = ToolPermission | 'mixed';
+
+/**
+ * Per-target keys of built-in tools: a site or a command without its own row follows the tool's
+ * row, so setting `http_request` to Always allow allows every site not set otherwise.
+ */
+const INHERITED_FROM: [prefix: string, tool: string][] = [
+	['http:', 'http_request'],
+	['command:', 'run_command'],
+];
 
 export const PERMISSION_LABELS: Record<ToolPermission, string> = {
 	always_allow: 'Always allow',
@@ -80,7 +106,11 @@ export class ToolPermissionManager {
 	}
 
 	get(tool: string): ToolPermission {
-		return this.settings().toolPermissions.byTool[tool] ?? 'approval_required';
+		const byTool = this.settings().toolPermissions.byTool;
+		const stored = byTool[tool];
+		if (stored) return stored;
+		const parent = INHERITED_FROM.find(([prefix]) => tool.startsWith(prefix))?.[1];
+		return (parent && byTool[parent]) || 'approval_required';
 	}
 
 	/** False for tools a server marks destructive: they can be allowed once or blocked, never always. */
@@ -93,6 +123,8 @@ export class ToolPermissionManager {
 	 * file steers every later turn.
 	 */
 	resolve(tool: string, args: unknown): ToolPermission {
+		// A blocked tool row wins over any narrower key such as one site or one command.
+		if (this.get(tool) === 'blocked') return 'blocked';
 		const stored = this.get(this.permissionKey(tool, args));
 		if (stored === 'blocked') return 'blocked';
 		if (!this.canAlwaysAllow(tool)) return 'approval_required';

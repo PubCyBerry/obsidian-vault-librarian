@@ -1450,6 +1450,7 @@ export class LibrarianView extends ItemView {
 			},
 			request.canAlways,
 			request.permissionKey,
+			request.calledFrom,
 		);
 		this.scrollToBottom();
 	}

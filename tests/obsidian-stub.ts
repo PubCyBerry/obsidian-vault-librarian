@@ -93,6 +93,20 @@ export function prepareFuzzySearch(query: string) {
 	};
 }
 
+/** Just enough of Obsidian's converter for the tests: links become [text](href), blocks new lines. */
+export function htmlToMarkdown(el: { childNodes: ArrayLike<Node> } | string): string {
+	if (typeof el === 'string') return el;
+	const walk = (node: Node): string => {
+		if (node.nodeType === 3) return node.textContent ?? '';
+		const elem = node as Element;
+		const inner = Array.from(elem.childNodes).map(walk).join('');
+		if (elem.tagName === 'A') return `[${inner}](${elem.getAttribute('href')})`;
+		if (/^(P|DIV|H\d|LI|MAIN|ARTICLE|SECTION|UL|OL)$/.test(elem.tagName)) return `${inner}\n`;
+		return inner;
+	};
+	return Array.from(el.childNodes).map(walk).join('').replace(/\n+/g, '\n');
+}
+
 export class MarkdownView {}
 export class Menu {}
 export class Modal {}

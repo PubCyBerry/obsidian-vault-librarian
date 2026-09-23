@@ -31,6 +31,10 @@ const TOOL_ICONS: Record<string, string> = {
 	webdav_delete: 'trash-2',
 	webdav_download: 'download',
 	webdav_upload: 'upload',
+	http_request: 'globe',
+	list_commands: 'list',
+	run_command: 'play',
+	run_js: 'code',
 };
 
 export function toolIcon(name: string): string {
@@ -51,6 +55,24 @@ function shapeOf(name: string): string {
 
 function str(v: unknown): string {
 	return typeof v === 'string' ? v : v === undefined || v === null ? '' : JSON.stringify(v);
+}
+
+/** Header values that are credentials: shown by their first four characters only. */
+const SECRET_HEADER = /authorization|cookie|token|key|secret|password/i;
+
+/** Arguments as the cards show them; request credentials are masked on screen. */
+export function shownArgs(name: string, args: Record<string, unknown>): string {
+	if (name !== 'http_request' || !args.headers || typeof args.headers !== 'object')
+		return JSON.stringify(args, null, 2);
+	const headers = Object.fromEntries(
+		Object.entries(args.headers as Record<string, unknown>).map(([k, v]) => [
+			k,
+			SECRET_HEADER.test(k) && typeof v === 'string' && v.length > 4
+				? `${v.slice(0, 4)}${'*'.repeat(8)}`
+				: v,
+		]),
+	);
+	return JSON.stringify({ ...args, headers }, null, 2);
 }
 
 function short(s: unknown, n = 60): string {
@@ -124,6 +146,22 @@ export function summarizeCall(
 			const n = count('files');
 			return `${str(from) || '/'} to ${str(to) || '/'}${n !== null ? `, ${n} ${n === 1 ? 'file' : 'files'}` : ''}`;
 		}
+		case 'http_request': {
+			const status = typeof parsed?.status === 'number' ? `, ${parsed.status}` : '';
+			return `${str(args.method) || 'GET'} ${short(args.url)}${status}`;
+		}
+		case 'list_commands': {
+			const n = parsed && typeof parsed.total === 'number' ? parsed.total : null;
+			return `${str(args.query) || 'all'}${n !== null ? `, ${n} ${n === 1 ? 'command' : 'commands'}` : ''}`;
+		}
+		case 'run_command':
+			return `${str(parsed?.name) || str(args.id)}${parsed?.ran === false ? ', did not run' : ''}`;
+		case 'run_js':
+			return short(
+				str(args.code)
+					.split('\n')
+					.find((l) => l.trim()) ?? '',
+			);
 		default:
 			return short(args);
 	}
@@ -216,9 +254,12 @@ export function renderToolCard(
 	const shape = shapeOf(data.name);
 	if (shape === 'write' || shape === 'edit') {
 		renderChangePreview(body, shape, data.args, data.existingLength);
+	} else if (data.name === 'run_js') {
+		body.createDiv({ cls: 'librarian-tool-label', text: 'Code' });
+		body.createEl('pre', { text: str(data.args.code) });
 	} else {
 		body.createDiv({ cls: 'librarian-tool-label', text: 'Arguments' });
-		body.createEl('pre', { text: JSON.stringify(data.args, null, 2) });
+		body.createEl('pre', { text: shownArgs(data.name, data.args) });
 	}
 	if (data.result !== null) {
 		body.createDiv({ cls: 'librarian-tool-label', text: 'Result' });
@@ -243,16 +284,25 @@ export function renderApprovalCard(
 	handlers: ApprovalCardHandlers,
 	canAlways = true,
 	alwaysKey = name,
+	calledFrom?: string,
 ): HTMLElement {
 	const card = container.createDiv({ cls: 'librarian-approval' });
 	const title = card.createDiv({ cls: 'librarian-approval-title' });
 	setIcon(title.createSpan(), toolIcon(name));
 	title.createSpan({ text: ` Approve ${name}?` });
+	if (calledFrom)
+		card.createDiv({ cls: 'librarian-approval-note', text: `Called from ${calledFrom}` });
 	const body = card.createDiv({ cls: 'librarian-approval-body' });
 	const shape = shapeOf(name);
 	if (shape === 'write' || shape === 'edit')
 		renderChangePreview(body, shape, args, existingLength);
-	else body.createEl('pre', { text: JSON.stringify(args, null, 2) });
+	else if (name === 'run_js') body.createEl('pre', { text: str(args.code) });
+	else body.createEl('pre', { text: shownArgs(name, args) });
+	if (name === 'run_command')
+		body.createDiv({
+			cls: 'librarian-approval-note',
+			text: 'Commands are not undone by rewind.',
+		});
 	const path = typeof args.path === 'string' ? args.path : '';
 	const protectsAgentsMd = (name === 'write' || name === 'edit') && isRootAgentsMd(path);
 	const buttons = card.createDiv({ cls: 'librarian-approval-buttons' });

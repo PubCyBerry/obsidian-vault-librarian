@@ -11,6 +11,7 @@ import { ContextManager } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
+import { createRunJsTool } from '../src/script/run-js';
 import { SessionManager } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
 import { SecretStore } from '../src/storage/secret-store';
@@ -34,6 +35,7 @@ function harness(
 	turns: ScriptedTurn[],
 	perms: Partial<Record<string, ToolPermission>> = {},
 	extra: Record<string, unknown> = {},
+	opts: { script?: boolean } = {},
 ): Harness {
 	const app = new FakeApp();
 	app.vault.seed('AGENTS.md', 'Answer in Korean.');
@@ -75,15 +77,25 @@ function harness(
 		transport,
 		prompt: new PromptManager(app as unknown as App),
 		secrets: new SecretStore(app as unknown as App),
-		tools: () =>
-			createVaultTools({
+		tools: () => {
+			const vault = createVaultTools({
 				app: app as unknown as App,
 				settings: () => settings,
 				mutation: {
 					before: (id, p) => controller.beforeMutation(id, p),
 					after: (id, p) => controller.afterMutation(id, p),
 				},
-			}),
+			});
+			if (!opts.script) return vault;
+			return [
+				...vault,
+				createRunJsTool({
+					toolNames: () => vault.map((t) => t.name),
+					callTool: (id, name, args, signal, onWaiting) =>
+						controller.runNestedTool(id, name, args, signal, onWaiting),
+				}),
+			];
+		},
 		skillCatalog: () => '',
 	});
 	const events: ControllerEvent[] = [];
@@ -755,5 +767,76 @@ describe('finishing a turn the app was killed during (LIB-TEST-146)', () => {
 		expect(h.requests).toHaveLength(1);
 		expect(h.requests[0]!.messages.at(-1)).toMatchObject({ role: 'user' });
 		expect(await h.controller.resumeTurn()).toBe(false);
+	});
+});
+
+describe('tool calls from run_js (LIB-TEST-169)', () => {
+	const code =
+		"const note = await tools.read({ path: 'notes/a.md' }); await tools.write({ path: 'notes/b.md', content: note.lines[0].text }); return note.totalLines;";
+
+	it('asks for approval named after the script, snapshots the write, and rewinds it', async () => {
+		const h = harness(
+			[{ toolCalls: [{ name: 'run_js', args: { code } }] }, { text: 'done' }],
+			{ run_js: 'always_allow', read: 'always_allow', write: 'approval_required' },
+			{},
+			{ script: true },
+		);
+		const asked: { name: string; calledFrom?: string }[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request) {
+				asked.push({ name: e.request.name, calledFrom: e.request.calledFrom });
+				queueMicrotask(() => e.request!.resolve('approve'));
+			}
+		});
+		await h.controller.send('copy the first line');
+		expect(asked).toEqual([{ name: 'write', calledFrom: 'run_js' }]);
+		expect(h.app.vault.text('notes/b.md')).toBe('alpha');
+		const log = await sessions(h);
+		// The script's own calls leave approval and snapshot events, but no conversation events.
+		expect(log.filter((e) => e.type === 'tool_call').map((e) => e.name)).toEqual(['run_js']);
+		const result = log.find((e) => e.type === 'tool_result');
+		expect(result).toMatchObject({ name: 'run_js', ok: true });
+		expect(result?.content).toContain('Returned: 2');
+		expect(result?.content).toContain('Tool calls: read ok, write ok');
+		expect(log.find((e) => e.type === 'snapshot')).toMatchObject({
+			path: 'notes/b.md',
+			ref: null,
+		});
+		const back = await h.controller.rewind(log.findIndex((e) => e.type === 'user'));
+		expect(back?.reverted).toEqual(['notes/b.md']);
+		expect(h.app.trashed).toEqual(['notes/b.md']);
+	});
+
+	it('refuses a blocked tool inside the script without writing', async () => {
+		const h = harness(
+			[{ toolCalls: [{ name: 'run_js', args: { code } }] }, { text: 'done' }],
+			{ run_js: 'always_allow', read: 'always_allow', write: 'blocked' },
+			{},
+			{ script: true },
+		);
+		await h.controller.send('copy the first line');
+		expect(h.app.vault.text('notes/b.md')).toBeUndefined();
+		const result = (await sessions(h)).find((e) => e.type === 'tool_result');
+		expect(result).toMatchObject({ name: 'run_js', ok: false });
+		expect(result?.content).toContain('Tool blocked by settings');
+		expect(result?.content).toContain('Tool calls: read ok, write blocked');
+	});
+
+	it('puts approvals of calls started together through one at a time', async () => {
+		const parallel =
+			"await Promise.all([tools.write({ path: 'notes/x.md', content: 'x' }), tools.write({ path: 'notes/y.md', content: 'y' })]); return 'both';";
+		const h = harness(
+			[{ toolCalls: [{ name: 'run_js', args: { code: parallel } }] }, { text: 'done' }],
+			{ run_js: 'always_allow', write: 'approval_required' },
+			{},
+			{ script: true },
+		);
+		const asked = h.autoApprove('approve');
+		await h.controller.send('write two notes');
+		expect(asked).toEqual(['write', 'write']);
+		expect(h.app.vault.text('notes/x.md')).toBe('x');
+		expect(h.app.vault.text('notes/y.md')).toBe('y');
+		const result = (await sessions(h)).find((e) => e.type === 'tool_result');
+		expect(result?.content).toContain('Returned: "both"');
 	});
 });

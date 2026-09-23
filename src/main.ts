@@ -4,13 +4,16 @@ import { PromptManager } from './agent/prompt';
 import { ContextManager } from './context/context-manager';
 import { McpManager } from './mcp/mcp-manager';
 import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
-import { ToolPermissionManager } from './permissions/tool-permission-manager';
+import { scriptGroup, ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
+import { createRunJsTool } from './script/run-js';
 import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
+import { commandPermissionKey, createCommandTools } from './tools/commands';
+import { createHttpRequestTool, httpPermissionKey } from './tools/http-request';
 import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { type LibrarianSettings, mergeSettings } from './types';
@@ -60,12 +63,16 @@ export default class LibrarianPlugin extends Plugin {
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
 			() => [
+				scriptGroup(this.settings),
 				...this.mcp.groups(),
 				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
 				...skillGroups(this.skills.skills),
 			],
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
+				// One key per site and per command, so Always allow covers exactly that target.
+				if (tool === 'http_request') return httpPermissionKey(args);
+				if (tool === 'run_command') return commandPermissionKey(args);
 				if (tool !== 'read') return null;
 				const path = (args as { path?: unknown } | null)?.path;
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
@@ -94,20 +101,30 @@ export default class LibrarianPlugin extends Plugin {
 							}),
 					})
 				: [];
+		const scriptTools = () => [
+			createHttpRequestTool({ settings: () => this.settings }),
+			...createCommandTools(this.app),
+			createRunJsTool({
+				toolNames: () => this.registry.visible().map((t) => t.name),
+				callTool: (id, name, args, signal, onWaiting) =>
+					this.controller.runNestedTool(id, name, args, signal, onWaiting),
+			}),
+		];
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
 			registered: () =>
 				// Built fresh each time so descriptions carry the current default limits from settings.
-				[...createVaultTools(vaultDeps), ...webdavTools(), ...this.mcp.tools()].map(
-					(t) => ({
-						...t,
-						executionMode:
-							this.settings.toolExecutionByTool[t.name] ??
-							t.executionMode ??
-							'parallel',
-					}),
-				),
+				[
+					...createVaultTools(vaultDeps),
+					...scriptTools(),
+					...webdavTools(),
+					...this.mcp.tools(),
+				].map((t) => ({
+					...t,
+					executionMode:
+						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
+				})),
 			sourceOf: (t) =>
 				this.mcpServerNameOf(t.name) ?? (t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
 			deferred: (t) => this.toolDeferredOf(t.name),

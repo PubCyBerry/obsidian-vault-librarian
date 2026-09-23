@@ -4,7 +4,8 @@ import {
 	type AgentTool,
 	type StreamFn,
 } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai';
+import type { AssistantMessage, ImageContent, TextContent, ToolCall } from '@earendil-works/pi-ai';
+import { validateToolArguments } from '@earendil-works/pi-ai/utils/validation';
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type { ContextManager, ContextUsage } from '../context/context-manager';
@@ -17,6 +18,7 @@ import {
 	toPiModel,
 } from '../provider/provider-manager';
 import type { TransportRouter } from '../provider/transport';
+import type { NestedCall } from '../script/run-js';
 import { contentHash, replay, type SessionManager } from '../session/session-manager';
 import type {
 	IndexedEvent,
@@ -62,8 +64,13 @@ export interface ApprovalRequest {
 	permissionKey: string;
 	/** For write on an existing note: its current length. */
 	existingLength?: number;
+	/** The tool that made this call from inside a script, such as `run_js`. */
+	calledFrom?: string;
 	resolve: (decision: ApprovalDecision) => void;
 }
+
+/** The outcome of the permission gate for one call. */
+type Gate = { ok: true } | { ok: false; reason: string; status: ToolCardStatus };
 
 export interface RewindPreview {
 	toEventIndex: number;
@@ -149,12 +156,18 @@ function textOf(content: readonly { type: string }[]): string {
 		.join('');
 }
 
+function messageOf(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 export class AgentController {
 	state: AgentUiState = 'idle';
 	session: SessionMetadata | null = null;
 	events: IndexedEvent[] = [];
 	usage: ContextUsage | null = null;
 	pendingApproval: ApprovalRequest | null = null;
+	/** Serializes the permission gate of calls made from scripts. */
+	private nestedGate: Promise<unknown> = Promise.resolve();
 	/** Provider and model the current session runs on; may differ from the settings default. */
 	selection: ActiveSelection | undefined;
 	thinkingLevel: ThinkingLevel = 'off';
@@ -621,18 +634,103 @@ export class AgentController {
 		args: unknown,
 		signal?: AbortSignal,
 	) {
-		const perms = this.deps.permissions;
 		if (!this.deps.tools().some((t) => t.name === name))
 			return { block: true, reason: `Tool ${name} not found` };
-		const permission = perms.resolve(name, args);
-		if (permission === 'blocked') {
-			this.setToolStatus(toolCallId, 'blocked');
-			return { block: true, reason: 'Tool blocked by settings' };
+		const gate = await this.authorize(toolCallId, name, args, signal, (status) =>
+			this.setToolStatus(toolCallId, status),
+		);
+		if (!gate.ok) {
+			this.setToolStatus(toolCallId, gate.status);
+			return { block: true, reason: gate.reason };
 		}
+		this.setToolStatus(toolCallId, 'running');
+		return undefined;
+	}
+
+	/**
+	 * A tool call made by a script (`run_js`). It passes the same gate as a call from the model and
+	 * leaves the same approval and rewind snapshot events, but no conversation events: the result
+	 * goes back to the script, not into the model's context.
+	 */
+	async runNestedTool(
+		callId: string,
+		name: string,
+		args: unknown,
+		signal?: AbortSignal,
+		onWaiting: (waiting: boolean) => void = () => {},
+	): Promise<NestedCall> {
+		const tool = this.deps.tools().find((t) => t.name === name);
+		if (!tool) return { text: `Tool ${name} not found`, status: 'failed' };
+		let params: unknown;
+		try {
+			params = validateToolArguments(tool, {
+				type: 'toolCall',
+				id: callId,
+				name,
+				arguments: (args ?? {}) as ToolCall['arguments'],
+			});
+		} catch (error) {
+			return { text: messageOf(error), status: 'failed' };
+		}
+		let waited = false;
+		// One approval card at a time: a script may start several calls at once with Promise.all.
+		const gating = this.nestedGate.then(() =>
+			this.authorize(
+				callId,
+				name,
+				params,
+				signal,
+				(status) => {
+					if (status !== 'awaiting-approval') return;
+					waited = true;
+					onWaiting(true);
+				},
+				'run_js',
+			),
+		);
+		this.nestedGate = gating.catch(() => undefined);
+		let gate: Gate;
+		try {
+			gate = await gating;
+		} finally {
+			if (waited) onWaiting(false);
+		}
+		if (waited && this.agent) this.emit({ type: 'state', state: 'tool-running' });
+		if (!gate.ok)
+			return {
+				text: gate.reason,
+				status:
+					gate.status === 'blocked'
+						? 'blocked'
+						: gate.status === 'expired'
+							? 'expired'
+							: 'rejected',
+			};
+		try {
+			const result = await tool.execute(callId, params, signal);
+			return { text: textOf(result.content), status: 'ok' };
+		} catch (error) {
+			return { text: messageOf(error), status: 'failed' };
+		}
+	}
+
+	/** Permission, approval and the executable check for one call, from the model or a script. */
+	private async authorize(
+		toolCallId: string,
+		name: string,
+		args: unknown,
+		signal: AbortSignal | undefined,
+		onStatus: (status: ToolCardStatus) => void,
+		calledFrom?: string,
+	): Promise<Gate> {
+		const perms = this.deps.permissions;
+		const permission = perms.resolve(name, args);
+		if (permission === 'blocked')
+			return { ok: false, reason: 'Tool blocked by settings', status: 'blocked' };
 		const record = (args ?? {}) as Record<string, unknown>;
 		if (permission === 'approval_required') {
-			this.setToolStatus(toolCallId, 'awaiting-approval');
-			const decision = await this.askApproval(toolCallId, name, record, signal);
+			onStatus('awaiting-approval');
+			const decision = await this.askApproval(toolCallId, name, record, signal, calledFrom);
 			if (this.session) {
 				await this.deps.sessions.append(this.session.id, {
 					type: 'approval',
@@ -646,17 +744,14 @@ export class AgentController {
 								: 'approved',
 				});
 			}
-			if (decision === 'reject') {
-				this.setToolStatus(toolCallId, 'rejected');
+			if (decision === 'reject')
 				return {
-					block: true,
+					ok: false,
 					reason: 'The user rejected this tool call. Ask before retrying or choose another approach.',
+					status: 'rejected',
 				};
-			}
-			if (decision === 'expired') {
-				this.setToolStatus(toolCallId, 'expired');
-				return { block: true, reason: 'Approval expired' };
-			}
+			if (decision === 'expired')
+				return { ok: false, reason: 'Approval expired', status: 'expired' };
 			if (decision === 'always') {
 				const key = perms.permissionKey(name, args);
 				await perms.setTool(key, 'always_allow');
@@ -669,11 +764,9 @@ export class AgentController {
 		try {
 			perms.assertExecutable(name);
 		} catch (error) {
-			this.setToolStatus(toolCallId, 'blocked');
-			return { block: true, reason: error instanceof Error ? error.message : String(error) };
+			return { ok: false, reason: messageOf(error), status: 'blocked' };
 		}
-		this.setToolStatus(toolCallId, 'running');
-		return undefined;
+		return { ok: true };
 	}
 
 	private askApproval(
@@ -681,6 +774,7 @@ export class AgentController {
 		name: string,
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
+		calledFrom?: string,
 	) {
 		return new Promise<ApprovalDecision>((resolve) => {
 			const finish = (decision: ApprovalDecision) => {
@@ -707,6 +801,7 @@ export class AgentController {
 				canAlways: this.deps.permissions.canAlwaysAllow(name),
 				permissionKey: this.deps.permissions.permissionKey(name, args),
 				existingLength: existing?.stat.size,
+				...(calledFrom ? { calledFrom } : {}),
 				resolve: finish,
 			};
 			this.emit({ type: 'state', state: 'awaiting-approval' });

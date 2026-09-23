@@ -175,6 +175,10 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		write: 'approval_required',
 		edit: 'approval_required',
 		tool_search: 'approval_required',
+		run_js: 'approval_required',
+		http_request: 'approval_required',
+		list_commands: 'approval_required',
+		run_command: 'approval_required',
 	},
 };
 
