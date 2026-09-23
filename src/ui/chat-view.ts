@@ -429,6 +429,12 @@ export class LibrarianView extends ItemView {
 					.setIcon('trash-2')
 					.onClick(() => this.confirmDelete(current)),
 			);
+		menu.addItem((item) =>
+			item
+				.setTitle('Settings')
+				.setIcon('settings')
+				.onClick(() => this.plugin.openSettings()),
+		);
 	}
 
 	/** Asks, then deletes the session and its snapshots; closes it first when it is the open one. */
