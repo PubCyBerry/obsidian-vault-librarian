@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.0.0...2.1.0) (2026-09-23)
+
+
+### Features
+
+* reach the settings from the chat, and stop passing off curl and obsidian as tools ([0de73e5](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/0de73e5c01fdc71ec9f76fb333bf0e00bccf11af))
+
 ## [2.0.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/1.14.0...2.0.0) (2026-09-23)
 
 
