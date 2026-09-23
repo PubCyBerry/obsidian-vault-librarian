@@ -30,9 +30,26 @@ describe('connection check', () => {
 						url: 'https://llm.example/v1/models',
 						throw: false,
 					});
-					return { status: 200, json: { data: [{ id: 'model' }] } };
+					return {
+						status: 200,
+						json: {
+							data: [
+								{ id: 'model' },
+								{ id: 'qwen', name: 'Qwen', max_model_len: 262144 },
+								{ id: 'router', context_length: 131072 },
+								{ name: 'no id' },
+							],
+						},
+					};
 				};
-				expect(await testConnection(provider, 'key')).toEqual({ ok: true, models: 1 });
+				expect(await testConnection(provider, 'key')).toEqual({
+					ok: true,
+					models: [
+						{ id: 'model' },
+						{ id: 'qwen', name: 'Qwen', contextWindow: 262144 },
+						{ id: 'router', contextWindow: 131072 },
+					],
+				});
 				requestUrlMock.impl = async () => ({
 					status: 401,
 					get json() {

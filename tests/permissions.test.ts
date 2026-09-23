@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
+import { TOOL_GROUPS, ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { DEFAULT_SETTINGS, mergeSettings, TOOL_NAMES } from '../src/types';
 
 function manager() {
@@ -15,10 +15,12 @@ function manager() {
 }
 
 describe('tool permissions', () => {
-	it('LIB-TEST-001: every tool starts as approval_required', () => {
+	it('LIB-TEST-001/199: a new install reads without asking and asks before anything else', () => {
 		const { perms } = manager();
-		for (const tool of TOOL_NAMES) expect(perms.get(tool)).toBe('approval_required');
-		expect(DEFAULT_SETTINGS.toolPermissions.byTool.read).toBe('approval_required');
+		for (const tool of TOOL_GROUPS[0]!.tools) expect(perms.get(tool)).toBe('always_allow');
+		for (const tool of ['write', 'edit', 'bash', 'outline__search', 'webdav_read', 'skill:x'])
+			expect(perms.get(tool)).toBe('approval_required');
+		expect(DEFAULT_SETTINGS.toolPermissions.byTool.read).toBe('always_allow');
 	});
 
 	it('LIB-TEST-002: a group change is a bulk edit and a differing child shows Mixed', async () => {
@@ -33,10 +35,11 @@ describe('tool permissions', () => {
 	});
 
 	it('LIB-TEST-003: one tool can change alone', async () => {
-		const { perms } = manager();
-		await perms.setTool('grep', 'always_allow');
+		const { perms, settings } = manager();
+		const before = { ...settings.toolPermissions.byTool };
+		await perms.setTool('grep', 'blocked');
 		for (const tool of TOOL_NAMES) {
-			expect(perms.get(tool)).toBe(tool === 'grep' ? 'always_allow' : 'approval_required');
+			expect(perms.get(tool)).toBe(tool === 'grep' ? 'blocked' : before[tool]);
 		}
 	});
 
@@ -72,7 +75,8 @@ describe('tool permissions', () => {
 		// The same normalization as checkPath: spelling tricks do not skip the approval.
 		expect(perms.resolve('write', { path: ' ./AGENTS.md ' })).toBe('approval_required');
 		expect(perms.resolve('write', { path: '/AGENTS.md' })).toBe('approval_required');
-		expect(perms.resolve('read', { path: 'AGENTS.md' })).toBe('approval_required');
+		// Only changes are forced to ask; reading the file follows the read row.
+		expect(perms.resolve('read', { path: 'AGENTS.md' })).toBe('always_allow');
 	});
 
 	it('LIB-TEST-013: changes are persisted through the save callback', async () => {

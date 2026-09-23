@@ -534,11 +534,35 @@ export class TransportRouter {
 	}
 }
 
-/** Cheapest connection check: list the models. */
+/** A model a server lists at /models, with its context window when the server reports one. */
+export interface ServerModel {
+	id: string;
+	name?: string;
+	contextWindow?: number;
+}
+
+/** vLLM reports max_model_len and OpenRouter context_length; most servers report neither. */
+function serverModel(entry: unknown): ServerModel[] {
+	if (!entry || typeof entry !== 'object') return [];
+	const e = entry as Record<string, unknown>;
+	if (typeof e.id !== 'string' || !e.id) return [];
+	const size = [e.max_model_len, e.context_length, e.context_window].find(
+		(n): n is number => typeof n === 'number' && n > 0,
+	);
+	return [
+		{
+			id: e.id,
+			...(typeof e.name === 'string' && e.name ? { name: e.name } : {}),
+			...(size ? { contextWindow: size } : {}),
+		},
+	];
+}
+
+/** Cheapest connection check: list the models, which the provider editor also offers to add. */
 export async function testConnection(
 	provider: ProviderConfig,
 	apiKey: string | null,
-): Promise<{ ok: true; models: number } | { ok: false; message: string }> {
+): Promise<{ ok: true; models: ServerModel[] } | { ok: false; message: string }> {
 	const url = `${provider.baseUrl.replace(/\/+$/, '')}/models`;
 	const headers = buildHeaders(apiKey, provider.authHeader);
 	try {
@@ -547,7 +571,7 @@ export async function testConnection(
 		const status = response.status;
 		if (status >= 400) return { ok: false, message: `HTTP ${status}` };
 		const data = (response.json as { data?: unknown[] } | undefined)?.data;
-		return { ok: true, models: Array.isArray(data) ? data.length : 0 };
+		return { ok: true, models: Array.isArray(data) ? data.flatMap(serverModel) : [] };
 	} catch (error) {
 		return { ok: false, message: error instanceof Error ? error.message : String(error) };
 	}

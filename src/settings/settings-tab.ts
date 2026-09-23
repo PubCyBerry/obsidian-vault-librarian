@@ -1,5 +1,6 @@
 import {
 	type App,
+	FuzzySuggestModal,
 	Modal,
 	Notice,
 	Platform,
@@ -18,7 +19,7 @@ import {
 	PERMISSION_LABELS,
 	TOOL_GROUPS,
 } from '../permissions/tool-permission-manager';
-import { testConnection } from '../provider/transport';
+import { type ServerModel, testConnection } from '../provider/transport';
 import { SKILL_KEY_PREFIX, SKILL_SEARCH_NAME } from '../skills/skill-manager';
 import { isValidSecretId } from '../storage/secret-store';
 import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
@@ -365,6 +366,30 @@ class ModelEditorModal extends Modal {
 	}
 }
 
+/** One of the models the server lists, picked by typing part of its name. */
+class ServerModelModal extends FuzzySuggestModal<ServerModel> {
+	constructor(
+		app: App,
+		private readonly models: ServerModel[],
+		private readonly onPick: (model: ServerModel) => void,
+	) {
+		super(app);
+		this.setPlaceholder('Pick a model the server lists');
+	}
+
+	getItems(): ServerModel[] {
+		return this.models;
+	}
+
+	getItemText(model: ServerModel): string {
+		return model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id;
+	}
+
+	onChooseItem(model: ServerModel): void {
+		this.onPick(model);
+	}
+}
+
 class ProviderEditorModal extends Modal {
 	private readonly draft: ProviderConfig;
 	private readonly isNew: boolean;
@@ -455,7 +480,7 @@ class ProviderEditorModal extends Modal {
 				b.setDisabled(false);
 				new Notice(
 					result.ok
-						? `Connection OK. ${result.models} models available.`
+						? `Connection OK. ${result.models.length} models available.`
 						: `Connection failed: ${result.message}`,
 				);
 			}),
@@ -510,6 +535,41 @@ class ProviderEditorModal extends Modal {
 		new Setting(el)
 			.setName('Models')
 			.setHeading()
+			.addButton((b) =>
+				b.setButtonText('Add from server').onClick(async () => {
+					const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
+					b.setDisabled(true);
+					const result = await testConnection(d, key);
+					b.setDisabled(false);
+					if (!result.ok) {
+						new Notice(`Connection failed: ${result.message}`);
+						return;
+					}
+					const added = new Set(d.models.map((m) => m.id));
+					const fresh = result.models.filter((m) => !added.has(m.id));
+					if (!fresh.length) {
+						new Notice(
+							result.models.length
+								? 'Every model on the server is already added.'
+								: 'The server lists no models.',
+						);
+						return;
+					}
+					new ServerModelModal(this.app, fresh, (m) => {
+						const model = { ...newModel(m.id), name: m.name ?? m.id };
+						if (m.contextWindow) {
+							model.contextWindow = m.contextWindow;
+							// A small window cannot hold the default output reserve.
+							model.maxTokens = Math.min(
+								model.maxTokens,
+								Math.floor(m.contextWindow / 4),
+							);
+						}
+						d.models.push(model);
+						this.renderModels();
+					}).open();
+				}),
+			)
 			.addButton((b) =>
 				b.setButtonText('Add model').onClick(() => {
 					new ModelEditorModal(this.app, null, (model) => {
@@ -612,6 +672,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 	}
 
 	private unsubscribe: (() => void)[] = [];
+	/** Whether the permission rows show their execution and listing choices. Not saved: off after a restart. */
+	private showAdvanced = false;
 
 	display(): void {
 		this.renderLegacy();
@@ -1177,10 +1239,22 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			.setName('Tool permissions')
 			.setHeading()
 			.setDesc(
-				'Every tool asks first on a new install. Blocked tools are hidden from the model.',
+				'On a new install the read-only tools run without asking and every other tool asks first. Blocked tools are hidden from the model.',
 			);
 		const perms = this.plugin.permissions;
+		new Setting(el)
+			.setName('Execution and listing')
+			.setDesc(
+				'Show how each tool runs, and whether the model sees it upfront or finds it with tool_search.',
+			)
+			.addToggle((t) =>
+				t.setValue(this.showAdvanced).onChange((v) => {
+					this.showAdvanced = v;
+					wrap.toggleClass('is-advanced', v);
+				}),
+			);
 		const wrap = el.createDiv({ cls: 'librarian-tool-permissions' });
+		wrap.toggleClass('is-advanced', this.showAdvanced);
 		for (const group of perms.groups()) {
 			const groupEl = wrap.createEl('details', { cls: 'librarian-tool-permission-group' });
 			groupEl.open = true;

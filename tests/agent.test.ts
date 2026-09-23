@@ -57,6 +57,9 @@ function harness(
 		activeModelId: 'm',
 		...extra,
 	});
+	// Every tool asks here, as on installs before 2.6.0, so the tests go through the approval flow.
+	for (const tool of Object.keys(settings.toolPermissions.byTool))
+		settings.toolPermissions.byTool[tool] = 'approval_required';
 	for (const [tool, p] of Object.entries(perms))
 		settings.toolPermissions.byTool[tool as 'ls'] = p!;
 	app.secrets.set('vault-librarian-p', 'key');

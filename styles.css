@@ -1156,6 +1156,12 @@ body.is-phone.is-ios.keyboard-animating .librarian-composer {
 	word-break: break-all;
 }
 
+/* Execution and listing are advanced choices; the rows show them only when the toggle is on. */
+.librarian-tool-permissions:not(.is-advanced) .librarian-tool-execution,
+.librarian-tool-permissions:not(.is-advanced) .librarian-tool-deferred {
+	display: none;
+}
+
 /* A long tool name pushes the control onto its own line, right-aligned, instead of clipping it. */
 .librarian-tool-permission-row .librarian-segmented {
 	flex: 0 0 auto;

@@ -4,6 +4,7 @@ import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
 import { ContextManager } from './context/context-manager';
+import { desktopHttp } from './mcp/loopback';
 import { McpManager } from './mcp/mcp-manager';
 import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import { SHELL_GROUP, ToolPermissionManager } from './permissions/tool-permission-manager';
@@ -14,7 +15,6 @@ import { LibrarianSettingTab } from './settings/settings-tab';
 import { createShellTool, ShellSession } from './shell/shell-tool';
 import {
 	createSkillSearchTool,
-	SKILL_KEY_PREFIX,
 	SKILL_SEARCH_NAME,
 	SkillManager,
 	skillGroups,
@@ -24,7 +24,7 @@ import {
 import { SecretStore } from './storage/secret-store';
 import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
-import { type LibrarianSettings, mergeSettings } from './types';
+import { DEFAULT_LISTED_TOOLS, type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
 import { WEBDAV_SECRET_ID, WebDavClient } from './webdav/webdav-client';
 import { createWebDavTools, WEBDAV_GROUP } from './webdav/webdav-tools';
@@ -70,6 +70,7 @@ export default class LibrarianPlugin extends Plugin {
 			clientVersion: this.manifest.version,
 			open: (url) => window.open(url),
 			notice: (message) => new Notice(message),
+			loopback: desktopHttp,
 		});
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
@@ -277,6 +278,7 @@ export default class LibrarianPlugin extends Plugin {
 
 	onunload() {
 		this.controller.stop();
+		this.mcp.stopSignIns();
 		for (const server of this.settings.mcpServers) void this.mcp.disconnect(server.id);
 	}
 
@@ -299,12 +301,10 @@ export default class LibrarianPlugin extends Plugin {
 
 	/**
 	 * Deferred tools and skills are not listed to the model until tool_search or skill_search
-	 * finds them. MCP tools and skills default to deferred.
+	 * finds them. By default only the vault search and edit tools, bash and skill_search are listed.
 	 */
 	toolDeferredOf(name: string): boolean {
-		const stored = this.settings.toolDeferredByTool[name];
-		if (stored !== undefined) return stored;
-		return name.includes('__') || name.startsWith(SKILL_KEY_PREFIX);
+		return this.settings.toolDeferredByTool[name] ?? !DEFAULT_LISTED_TOOLS.has(name);
 	}
 
 	/** Effective execution mode of one tool: the setting, else the tool's own default. */

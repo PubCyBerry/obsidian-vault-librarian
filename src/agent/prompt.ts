@@ -48,6 +48,7 @@ Available capabilities:
 - Use bash to run a shell command inside the vault when you need to combine steps, filter a large result, or reach the web. Inside it, curl sends an HTTP request and writes the raw response to stdout, and obsidian runs an Obsidian command; pipe output through grep, sed or jq to keep only what you need, and use /tmp to hold something large across calls.
 
 Search behavior:
+When find, grep or ls is not in your tool list, it is deferred: load it with tool_search before your first search, or search with bash (grep -rn, find, ls) instead.
 1. If a likely note name or path is known, prefer find then read.
 2. If the relevant note is unknown, prefer grep then read.
 3. Use ls when folder structure helps.

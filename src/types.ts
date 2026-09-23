@@ -149,8 +149,8 @@ export interface LibrarianSettings {
 	/** Per tool; a tool absent here keeps its own default (write, edit and MCP tools: sequential). */
 	toolExecutionByTool: Record<string, ToolExecutionMode>;
 	/**
-	 * Per tool, and per skill under `skill:<name>`; absent means the default: MCP tools and skills
-	 * deferred (found through tool_search and skill_search), vault tools listed.
+	 * Per tool, and per skill under `skill:<name>`; absent means the default: DEFAULT_LISTED_TOOLS
+	 * listed, every other tool and skill deferred (found through tool_search and skill_search).
 	 */
 	toolDeferredByTool: Record<string, boolean>;
 	mcpServers: McpServerConfig[];
@@ -171,20 +171,33 @@ export interface LibrarianSettings {
 	readLineLimit: number;
 }
 
+/** A new install reads without asking and asks before anything that changes or runs (LIB-ADR-026). */
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 	byTool: {
-		ls: 'approval_required',
-		find: 'approval_required',
-		grep: 'approval_required',
-		read: 'approval_required',
-		get_active_note: 'approval_required',
+		ls: 'always_allow',
+		find: 'always_allow',
+		grep: 'always_allow',
+		read: 'always_allow',
+		get_active_note: 'always_allow',
+		tool_search: 'always_allow',
+		skill_search: 'always_allow',
 		write: 'approval_required',
 		edit: 'approval_required',
-		tool_search: 'approval_required',
-		skill_search: 'approval_required',
 		bash: 'approval_required',
 	},
 };
+
+/** The tools a new install lists upfront; everything else waits for tool_search (LIB-ADR-026). */
+export const DEFAULT_LISTED_TOOLS: ReadonlySet<string> = new Set([
+	'ls',
+	'find',
+	'grep',
+	'read',
+	'write',
+	'edit',
+	'bash',
+	'skill_search',
+]);
 
 export const DEFAULT_REQUEST_DEFAULTS: RequestDefaults = {
 	stream: true,

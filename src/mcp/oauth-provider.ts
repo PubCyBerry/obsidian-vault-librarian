@@ -36,6 +36,10 @@ export interface OAuthProviderDeps {
 	onAuthorizationUrl: (url: string) => void;
 	/** Called when the server rejected the saved tokens (invalid_grant) and they were dropped. */
 	onTokensRejected?: () => void;
+	/** Where the authorization comes back: a loopback address during a desktop sign-in. */
+	redirectUrl?: () => string;
+	/** Told each `state` sent out, so the loopback can recognize the answer to this sign-in. */
+	onState?: (state: string) => void;
 }
 
 /**
@@ -46,13 +50,13 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	constructor(private readonly deps: OAuthProviderDeps) {}
 
 	get redirectUrl(): string {
-		return OAUTH_REDIRECT_URL;
+		return this.deps.redirectUrl?.() ?? OAUTH_REDIRECT_URL;
 	}
 
 	get clientMetadata(): OAuthClientMetadata {
 		return {
 			client_name: 'Vault Librarian',
-			redirect_uris: [OAUTH_REDIRECT_URL],
+			redirect_uris: [this.redirectUrl],
 			grant_types: ['authorization_code', 'refresh_token'],
 			response_types: ['code'],
 			token_endpoint_auth_method: 'none',
@@ -63,7 +67,9 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 		const bytes = new Uint8Array(16);
 		crypto.getRandomValues(bytes);
 		const random = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-		return `${this.deps.serverId}.${random}`;
+		const state = `${this.deps.serverId}.${random}`;
+		this.deps.onState?.(state);
+		return state;
 	}
 
 	clientInformation(): OAuthClientInformationMixed | undefined {

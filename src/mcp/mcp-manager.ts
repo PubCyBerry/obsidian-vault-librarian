@@ -9,7 +9,8 @@ import type { SecretStore } from '../storage/secret-store';
 import type { LibrarianSettings, McpServerConfig } from '../types';
 import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
 import { isNetworkFailure, requestUrlFetch } from './fetch-shim';
-import { ObsidianOAuthProvider, oauthSecretId } from './oauth-provider';
+import { type HttpModule, type Loopback, type LoopbackResult, listenForRedirect } from './loopback';
+import { OAUTH_REDIRECT_URL, ObsidianOAuthProvider, oauthSecretId } from './oauth-provider';
 
 /** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
 export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {
@@ -40,6 +41,8 @@ export interface McpManagerDeps {
 	clientVersion: string;
 	open: (url: string) => void;
 	notice: (message: string) => void;
+	/** Node's http on desktop, for a loopback sign-in; null or absent on phones. */
+	loopback?: () => HttpModule | null;
 }
 
 export function apiKeySecretId(serverId: string): string {
@@ -126,6 +129,8 @@ export class McpManager {
 	private readonly interactive = new Set<string>();
 	/** Servers whose saved tokens the authorization server refused on the last attempt. */
 	private readonly rejected = new Set<string>();
+	/** Desktop sign-ins listening on 127.0.0.1, with the state sent in their authorization URL. */
+	private readonly signIns = new Map<string, { loopback: Loopback; state?: string }>();
 	private readonly listeners = new Set<() => void>();
 
 	constructor(private readonly deps: McpManagerDeps) {}
@@ -226,10 +231,42 @@ export class McpManager {
 		if (connection) await connection.client.close().catch(() => undefined);
 	}
 
-	/** Opens the browser for OAuth. For API key servers the settings tab holds the key input. */
+	/**
+	 * Opens the browser for OAuth. For API key servers the settings tab holds the key input. On
+	 * desktop the answer comes back to 127.0.0.1, which authorization servers allow where some
+	 * refuse `obsidian://` (Atlassian); a phone keeps the `obsidian://` redirect.
+	 */
 	async signIn(id: string): Promise<void> {
 		this.interactive.add(id);
+		const http = this.server(id)?.auth === 'oauth' ? this.deps.loopback?.() : null;
+		if (http) {
+			this.endSignIn(id);
+			const loopback = await listenForRedirect(http, {
+				accept: (state) => state !== null && state === this.signIns.get(id)?.state,
+				onResult: (result) => void this.loopbackResult(id, result),
+			});
+			this.signIns.set(id, { loopback });
+			// A client registered for another redirect address would be refused, so start clean.
+			this.oauthProvider(id).invalidateCredentials('all');
+		}
 		await this.connect(id);
+	}
+
+	private async loopbackResult(id: string, result: LoopbackResult): Promise<void> {
+		// The code is exchanged with the loopback address, so the sign-in ends only after that.
+		if ('code' in result) await this.finishAuth(id, result.code);
+		else this.deps.notice(`Sign-in failed: ${result.error}`);
+		this.signIns.delete(id);
+	}
+
+	private endSignIn(id: string): void {
+		this.signIns.get(id)?.loopback.close();
+		this.signIns.delete(id);
+	}
+
+	/** Closes every loopback listener, when the plugin unloads. */
+	stopSignIns(): void {
+		for (const id of [...this.signIns.keys()]) this.endSignIn(id);
 	}
 
 	/** Called by the `obsidian://` handler with the authorization code. */
@@ -254,6 +291,7 @@ export class McpManager {
 	}
 
 	async signOut(id: string): Promise<void> {
+		this.endSignIn(id);
 		await this.disconnect(id);
 		this.deps.secrets.clear(oauthSecretId(id));
 		this.deps.secrets.clear(apiKeySecretId(id));
@@ -359,6 +397,11 @@ export class McpManager {
 			interactive: () => this.interactive.has(id),
 			open: this.deps.open,
 			onTokensRejected: () => this.rejected.add(id),
+			redirectUrl: () => this.signIns.get(id)?.loopback.redirectUrl ?? OAUTH_REDIRECT_URL,
+			onState: (state) => {
+				const signIn = this.signIns.get(id);
+				if (signIn) signIn.state = state;
+			},
 			onAuthorizationUrl: (url) => {
 				const current = this.state(id);
 				this.states.set(id, { ...current, authorizationUrl: url });
