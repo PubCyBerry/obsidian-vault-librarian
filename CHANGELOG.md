@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.8.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.7.0...2.8.0) (2026-09-23)
+
+
+### Features
+
+* explain why an MCP server refuses sign-in, and line up buttons and the activity line ([ea389ca](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/ea389ca7e60160a151c417980cf883080ee2eb25))
+
+
+### Bug Fixes
+
+* fall back to requestUrl when a covered desktop window fails a CORS request ([fac983b](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/fac983bcad6602dfd3acdc86cf4b424a8da8a1e3))
+
 ## [2.7.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.6.1...2.7.0) (2026-09-23)
 
 
