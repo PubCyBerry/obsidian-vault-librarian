@@ -30,6 +30,17 @@ export class FakeVault {
 			return this.texts.get(key)!;
 		},
 		write: async (p: string, data: string) => this.setText(normalizePath(p), data),
+		readBinary: async (p: string) => {
+			const key = normalizePath(p);
+			const binary = this.binaries.get(key);
+			if (binary) return binary;
+			const text = this.texts.get(key);
+			if (text === undefined) throw new Error(`ENOENT ${p}`);
+			return new TextEncoder().encode(text).buffer as ArrayBuffer;
+		},
+		writeBinary: async (p: string, data: ArrayBuffer) => {
+			this.binaries.set(normalizePath(p), data);
+		},
 		append: async (p: string, data: string) =>
 			this.setText(normalizePath(p), (this.texts.get(normalizePath(p)) ?? '') + data),
 		remove: async (p: string) => {

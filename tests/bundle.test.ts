@@ -21,7 +21,11 @@ describe('bundle and manifest (LIB-TEST-076)', () => {
 		const requires = [...bundle.matchAll(/require\("([^"]+)"\)/g)].map((m) => m[1]);
 		expect(new Set(requires)).toEqual(new Set(['obsidian']));
 		expect(bundle).not.toMatch(/require\("node:/);
+		expect(bundle).not.toMatch(/from"node:/);
 		expect(bundle).not.toMatch(/require\("electron"\)/);
-		expect(bundle).not.toMatch(/child_process/);
+		// The shell's own hardening names child_process in the reason it refuses
+		// process.getBuiltinModule, so the word appears inside a sentence. What must not appear is
+		// that name as a module specifier, which is how it would actually be loaded.
+		expect(bundle).not.toMatch(/["'`]child_process["'`]/);
 	});
 });

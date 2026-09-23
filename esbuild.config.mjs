@@ -44,6 +44,27 @@ const ajvStub = {
 	},
 };
 
+// just-bash's browser bundle still imports node:zlib for gzip, gunzip, zcat and the gzip sniff in
+// `file`. Obsidian Mobile has no Node, so the module is swapped for a stub: those commands report
+// that they are unavailable and the rest of the shell is unaffected.
+const zlibStub = {
+	name: 'node-zlib-stub',
+	setup(build) {
+		build.onResolve({ filter: /^(node:)?zlib$/ }, (args) => ({
+			path: args.path,
+			namespace: 'zlib-stub',
+		}));
+		build.onLoad({ filter: /.*/, namespace: 'zlib-stub' }, () => ({
+			contents: `function unavailable() { throw new Error("gzip is not available in this app"); }
+export const gzipSync = unavailable;
+export const gunzipSync = unavailable;
+export const constants = {};
+export default { gzipSync, gunzipSync, constants };`,
+			loader: 'js',
+		}));
+	},
+};
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -67,7 +88,7 @@ const context = await esbuild.context({
 		'@lezer/lr',
 		...builtinModules,
 	],
-	plugins: [providerEnvStub, ajvStub],
+	plugins: [providerEnvStub, ajvStub, zlibStub],
 	define: { 'process.env.NODE_ENV': prod ? '"production"' : '"development"' },
 	format: 'cjs',
 	target: 'es2021',

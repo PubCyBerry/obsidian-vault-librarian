@@ -1,4 +1,5 @@
 import { normalizePath } from 'obsidian';
+import { IRREVERSIBLE_VERBS, isReadOnlyVerb } from '../shell/commands';
 import type { LibrarianSettings, ToolPermission } from '../types';
 
 export interface ToolGroup {
@@ -16,19 +17,20 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
 	{ id: 'write', label: 'Write tools', tools: ['write', 'edit'] },
 ];
 
-/** run_js with the web and command tools, plus each site and command that has its own row. */
-export function scriptGroup(settings: LibrarianSettings): ToolGroup {
+/** The shell and what it reaches, plus each site, verb and command that has its own row. */
+export function shellGroup(settings: LibrarianSettings): ToolGroup {
 	const keys = Object.keys(settings.toolPermissions.byTool);
+	const rows = (prefix: string) => keys.filter((k) => k.startsWith(prefix)).sort();
 	return {
-		id: 'script',
-		label: 'Scripts, web and commands',
+		id: 'shell',
+		label: 'Shell, web and commands',
 		tools: [
-			'run_js',
-			'http_request',
-			...keys.filter((k) => k.startsWith('http:')).sort(),
-			'list_commands',
-			'run_command',
-			...keys.filter((k) => k.startsWith('command:')).sort(),
+			'bash',
+			'curl',
+			...rows('http:'),
+			'obsidian',
+			...rows('obsidian:'),
+			...rows('command:'),
 		],
 	};
 }
@@ -36,13 +38,25 @@ export function scriptGroup(settings: LibrarianSettings): ToolGroup {
 export type ToolGroupDisplayPermission = ToolPermission | 'mixed';
 
 /**
- * Per-target keys of built-in tools: a site or a command without its own row follows the tool's
- * row, so setting `http_request` to Always allow allows every site not set otherwise.
+ * Per-target keys of the shell's commands: a site, verb or command without its own row follows the
+ * command's row, so setting `curl` to Always allow allows every site not set otherwise.
  */
 const INHERITED_FROM: [prefix: string, tool: string][] = [
-	['http:', 'http_request'],
-	['command:', 'run_command'],
+	['http:', 'curl'],
+	['obsidian:', 'obsidian'],
+	['command:', 'obsidian'],
 ];
+
+/** The rows a per-target key follows when it has no value of its own. */
+function parentsOf(tool: string): string[] {
+	const parent = INHERITED_FROM.find(([prefix]) => tool.startsWith(prefix))?.[1];
+	if (!parent) return [];
+	// An Obsidian verb that only looks things up also counts as a read, so allowing the read-only
+	// tools covers it without allowing the verbs that change the vault.
+	if (parent === 'obsidian' && isReadOnlyVerb(tool.slice('obsidian:'.length)))
+		return [parent, 'read'];
+	return [parent];
+}
 
 export const PERMISSION_LABELS: Record<ToolPermission, string> = {
 	always_allow: 'Always allow',
@@ -109,12 +123,17 @@ export class ToolPermissionManager {
 		const byTool = this.settings().toolPermissions.byTool;
 		const stored = byTool[tool];
 		if (stored) return stored;
-		const parent = INHERITED_FROM.find(([prefix]) => tool.startsWith(prefix))?.[1];
-		return (parent && byTool[parent]) || 'approval_required';
+		const inherited = parentsOf(tool)
+			.map((p) => byTool[p])
+			.filter((v): v is ToolPermission => Boolean(v));
+		if (inherited.includes('always_allow')) return 'always_allow';
+		return inherited[0] ?? 'approval_required';
 	}
 
 	/** False for tools a server marks destructive: they can be allowed once or blocked, never always. */
 	canAlwaysAllow(tool: string): boolean {
+		if (tool.startsWith('obsidian:') && IRREVERSIBLE_VERBS.has(tool.slice('obsidian:'.length)))
+			return false;
 		return !this.alwaysAsk().has(tool);
 	}
 
@@ -125,9 +144,12 @@ export class ToolPermissionManager {
 	resolve(tool: string, args: unknown): ToolPermission {
 		// A blocked tool row wins over any narrower key such as one site or one command.
 		if (this.get(tool) === 'blocked') return 'blocked';
-		const stored = this.get(this.permissionKey(tool, args));
+		const key = this.permissionKey(tool, args);
+		const stored = this.get(key);
 		if (stored === 'blocked') return 'blocked';
-		if (!this.canAlwaysAllow(tool)) return 'approval_required';
+		// The narrower key is checked too: an Obsidian verb that cannot be taken back always asks,
+		// even though its tool row could be set to Always allow.
+		if (!this.canAlwaysAllow(tool) || !this.canAlwaysAllow(key)) return 'approval_required';
 		if (tool === 'write' || tool === 'edit') {
 			const path = (args as { path?: unknown } | null)?.path;
 			if (typeof path === 'string' && isRootAgentsMd(path)) return 'approval_required';

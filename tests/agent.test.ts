@@ -11,9 +11,9 @@ import { ContextManager } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
-import { createRunJsTool } from '../src/script/run-js';
 import { SessionManager } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
+import { createShellTool, ShellSession } from '../src/shell/shell-tool';
 import { SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
@@ -40,6 +40,8 @@ function harness(
 	const app = new FakeApp();
 	app.vault.seed('AGENTS.md', 'Answer in Korean.');
 	app.vault.seed('notes/a.md', 'alpha\nbeta');
+	let shellCalls = 0;
+	let shell: ShellSession | undefined;
 	const settings = mergeSettings({
 		providers: [
 			{
@@ -87,14 +89,25 @@ function harness(
 				},
 			});
 			if (!opts.script) return vault;
-			return [
-				...vault,
-				createRunJsTool({
-					toolNames: () => vault.map((t) => t.name),
-					callTool: (id, name, args, signal, onWaiting) =>
-						controller.runNestedTool(id, name, args, signal, onWaiting),
-				}),
-			];
+			// One shell for the whole harness, as the plugin does, so /tmp lasts between calls.
+			shell ??= new ShellSession({
+				app: app as unknown as App,
+				resultLimit: () => settings.toolResultMaxChars,
+				gate: async (name, args, signal) => {
+					const gate = await controller.gateShellAction(
+						`${name}-${++shellCalls}`,
+						name,
+						args,
+						signal,
+					);
+					if (!gate.ok) throw new Error(gate.reason);
+				},
+				snapshot: {
+					before: (id: string, p: string) => controller.beforeMutation(id, p),
+					after: (id: string, p: string) => controller.afterMutation(id, p),
+				},
+			});
+			return [...vault, createShellTool(shell)];
 		},
 		skillCatalog: () => '',
 	});
@@ -770,34 +783,36 @@ describe('finishing a turn the app was killed during (LIB-TEST-146)', () => {
 	});
 });
 
-describe('tool calls from run_js (LIB-TEST-169)', () => {
-	const code =
-		"const note = await tools.read({ path: 'notes/a.md' }); await tools.write({ path: 'notes/b.md', content: note.lines[0].text }); return note.totalLines;";
+describe('vault writes from bash (LIB-TEST-174)', () => {
+	const command = 'head -1 notes/a.md > notes/b.md && head -2 notes/a.md | tail -1';
 
-	it('asks for approval named after the script, snapshots the write, and rewinds it', async () => {
+	it('asks for approval named after the shell, snapshots the write, and rewinds it', async () => {
 		const h = harness(
-			[{ toolCalls: [{ name: 'run_js', args: { code } }] }, { text: 'done' }],
-			{ run_js: 'always_allow', read: 'always_allow', write: 'approval_required' },
+			[{ toolCalls: [{ name: 'bash', args: { command } }] }, { text: 'done' }],
+			{ bash: 'always_allow', write: 'approval_required' },
 			{},
 			{ script: true },
 		);
-		const asked: { name: string; calledFrom?: string }[] = [];
+		const asked: { name: string; calledFrom?: string; path?: unknown }[] = [];
 		h.controller.subscribe((e) => {
 			if (e.type === 'approval' && e.request) {
-				asked.push({ name: e.request.name, calledFrom: e.request.calledFrom });
+				asked.push({
+					name: e.request.name,
+					calledFrom: e.request.calledFrom,
+					path: e.request.args.path,
+				});
 				queueMicrotask(() => e.request!.resolve('approve'));
 			}
 		});
 		await h.controller.send('copy the first line');
-		expect(asked).toEqual([{ name: 'write', calledFrom: 'run_js' }]);
-		expect(h.app.vault.text('notes/b.md')).toBe('alpha');
+		expect(asked).toEqual([{ name: 'write', calledFrom: 'bash', path: 'notes/b.md' }]);
+		expect(h.app.vault.text('notes/b.md')).toBe('alpha\n');
 		const log = await sessions(h);
-		// The script's own calls leave approval and snapshot events, but no conversation events.
-		expect(log.filter((e) => e.type === 'tool_call').map((e) => e.name)).toEqual(['run_js']);
+		// The shell's own writes leave approval and snapshot events, but no conversation events.
+		expect(log.filter((e) => e.type === 'tool_call').map((e) => e.name)).toEqual(['bash']);
 		const result = log.find((e) => e.type === 'tool_result');
-		expect(result).toMatchObject({ name: 'run_js', ok: true });
-		expect(result?.content).toContain('Returned: 2');
-		expect(result?.content).toContain('Tool calls: read ok, write ok');
+		expect(result).toMatchObject({ name: 'bash', ok: true });
+		expect(result?.content).toContain('beta');
 		expect(log.find((e) => e.type === 'snapshot')).toMatchObject({
 			path: 'notes/b.md',
 			ref: null,
@@ -807,36 +822,37 @@ describe('tool calls from run_js (LIB-TEST-169)', () => {
 		expect(h.app.trashed).toEqual(['notes/b.md']);
 	});
 
-	it('refuses a blocked tool inside the script without writing', async () => {
+	it('refuses a blocked write without changing the vault', async () => {
 		const h = harness(
-			[{ toolCalls: [{ name: 'run_js', args: { code } }] }, { text: 'done' }],
-			{ run_js: 'always_allow', read: 'always_allow', write: 'blocked' },
+			[{ toolCalls: [{ name: 'bash', args: { command } }] }, { text: 'done' }],
+			{ bash: 'always_allow', write: 'blocked' },
 			{},
 			{ script: true },
 		);
 		await h.controller.send('copy the first line');
 		expect(h.app.vault.text('notes/b.md')).toBeUndefined();
 		const result = (await sessions(h)).find((e) => e.type === 'tool_result');
-		expect(result).toMatchObject({ name: 'run_js', ok: false });
 		expect(result?.content).toContain('Tool blocked by settings');
-		expect(result?.content).toContain('Tool calls: read ok, write blocked');
 	});
 
-	it('puts approvals of calls started together through one at a time', async () => {
-		const parallel =
-			"await Promise.all([tools.write({ path: 'notes/x.md', content: 'x' }), tools.write({ path: 'notes/y.md', content: 'y' })]); return 'both';";
+	it('keeps /tmp between calls in a session and drops it on a new one', async () => {
 		const h = harness(
-			[{ toolCalls: [{ name: 'run_js', args: { code: parallel } }] }, { text: 'done' }],
-			{ run_js: 'always_allow', write: 'approval_required' },
+			[
+				{
+					toolCalls: [
+						{ name: 'bash', args: { command: 'echo kept > /tmp/a && cat /tmp/a' } },
+					],
+				},
+				{ toolCalls: [{ name: 'bash', args: { command: 'cat /tmp/a' } }] },
+				{ text: 'done' },
+			],
+			{ bash: 'always_allow' },
 			{},
 			{ script: true },
 		);
-		const asked = h.autoApprove('approve');
-		await h.controller.send('write two notes');
-		expect(asked).toEqual(['write', 'write']);
-		expect(h.app.vault.text('notes/x.md')).toBe('x');
-		expect(h.app.vault.text('notes/y.md')).toBe('y');
-		const result = (await sessions(h)).find((e) => e.type === 'tool_result');
-		expect(result?.content).toContain('Returned: "both"');
+		await h.controller.send('remember something');
+		const results = (await sessions(h)).filter((e) => e.type === 'tool_result');
+		expect(results).toHaveLength(2);
+		expect(results[1]?.content).toContain('kept');
 	});
 });

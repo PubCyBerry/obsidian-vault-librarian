@@ -4,8 +4,8 @@ import {
 	type AgentTool,
 	type StreamFn,
 } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, ImageContent, TextContent, ToolCall } from '@earendil-works/pi-ai';
-import { validateToolArguments } from '@earendil-works/pi-ai/utils/validation';
+import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai';
+
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type { ContextManager, ContextUsage } from '../context/context-manager';
@@ -18,7 +18,6 @@ import {
 	toPiModel,
 } from '../provider/provider-manager';
 import type { TransportRouter } from '../provider/transport';
-import type { NestedCall } from '../script/run-js';
 import { contentHash, replay, type SessionManager } from '../session/session-manager';
 import type {
 	IndexedEvent,
@@ -64,13 +63,13 @@ export interface ApprovalRequest {
 	permissionKey: string;
 	/** For write on an existing note: its current length. */
 	existingLength?: number;
-	/** The tool that made this call from inside a script, such as `run_js`. */
+	/** The tool this call came from, such as `bash` for something a shell command is about to do. */
 	calledFrom?: string;
 	resolve: (decision: ApprovalDecision) => void;
 }
 
 /** The outcome of the permission gate for one call. */
-type Gate = { ok: true } | { ok: false; reason: string; status: ToolCardStatus };
+export type Gate = { ok: true } | { ok: false; reason: string; status: ToolCardStatus };
 
 export interface RewindPreview {
 	toEventIndex: number;
@@ -648,69 +647,41 @@ export class AgentController {
 	}
 
 	/**
-	 * A tool call made by a script (`run_js`). It passes the same gate as a call from the model and
-	 * leaves the same approval and rewind snapshot events, but no conversation events: the result
-	 * goes back to the script, not into the model's context.
+	 * Permission and approval for one thing a shell command is about to do: a request, an Obsidian
+	 * verb, a vault write. It leaves the same approval events as a call from the model, but no
+	 * conversation events: the answer goes back to the shell, not into the model's context.
 	 */
-	async runNestedTool(
+	async gateShellAction(
 		callId: string,
 		name: string,
-		args: unknown,
+		args: Record<string, unknown>,
 		signal?: AbortSignal,
 		onWaiting: (waiting: boolean) => void = () => {},
-	): Promise<NestedCall> {
-		const tool = this.deps.tools().find((t) => t.name === name);
-		if (!tool) return { text: `Tool ${name} not found`, status: 'failed' };
-		let params: unknown;
-		try {
-			params = validateToolArguments(tool, {
-				type: 'toolCall',
-				id: callId,
-				name,
-				arguments: (args ?? {}) as ToolCall['arguments'],
-			});
-		} catch (error) {
-			return { text: messageOf(error), status: 'failed' };
-		}
+	): Promise<Gate> {
 		let waited = false;
-		// One approval card at a time: a script may start several calls at once with Promise.all.
+		// One approval card at a time, in case a pipeline has several stages asking at once.
 		const gating = this.nestedGate.then(() =>
 			this.authorize(
 				callId,
 				name,
-				params,
+				args,
 				signal,
 				(status) => {
 					if (status !== 'awaiting-approval') return;
 					waited = true;
 					onWaiting(true);
 				},
-				'run_js',
+				'bash',
 			),
 		);
 		this.nestedGate = gating.catch(() => undefined);
-		let gate: Gate;
 		try {
-			gate = await gating;
+			return await gating;
 		} finally {
-			if (waited) onWaiting(false);
-		}
-		if (waited && this.agent) this.emit({ type: 'state', state: 'tool-running' });
-		if (!gate.ok)
-			return {
-				text: gate.reason,
-				status:
-					gate.status === 'blocked'
-						? 'blocked'
-						: gate.status === 'expired'
-							? 'expired'
-							: 'rejected',
-			};
-		try {
-			const result = await tool.execute(callId, params, signal);
-			return { text: textOf(result.content), status: 'ok' };
-		} catch (error) {
-			return { text: messageOf(error), status: 'failed' };
+			if (waited) {
+				onWaiting(false);
+				if (this.agent) this.emit({ type: 'state', state: 'tool-running' });
+			}
 		}
 	}
 
@@ -794,12 +765,15 @@ export class AgentController {
 				name === 'write' && typeof args.path === 'string'
 					? this.deps.app.vault.getFileByPath(args.path)
 					: null;
+			const key = this.deps.permissions.permissionKey(name, args);
 			this.pendingApproval = {
 				toolCallId,
 				name,
 				args,
-				canAlways: this.deps.permissions.canAlwaysAllow(name),
-				permissionKey: this.deps.permissions.permissionKey(name, args),
+				canAlways:
+					this.deps.permissions.canAlwaysAllow(name) &&
+					this.deps.permissions.canAlwaysAllow(key),
+				permissionKey: key,
 				existingLength: existing?.stat.size,
 				...(calledFrom ? { calledFrom } : {}),
 				resolve: finish,

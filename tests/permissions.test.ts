@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
+import { shellPermissionKey } from '../src/shell/commands';
 import { DEFAULT_SETTINGS, mergeSettings, TOOL_NAMES } from '../src/types';
 
 function manager() {
@@ -79,5 +80,63 @@ describe('tool permissions', () => {
 		await perms.setTool('ls', 'blocked');
 		await perms.setGroup('write', 'always_allow');
 		expect(saves()).toBe(2);
+	});
+});
+
+describe('shell permission keys (LIB-TEST-175)', () => {
+	function shellManager() {
+		const m = manager();
+		m.perms.attachExtras(
+			() => [],
+			() => new Set(),
+			(tool, args) => shellPermissionKey(tool, args),
+		);
+		return m;
+	}
+
+	it('lets a site follow the curl row until it has one of its own', () => {
+		const { perms } = shellManager();
+		const call = { url: 'https://api.test/x', method: 'GET' };
+		expect(perms.resolve('curl', call)).toBe('approval_required');
+		void perms.setTool('curl', 'always_allow');
+		expect(perms.resolve('curl', call)).toBe('always_allow');
+		void perms.setTool('http:https://api.test', 'blocked');
+		expect(perms.resolve('curl', call)).toBe('blocked');
+	});
+
+	it('lets the curl row block every site under it', () => {
+		const { perms } = shellManager();
+		void perms.setTool('http:https://api.test', 'always_allow');
+		void perms.setTool('curl', 'blocked');
+		expect(perms.resolve('curl', { url: 'https://api.test/x' })).toBe('blocked');
+	});
+
+	it('sends an Obsidian verb that only reads to the read-only row', () => {
+		const { perms } = shellManager();
+		void perms.setGroup('read', 'always_allow');
+		expect(perms.resolve('obsidian', { verb: 'search', flags: {} })).toBe('always_allow');
+		// A verb that changes something still follows the obsidian row, which asks by default.
+		expect(perms.resolve('obsidian', { verb: 'create', flags: {} })).toBe('approval_required');
+	});
+
+	it('never lets a verb that cannot be taken back skip approval', () => {
+		const { perms } = shellManager();
+		void perms.setTool('obsidian', 'always_allow');
+		void perms.setTool('obsidian:delete', 'always_allow');
+		expect(perms.resolve('obsidian', { verb: 'delete', flags: {} })).toBe('approval_required');
+		expect(perms.canAlwaysAllow('obsidian:delete')).toBe(false);
+		expect(perms.resolve('obsidian', { verb: 'search', flags: {} })).toBe('always_allow');
+	});
+
+	it('gives a named command its own key', () => {
+		const { perms } = shellManager();
+		void perms.setTool('obsidian', 'always_allow');
+		void perms.setTool('command:app:reload', 'blocked');
+		expect(perms.resolve('obsidian', { verb: 'command', flags: { id: 'app:reload' } })).toBe(
+			'blocked',
+		);
+		expect(perms.resolve('obsidian', { verb: 'command', flags: { id: 'other:x' } })).toBe(
+			'always_allow',
+		);
 	});
 });

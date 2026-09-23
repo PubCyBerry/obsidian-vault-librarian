@@ -4,16 +4,15 @@ import { PromptManager } from './agent/prompt';
 import { ContextManager } from './context/context-manager';
 import { McpManager } from './mcp/mcp-manager';
 import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
-import { scriptGroup, ToolPermissionManager } from './permissions/tool-permission-manager';
+import { shellGroup, ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
-import { createRunJsTool } from './script/run-js';
 import { replay, SessionManager } from './session/session-manager';
 import { LibrarianSettingTab } from './settings/settings-tab';
+import { shellPermissionKey } from './shell/commands';
+import { createShellTool, ShellSession } from './shell/shell-tool';
 import { catalogOf, SkillManager, skillGroups, skillKey } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
-import { commandPermissionKey, createCommandTools } from './tools/commands';
-import { createHttpRequestTool, httpPermissionKey } from './tools/http-request';
 import { createVaultTools, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { type LibrarianSettings, mergeSettings } from './types';
@@ -32,6 +31,9 @@ export default class LibrarianPlugin extends Plugin {
 	skills!: SkillManager;
 	registry!: ToolRegistry;
 	controller!: AgentController;
+	shell!: ShellSession;
+	/** Numbers each thing the shell asks about, so concurrent approvals keep separate cards. */
+	private shellActions = 0;
 
 	async onload() {
 		this.settings = mergeSettings(await this.loadData());
@@ -63,30 +65,31 @@ export default class LibrarianPlugin extends Plugin {
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
 			() => [
-				scriptGroup(this.settings),
+				shellGroup(this.settings),
 				...this.mcp.groups(),
 				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
 				...skillGroups(this.skills.skills),
 			],
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
-				// One key per site and per command, so Always allow covers exactly that target.
-				if (tool === 'http_request') return httpPermissionKey(args);
-				if (tool === 'run_command') return commandPermissionKey(args);
+				// One key per site, verb and command, so Always allow covers exactly that target.
+				const shellKey = shellPermissionKey(tool, args);
+				if (shellKey) return shellKey;
 				if (tool !== 'read') return null;
 				const path = (args as { path?: unknown } | null)?.path;
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
 				return skill ? skillKey(skill.name) : null;
 			},
 		);
+		const mutation = {
+			before: (id: string, path: string) => this.controller.beforeMutation(id, path),
+			after: (id: string, path: string) => this.controller.afterMutation(id, path),
+		};
 		const vaultDeps: ToolDeps = {
 			app: this.app,
 			settings: () => this.settings,
 			hidden: this.skills.hiddenReader(),
-			mutation: {
-				before: (id, path) => this.controller.beforeMutation(id, path),
-				after: (id, path) => this.controller.afterMutation(id, path),
-			},
+			mutation,
 		};
 		const webdavTools = () =>
 			this.webdavOn()
@@ -101,15 +104,20 @@ export default class LibrarianPlugin extends Plugin {
 							}),
 					})
 				: [];
-		const scriptTools = () => [
-			createHttpRequestTool({ settings: () => this.settings }),
-			...createCommandTools(this.app),
-			createRunJsTool({
-				toolNames: () => this.registry.visible().map((t) => t.name),
-				callTool: (id, name, args, signal, onWaiting) =>
-					this.controller.runNestedTool(id, name, args, signal, onWaiting),
-			}),
-		];
+		this.shell = new ShellSession({
+			app: this.app,
+			resultLimit: () => this.settings.toolResultMaxChars,
+			gate: async (name, args, signal) => {
+				const gate = await this.controller.gateShellAction(
+					`${name}-${++this.shellActions}`,
+					name,
+					args,
+					signal,
+				);
+				if (!gate.ok) throw new Error(gate.reason);
+			},
+			snapshot: mutation,
+		});
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
@@ -117,7 +125,7 @@ export default class LibrarianPlugin extends Plugin {
 				// Built fresh each time so descriptions carry the current default limits from settings.
 				[
 					...createVaultTools(vaultDeps),
-					...scriptTools(),
+					createShellTool(this.shell),
 					...webdavTools(),
 					...this.mcp.tools(),
 				].map((t) => ({
@@ -153,7 +161,10 @@ export default class LibrarianPlugin extends Plugin {
 						),
 		});
 		this.controller.subscribe((e) => {
-			if (e.type === 'session') this.registry.reset();
+			if (e.type !== 'session') return;
+			this.registry.reset();
+			// A new conversation starts with empty scratch space and no leftover shell variables.
+			this.shell.reset();
 		});
 		// Leaving the app freezes the connection on a phone; the controller waits for the return.
 		this.registerDomEvent(document, 'visibilitychange', () =>
