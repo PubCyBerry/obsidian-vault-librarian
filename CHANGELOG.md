@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.2.0...2.3.0) (2026-09-23)
+
+
+### Features
+
+* manage sessions from the settings, and show the four token counts ([3a382bd](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/3a382bd3b825fb1ddc2c42a5ea6c73556e1eb733))
+* read the AGENTS.md of each folder the agent reaches ([368d530](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/368d5304362045548ac3d96e33dabe96c36b9d90))
+
 ## [2.2.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.1.0...2.2.0) (2026-09-23)
 
 
