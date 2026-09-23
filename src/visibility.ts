@@ -2,7 +2,11 @@
  * Whether the app has been sent to the background, shared by everything that talks to the network.
  * A phone blocks requests started there (Android 15) and cuts open sockets once the app is frozen
  * (Android 14, ten seconds in), so a failure while away says nothing about the server or CORS.
+ * Only phones and tablets count: a desktop window keeps its network while another window covers
+ * it, such as the settings window of Obsidian 1.13, so there a failure means what it says.
  */
+
+import { Platform } from 'obsidian';
 
 /** Told to the model when a call that is not safe to repeat broke while the app was away. */
 export const AWAY_UNKNOWN =
@@ -12,7 +16,11 @@ let lastHiddenAt = 0;
 const waiters = new Set<() => void>();
 
 export function appIsHidden(): boolean {
-	return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+	return (
+		Platform.isMobile &&
+		typeof document !== 'undefined' &&
+		document.visibilityState === 'hidden'
+	);
 }
 
 /** The plugin feeds the document's `visibilitychange` here. */

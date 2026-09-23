@@ -7,6 +7,7 @@ import type { SessionEvent } from '../src/session/session-types';
 import { createVaultTools } from '../src/tools/registry';
 import { DEFAULT_SETTINGS, mergeSettings, newModel, newProvider } from '../src/types';
 import { FakeApp } from './fake-app';
+import { Platform } from './obsidian-stub';
 import { scriptedStream } from './scripted-stream';
 
 function ev(type: string, extra: Record<string, unknown> = {}): SessionEvent {
@@ -319,11 +320,13 @@ describe('compaction (LIB-TEST-065, LIB-TEST-066)', () => {
 	it('keeps the history when the summary failed while the app was away (LIB-TEST-148)', async () => {
 		const g = globalThis as unknown as { document?: unknown };
 		g.document = { visibilityState: 'hidden' };
+		Platform.isMobile = true;
 		try {
 			const { cm } = manager({ preserveRecentTurns: 1 });
 			const { streamFn } = scriptedStream([{ stopReason: 'error', errorMessage: 'down' }]);
 			expect(await cm.compact(longConversation(3), piModel, streamFn)).toBeNull();
 		} finally {
+			Platform.isMobile = false;
 			delete g.document;
 		}
 	});

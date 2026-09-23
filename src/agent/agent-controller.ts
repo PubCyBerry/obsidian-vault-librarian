@@ -236,7 +236,8 @@ export class AgentController {
 
 	/** Keeps the screen awake while a turn runs, so the phone does not sleep the app mid-answer. */
 	private async acquireWakeLock(): Promise<void> {
-		if (!this.agent || this.wakeLock || appIsHidden()) return;
+		// A desktop window that hides loses its lock without counting as away, so ask again then.
+		if (!this.agent || (this.wakeLock && !this.wakeLock.released) || appIsHidden()) return;
 		try {
 			const lock = await navigator.wakeLock.request('screen');
 			// The turn may have ended while the request was in flight.

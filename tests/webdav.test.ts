@@ -12,6 +12,7 @@ import {
 } from '../src/webdav/webdav-client';
 import { createWebDavTools } from '../src/webdav/webdav-tools';
 import { FakeApp } from './fake-app';
+import { Platform } from './obsidian-stub';
 
 // The plugin parses multistatus with the platform's DOMParser; Node has none, jsdom lends one.
 (globalThis as unknown as { DOMParser: unknown }).DOMParser = new JSDOM().window.DOMParser;
@@ -284,10 +285,12 @@ describe('requests broken while the app was away (LIB-TEST-153)', () => {
 	const g = globalThis as unknown as { document?: { visibilityState: string } };
 	const set = (state: string) => {
 		g.document = { visibilityState: state };
+		Platform.isMobile = true;
 		noteVisibility();
 	};
 	afterEach(() => {
 		delete g.document;
+		Platform.isMobile = false;
 		noteVisibility();
 	});
 

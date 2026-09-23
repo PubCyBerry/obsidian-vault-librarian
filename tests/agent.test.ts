@@ -20,6 +20,7 @@ import { SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
 import { FakeApp } from './fake-app';
+import { Platform } from './obsidian-stub';
 import { type ScriptedTurn, scriptedStream } from './scripted-stream';
 
 interface Harness {
@@ -676,11 +677,14 @@ function fakeVisibility() {
 	const had = 'document' in g;
 	const previous = g.document;
 	g.document = { visibilityState: 'visible' };
+	// Only phones and tablets count a hidden page as away.
+	Platform.isMobile = true;
 	return {
 		set(state: 'visible' | 'hidden') {
 			g.document = { visibilityState: state };
 		},
 		restore() {
+			Platform.isMobile = false;
 			if (had) g.document = previous;
 			else delete g.document;
 		},

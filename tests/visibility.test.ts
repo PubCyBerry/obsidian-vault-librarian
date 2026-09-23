@@ -1,18 +1,29 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { abortable, noteVisibility, wasHiddenSince, whenVisible } from '../src/visibility';
+import { Platform } from './obsidian-stub';
 
 const g = globalThis as unknown as { document?: { visibilityState: string } };
 const set = (state: string) => {
 	g.document = { visibilityState: state };
+	Platform.isMobile = true;
 	noteVisibility();
 };
 
 afterEach(() => {
 	delete g.document;
+	Platform.isMobile = false;
 	noteVisibility();
 });
 
 describe('visibility (LIB-TEST-148)', () => {
+	it('LIB-TEST-215: a covered desktop window is not away', async () => {
+		const before = Date.now();
+		g.document = { visibilityState: 'hidden' };
+		noteVisibility();
+		expect(wasHiddenSince(before)).toBe(false);
+		await expect(whenVisible()).resolves.toBeUndefined();
+	});
+
 	it('remembers a trip to the background that started after the request', async () => {
 		set('visible');
 		const before = Date.now();

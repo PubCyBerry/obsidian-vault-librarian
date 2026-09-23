@@ -14,7 +14,7 @@ import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider } from '../src/types';
 import { noteVisibility } from '../src/visibility';
 import { FakeApp } from './fake-app';
-import { requestUrlMock } from './obsidian-stub';
+import { Platform, requestUrlMock } from './obsidian-stub';
 
 describe('connection check', () => {
 	it('uses requestUrl for every transport and reports HTTP and network errors', async () => {
@@ -251,12 +251,14 @@ describe('auto transport while the app is away (LIB-TEST-148)', () => {
 	afterEach(() => {
 		delete g.window;
 		delete g.document;
+		Platform.isMobile = false;
 		noteVisibility();
 		requestUrlMock.impl = null;
 	});
 
 	async function failOnce(visibility: 'hidden' | 'visible') {
 		g.document = { visibilityState: visibility };
+		Platform.isMobile = true;
 		noteVisibility();
 		g.window = {
 			fetch: async () => {
