@@ -23,8 +23,8 @@ export interface Touched {
 	folders: string[];
 }
 
-/** Reads `<folder>/AGENTS.md`, or null when there is none. */
-export type AgentsMdReader = (folder: string) => Promise<string | null>;
+/** Reads `<folder>/AGENTS.md`, or null when there is none. The signal is the tool call's. */
+export type AgentsMdReader = (folder: string, signal?: AbortSignal) => Promise<string | null>;
 
 /** `a/b/c.md` gives `a`, `a/b`; a folder path keeps its last segment. */
 export function folderChain(path: string, isFolder: boolean): string[] {
@@ -90,8 +90,12 @@ export class NestedAgentsMd {
 		this.seen.clear();
 	}
 
-	/** The blocks to append to this call's result, or an empty string. */
-	async blockFor(tool: string, args: unknown): Promise<string> {
+	/**
+	 * The blocks to append to this call's result, or an empty string. After Stop nothing is read:
+	 * a storage read can otherwise wait for the app to come back long after the run was stopped.
+	 */
+	async blockFor(tool: string, args: unknown, signal?: AbortSignal): Promise<string> {
+		if (signal?.aborted) return '';
 		const found: { key: string; label: string; text: string }[] = [];
 		for (const { place, folders } of touchedBy(tool, args, this.deps.activePath())) {
 			const read = place === 'vault' ? this.deps.vault : this.deps.storage();
@@ -101,7 +105,12 @@ export class NestedAgentsMd {
 				if (this.seen.has(key)) continue;
 				// Marked before the read, so calls running side by side do not both deliver it.
 				this.seen.add(key);
-				const text = (await read(folder).catch(() => null))?.trim();
+				const text = (await read(folder, signal).catch(() => null))?.trim();
+				// A read Stop cut short delivered nothing; the next visit tries again.
+				if (signal?.aborted) {
+					this.seen.delete(key);
+					continue;
+				}
 				if (!text) continue;
 				const file = folder ? `${folder}/AGENTS.md` : 'AGENTS.md';
 				found.push({ key, label: place === 'vault' ? file : `webdav:/${file}`, text });

@@ -130,4 +130,26 @@ describe('delivering a folder AGENTS.md (LIB-TEST-180)', () => {
 			'&lt;agents_md path="a">x&lt;/agents_md> and &lt;agents_mdx>',
 		);
 	});
+
+	it('LIB-TEST-202: reads nothing after Stop, and reads again what Stop cut short', async () => {
+		let reads = 0;
+		const stop = new AbortController();
+		const n = new NestedAgentsMd({
+			vault: async () => null,
+			storage: () => async () => {
+				reads++;
+				// The first read is the one running when the user presses Stop.
+				if (reads === 1) {
+					stop.abort();
+					throw new Error('Operation aborted');
+				}
+				return 'storage rules';
+			},
+			activePath: () => null,
+		});
+		expect(await n.blockFor('webdav_ls', { path: '' }, stop.signal)).toBe('');
+		expect(await n.blockFor('webdav_ls', { path: '' }, stop.signal)).toBe('');
+		expect(reads).toBe(1);
+		expect(await n.blockFor('webdav_ls', { path: '' })).toContain('storage rules');
+	});
 });

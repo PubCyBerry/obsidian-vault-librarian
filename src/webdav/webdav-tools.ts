@@ -23,8 +23,11 @@ import { joinPath, parentOf, storagePath, type WebDavClient } from './webdav-cli
 export interface WebDavToolDeps {
 	app: App;
 	settings: () => LibrarianSettings;
-	/** Built from the current settings and this device's password; throws when it is not set up. */
-	client: () => WebDavClient;
+	/**
+	 * Built from the current settings and this device's password; throws when it is not set up.
+	 * Given the call's signal, so Stop ends the call even while a request or the app is stuck.
+	 */
+	client: (signal?: AbortSignal) => WebDavClient;
 	mutation?: MutationHooks;
 }
 
@@ -97,7 +100,7 @@ function lsTool(deps: WebDavToolDeps): AgentTool {
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
 			const path = storagePath(params.path ?? '');
-			const entries = await deps.client().list(path);
+			const entries = await deps.client(signal).list(path);
 			return ok({
 				path,
 				...pageOf(entries, params.offset ?? 0, params.limit ?? deps.settings().listLimit),
@@ -128,7 +131,7 @@ function readTool(deps: WebDavToolDeps): AgentTool {
 			throwIfAborted(signal);
 			const path = nonRoot(storagePath(params.path), 'file');
 			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
-			const { data } = await deps.client().get(path);
+			const { data } = await deps.client(signal).get(path);
 			return ok({
 				path,
 				...lineWindow(
@@ -160,7 +163,7 @@ function writeTool(deps: WebDavToolDeps): AgentTool {
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
 			const path = nonRoot(storagePath(params.path), 'file');
-			const client = deps.client();
+			const client = deps.client(signal);
 			const existing = await client.stat(path);
 			if (existing?.type === 'folder') throw new Error(`A folder exists at ${path}`);
 			if (existing && !params.overwrite)
@@ -198,7 +201,7 @@ function editTool(deps: WebDavToolDeps): AgentTool {
 			throwIfAborted(signal);
 			const path = nonRoot(storagePath(params.path), 'file');
 			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
-			const client = deps.client();
+			const client = deps.client(signal);
 			const { data, etag } = await client.get(path);
 			let text: string;
 			try {
@@ -226,7 +229,7 @@ function mkdirTool(deps: WebDavToolDeps): AgentTool {
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
 			const path = nonRoot(storagePath(params.path), 'folder');
-			return ok({ path, created: await deps.client().mkdir(path) });
+			return ok({ path, created: await deps.client(signal).mkdir(path) });
 		},
 	});
 }
@@ -248,7 +251,7 @@ function moveTool(deps: WebDavToolDeps): AgentTool {
 			const to = nonRoot(storagePath(params.to), 'file or folder');
 			if (to === from || to.startsWith(`${from}/`))
 				throw new Error(`Cannot move ${from} onto itself or into itself`);
-			const client = deps.client();
+			const client = deps.client(signal);
 			const source = await client.stat(from);
 			if (!source) throw new Error(`Not found: ${from}`);
 			await client.mkdir(parentOf(to));
@@ -271,7 +274,7 @@ function deleteTool(deps: WebDavToolDeps): AgentTool {
 			throwIfAborted(signal);
 			const path = storagePath(params.path);
 			if (!path) throw new Error('The storage root cannot be deleted.');
-			const client = deps.client();
+			const client = deps.client(signal);
 			const target = await client.stat(path);
 			if (!target) throw new Error(`Not found: ${path}`);
 			await client.remove(path, target.type === 'folder');
@@ -303,7 +306,7 @@ function downloadTool(deps: WebDavToolDeps): AgentTool {
 				configDir: app.vault.configDir,
 			});
 			rejectHiddenWrite(app, vaultPath);
-			const client = deps.client();
+			const client = deps.client(signal);
 			const source = await client.stat(path);
 			if (!source) throw new Error(`Not found: ${path || '/'}`);
 			const pairs: { from: string; to: string }[] = [];
@@ -378,7 +381,7 @@ function uploadTool(deps: WebDavToolDeps): AgentTool {
 				configDir: app.vault.configDir,
 			});
 			const path = storagePath(params.path);
-			const client = deps.client();
+			const client = deps.client(signal);
 			const indexed = vaultPath
 				? app.vault.getAbstractFileByPath(vaultPath)
 				: app.vault.getRoot();

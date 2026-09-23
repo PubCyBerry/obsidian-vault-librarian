@@ -1,5 +1,5 @@
 import { type RequestUrlParam, type RequestUrlResponse, requestUrl } from 'obsidian';
-import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
+import { AWAY_UNKNOWN, abortable, wasHiddenSince, whenVisible } from '../visibility';
 
 export const WEBDAV_SECRET_ID = 'vault-librarian-webdav';
 export const NO_PASSWORD = 'No WebDAV password on this device. Enter it in Settings.';
@@ -22,6 +22,8 @@ export interface WebDavConfig {
 	password: string | null;
 	/** Obsidian's `requestUrl` unless a test swaps it. */
 	request?: DavRequest;
+	/** The tool call's signal: Stop ends every request and wait this client is in. */
+	signal?: AbortSignal;
 }
 
 const DAV = 'DAV:';
@@ -159,6 +161,7 @@ export class WebDavClient {
 	private readonly root: string;
 	private readonly auth: string | null;
 	private readonly request: DavRequest;
+	private readonly signal?: AbortSignal;
 
 	constructor(config: WebDavConfig) {
 		this.root = config.url.trim().replace(/\/+$/, '');
@@ -166,6 +169,7 @@ export class WebDavClient {
 		if (config.username && config.password === null) throw new Error(NO_PASSWORD);
 		this.auth = config.username ? basicAuth(config.username, config.password ?? '') : null;
 		this.request = config.request ?? ((req) => requestUrl(req));
+		this.signal = config.signal;
 	}
 
 	url(path: string, folder = false): string {
@@ -198,16 +202,22 @@ export class WebDavClient {
 			throw: false,
 		};
 		const startedAt = Date.now();
+		// requestUrl takes no signal, so Stop is raced against it and against the wait for the app.
+		// After Stop nothing new is sent.
+		const send = () =>
+			this.signal?.aborted
+				? Promise.reject(new Error('Operation aborted'))
+				: abortable(this.request(req), this.signal);
 		let response: RequestUrlResponse;
 		let resent = false;
 		try {
-			response = await this.request(req);
+			response = await send();
 		} catch (error) {
-			if (!wasHiddenSince(startedAt)) throw error;
+			if (this.signal?.aborted || !wasHiddenSince(startedAt)) throw error;
 			const message = error instanceof Error ? error.message : String(error);
 			if (method === 'MOVE') throw new Error(`${message}. ${AWAY_UNKNOWN}`);
-			await whenVisible();
-			response = await this.request(req);
+			await whenVisible(this.signal);
+			response = await send();
 			resent = true;
 		}
 		if (opts.ok.includes(response.status)) return response;

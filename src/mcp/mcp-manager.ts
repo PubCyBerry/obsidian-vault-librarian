@@ -363,7 +363,7 @@ export class McpManager {
 								throw new Error(
 									`${error instanceof Error ? error.message : String(error)}. ${AWAY_UNKNOWN}`,
 								);
-							await whenVisible();
+							await whenVisible(signal);
 							if (signal?.aborted) throw error;
 							result = await call();
 						}

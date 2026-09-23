@@ -98,12 +98,14 @@ export default class LibrarianPlugin extends Plugin {
 			hidden: this.skills.hiddenReader(),
 			mutation,
 		};
-		// A fresh client per call picks up changed settings and this device's password.
-		const webdavClient = () =>
+		// A fresh client per call picks up changed settings and this device's password, and the
+		// call's signal, so Stop ends it.
+		const webdavClient = (signal?: AbortSignal) =>
 			new WebDavClient({
 				url: this.settings.webdav.url,
 				username: this.settings.webdav.username,
 				password: this.secrets.get(WEBDAV_SECRET_ID),
+				signal,
 			});
 		const webdavTools = () =>
 			this.webdavOn() ? createWebDavTools({ ...vaultDeps, client: webdavClient }) : [];
@@ -119,8 +121,8 @@ export default class LibrarianPlugin extends Plugin {
 			},
 			storage: () =>
 				this.webdavOn()
-					? async (folder) => {
-							const { data } = await webdavClient().get(
+					? async (folder, signal) => {
+							const { data } = await webdavClient(signal).get(
 								folder ? `${folder}/AGENTS.md` : 'AGENTS.md',
 							);
 							return new TextDecoder().decode(data);

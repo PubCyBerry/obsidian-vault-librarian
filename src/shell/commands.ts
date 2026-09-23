@@ -172,8 +172,9 @@ async function fetchIt(
 			const away = wasHiddenSince(startedAt);
 			// The app was frozen mid-request: repeat it once, but only when repeating is safe.
 			if (!away || !IDEMPOTENT.has(args.method)) return fail(error, args, away);
-			await whenVisible();
 			try {
+				// Stop ends this wait too, even one that starts after Stop released the others.
+				await whenVisible(deps.signal);
 				response = await send();
 			} catch (retryError) {
 				return fail(retryError, args, away);

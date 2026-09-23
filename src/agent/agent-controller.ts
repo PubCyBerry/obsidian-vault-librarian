@@ -655,13 +655,14 @@ export class AgentController {
 				toolExecution: this.deps.settings().toolExecution,
 				beforeToolCall: (ctx, signal) =>
 					this.beforeToolCall(ctx.toolCall.id, ctx.toolCall.name, ctx.args, signal),
-				afterToolCall: (ctx) =>
+				afterToolCall: (ctx, signal) =>
 					this.afterToolCall(
 						ctx.toolCall.id,
 						ctx.toolCall.name,
 						ctx.args,
 						ctx.result.content,
 						ctx.isError,
+						signal,
 					),
 				shouldStopAfterTurn: (ctx, signal) =>
 					signal?.aborted === true || this.shouldStopAfterTurn(ctx.toolResults.length),
@@ -937,6 +938,7 @@ export class AgentController {
 		args: unknown,
 		content: readonly { type: string }[],
 		isError: boolean,
+		signal?: AbortSignal,
 	) {
 		// Only Librarian writes the AGENTS.md tag; one inside a note or a page must not pass for it.
 		let text = neutralizeTags(textOf(content));
@@ -949,7 +951,7 @@ export class AgentController {
 		}
 		// Appended after the cut, so a long result never pushes the folder's rules out.
 		if (this.deps.settings().useVaultAgentsMd && this.deps.nestedAgentsMd)
-			text += await this.deps.nestedAgentsMd.blockFor(name, args);
+			text += await this.deps.nestedAgentsMd.blockFor(name, args, signal);
 		const key = `${name}:${JSON.stringify(args ?? {})}`;
 		if (isError) this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
 		else this.failures.delete(key);

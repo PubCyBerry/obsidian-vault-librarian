@@ -158,12 +158,13 @@ let dav: FakeDav;
 let app: FakeApp;
 let hooks: { before: string[]; after: string[] };
 
-function client(password: string | null = 'p') {
+function client(password: string | null = 'p', signal?: AbortSignal) {
 	return new WebDavClient({
 		url: BASE,
 		username: 'u',
 		password,
 		request: (r) => dav.handle(r),
+		signal,
 	});
 }
 
@@ -171,7 +172,7 @@ function tools(password: string | null = 'p') {
 	return createWebDavTools({
 		app: app as unknown as App,
 		settings: () => mergeSettings({}),
-		client: () => client(password),
+		client: (signal) => client(password, signal),
 		mutation: {
 			before: async (_id, path) => void hooks.before.push(path),
 			after: async (_id, path) => void hooks.after.push(path),
@@ -313,6 +314,45 @@ describe('requests broken while the app was away (LIB-TEST-153)', () => {
 			/unknown whether the server ran this call/,
 		);
 		expect(dav.requests.filter((r) => r.method === 'MOVE').length).toBe(1);
+	});
+
+	/** webdav_ls over a client whose every request goes to `request`. */
+	const lsWith = (request: () => Promise<never>) =>
+		createWebDavTools({
+			app: app as unknown as App,
+			settings: () => mergeSettings({}),
+			client: (signal) =>
+				new WebDavClient({ url: BASE, username: 'u', password: 'p', request, signal }),
+		}).find((t) => t.name === 'webdav_ls')!;
+
+	it('LIB-TEST-202: Stop ends a call whose request never answers', async () => {
+		const stop = new AbortController();
+		const call = lsWith(() => new Promise<never>(() => {})).execute(
+			'call-1',
+			{} as never,
+			stop.signal,
+		);
+		setTimeout(() => stop.abort(), 10);
+		await expect(call).rejects.toThrow('Operation aborted');
+	});
+
+	it('LIB-TEST-202: Stop ends a call waiting for the app, and nothing is sent again', async () => {
+		set('hidden');
+		let sent = 0;
+		const stop = new AbortController();
+		const call = lsWith(async () => {
+			sent++;
+			throw new Error('net::ERR_CONNECTION_REFUSED');
+		}).execute('call-1', {} as never, stop.signal);
+		await new Promise((r) => setTimeout(r, 10));
+		// Failed once and now waits for the app, which stays in the background.
+		expect(sent).toBe(1);
+		stop.abort();
+		await expect(call).rejects.toThrow('Operation aborted');
+		expect(sent).toBe(1);
+		// A client made after Stop sends nothing at all.
+		await expect(client('p', stop.signal).list('')).rejects.toThrow('Operation aborted');
+		expect(dav.requests.length).toBe(0);
 	});
 
 	it('counts a resent delete that finds nothing as done', async () => {
