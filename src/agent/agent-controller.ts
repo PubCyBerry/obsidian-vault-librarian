@@ -185,7 +185,7 @@ export class AgentController {
 	events: IndexedEvent[] = [];
 	usage: ContextUsage | null = null;
 	pendingApproval: ApprovalRequest | null = null;
-	/** Serializes the permission gate of calls made from scripts. */
+	/** Serializes the approvals a shell command asks for while it runs. */
 	private nestedGate: Promise<unknown> = Promise.resolve();
 	/** Provider and model the current session runs on; may differ from the settings default. */
 	selection: ActiveSelection | undefined;
@@ -788,9 +788,10 @@ export class AgentController {
 	}
 
 	/**
-	 * Permission and approval for one thing a shell command is about to do: a request, an Obsidian
-	 * verb, a vault write. It leaves the same approval events as a call from the model, but no
-	 * conversation events: the answer goes back to the shell, not into the model's context.
+	 * Permission and approval for a note a shell command is about to change, judged as a `write`.
+	 * Requests and Obsidian commands do not come here: approving the `bash` call covered them. It
+	 * leaves the same approval events as a call from the model, but no conversation events: the
+	 * answer goes back to the shell, not into the model's context.
 	 */
 	async gateShellAction(
 		callId: string,
@@ -826,7 +827,7 @@ export class AgentController {
 		}
 	}
 
-	/** Permission, approval and the executable check for one call, from the model or a script. */
+	/** Permission, approval and the executable check for one call, from the model or the shell. */
 	private async authorize(
 		toolCallId: string,
 		name: string,

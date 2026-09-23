@@ -101,13 +101,13 @@ export class ToolPermissionManager {
 	 * file steers every later turn.
 	 */
 	resolve(tool: string, args: unknown): ToolPermission {
-		// A blocked tool row wins over any narrower key such as one site or one command.
+		// A blocked tool row wins over a narrower key, such as the key of a skill being read.
 		if (this.get(tool) === 'blocked') return 'blocked';
 		const key = this.permissionKey(tool, args);
 		const stored = this.get(key);
 		if (stored === 'blocked') return 'blocked';
-		// The narrower key is checked too: an Obsidian verb that cannot be taken back always asks,
-		// even though its tool row could be set to Always allow.
+		// A tool a server marks destructive always asks, even if its row says Always allow. The
+		// narrower key gets the same check.
 		if (!this.canAlwaysAllow(tool) || !this.canAlwaysAllow(key)) return 'approval_required';
 		if (tool === 'write' || tool === 'edit') {
 			const path = (args as { path?: unknown } | null)?.path;

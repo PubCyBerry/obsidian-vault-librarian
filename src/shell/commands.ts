@@ -6,7 +6,7 @@ import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
 
 export const NO_CLI = 'obsidian: the command registry is not available in this version';
 
-/** Verbs that reach the whole app or the developer tools; the permission rows could not hold them. */
+/** Verbs that reach the whole app or the developer tools, making every permission meaningless. */
 const WITHHELD = (verb: string) =>
 	verb === 'eval' || verb === 'devtools' || verb.startsWith('dev:');
 
