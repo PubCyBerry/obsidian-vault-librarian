@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.6.0...2.6.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* let Stop end storage calls that wait for a request or for the app to return ([72d0096](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/72d009684d3a4582a7e608bc081149fb5c5fd176))
+
 ## [2.6.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.5.0...2.6.0) (2026-09-23)
 
 
