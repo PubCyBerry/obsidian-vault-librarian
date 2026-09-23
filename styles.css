@@ -49,10 +49,25 @@ body {
 	margin-bottom: var(--size-4-2);
 }
 
+/* The reason on the left and its button on the right; when they do not fit, the button takes a
+   line of its own and still ends at the right edge. */
 .librarian-key-banner-row {
 	display: flex;
+	align-items: center;
 	gap: var(--size-4-2);
 	flex-wrap: wrap;
+}
+
+.librarian-key-banner-row > span {
+	flex: 1 1 12em;
+}
+
+.librarian-key-banner-row > button {
+	margin-left: auto;
+}
+
+.librarian-key-banner-row + .librarian-key-banner-row {
+	margin-top: var(--size-4-2);
 }
 
 .librarian-key-banner-row input {
@@ -462,8 +477,11 @@ body {
 	margin-top: var(--size-4-2);
 }
 
+/* The buttons share each line they are on, so a narrow card shows two even rows instead of two
+   short buttons and a third left alone under them. */
 .librarian-approval-buttons button {
 	min-height: 44px;
+	flex: 1 1 auto;
 }
 
 /* Composer */
@@ -531,12 +549,34 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	transition-timing-function: cubic-bezier(0.12, 0, 0.44, 0.99);
 }
 
-.librarian-activity {
+/* What the agent is doing, one line above the composer box. The line keeps its height while
+   hidden, because showing it at every turn start and dropping it at every end made the messages
+   above jump by a line. A long notice ends in an ellipsis rather than taking a second line. */
+.librarian .librarian-activity {
+	display: flex;
+	align-items: center;
+	height: var(--size-4-5);
+	min-width: 0;
+}
+
+.librarian .librarian-activity.is-hidden {
+	display: flex;
+	visibility: hidden;
+}
+
+.librarian-activity-line {
 	display: flex;
 	align-items: center;
 	gap: var(--size-2-2);
+	min-width: 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+}
+
+.librarian-activity-line > span:last-child {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .librarian-spinner {
@@ -1093,11 +1133,34 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	font-weight: var(--font-semibold);
 }
 
-/* With the execution and listing choices shown, the controls wrap instead of squeezing the name. */
+/* With the execution and listing choices shown, the controls wrap instead of squeezing the name.
+   On a line of their own (a phone, a long name) they still end at the right edge like the rows
+   around them. */
 .librarian-tool-row .setting-item-control,
 .librarian-skill .setting-item-control {
 	flex-wrap: wrap;
 	justify-content: flex-end;
+	margin-left: auto;
+}
+
+/* Obsidian fits a dropdown to the chosen value, so Set all read Mixed in one group and Ask first in
+   the next at two widths. Sized for the longest choice, every one of them has the same width. */
+.setting-item.librarian-bulk-row select.dropdown {
+	width: auto;
+}
+
+/* A button that can say several things keeps the width of its longest label (steadyLabel). */
+.librarian-steady-label {
+	display: inline-grid;
+	place-items: center;
+}
+
+.librarian-steady-label > span {
+	grid-area: 1 / 1;
+}
+
+.librarian-steady-label > .is-spare {
+	visibility: hidden;
 }
 
 /* An address or a folder path gets the room of the row instead of a short fixed input. */
@@ -1171,21 +1234,27 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-accent);
 }
 
-/* Segmented control: icon or text radios in one bordered strip. */
+/* Segmented control: icon or text radios in one bordered strip. The grid gives every option the
+   width of the widest, so off and medium sit in equal cells. */
 .librarian-segmented {
-	display: inline-flex;
+	display: inline-grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 1fr;
 	flex: 0 0 auto;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-m);
 	overflow: hidden;
 }
 
+/* The strip, borders included, is as tall as Obsidian's inputs, so it lines up with the dropdown
+   and the buttons in the rows around it. */
 .librarian-segment {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	min-height: 36px;
-	min-width: 36px;
+	min-height: calc(var(--input-height) - 2px);
+	/* Three of these come to about the width of a Set all dropdown sized for Always allow. */
+	min-width: calc(var(--input-height) + var(--size-4-2));
 	padding: 0 var(--size-4-2);
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
@@ -1227,9 +1296,8 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	cursor: not-allowed;
 }
 
-/* A finger needs 44px on phones and tablets alike. */
+/* A finger needs 44px on phones and tablets alike; Obsidian's inputs there are that tall already. */
 body.is-mobile .librarian-segment {
-	min-height: 44px;
 	min-width: 44px;
 }
 
@@ -1255,11 +1323,17 @@ body.is-phone .modal .setting-item.librarian-bulk-row {
 }
 
 /* The server's switch and buttons, and a Set all dropdown (which the long note beside it would
-   squeeze to a few letters), take the line under the name. */
-body.is-phone .modal .setting-item.librarian-mcp-server .setting-item-control,
-body.is-phone .modal .setting-item.librarian-bulk-row .setting-item-control {
+   squeeze to a few letters), take the line under the name. The group class outranks app.css's
+   phone list rule (0,6,0), which otherwise keeps the control as narrow as its content. */
+body.is-phone .modal .setting-group .setting-item.librarian-mcp-server .setting-item-control,
+body.is-phone .modal .setting-group .setting-item.librarian-bulk-row .setting-item-control {
 	flex: 1 1 100%;
 	justify-content: flex-start;
+}
+
+/* On that line the dropdown fills the width, as Obsidian's own dropdowns do on a phone. */
+body.is-phone .modal .setting-item.librarian-bulk-row select.dropdown:not(.is-measuring) {
+	flex: 1 1 auto;
 }
 
 /* A password field and its Save button: the button keeps its size so the placeholder fits. */

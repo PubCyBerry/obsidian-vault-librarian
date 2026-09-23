@@ -108,6 +108,8 @@ export interface McpServerState {
 	message?: string;
 	/** Authorization URL the server asked us to visit; shown as a Sign in button. */
 	authorizationUrl?: string;
+	/** The server refused or cannot register this app as an OAuth client, so Sign in cannot help. */
+	signInBlocked?: boolean;
 	tools: Tool[];
 }
 
@@ -178,6 +180,15 @@ function textOf(content: unknown): string {
 		.join('\n');
 }
 
+/** The SDK registers an OAuth client with a JSON body that lists its redirect addresses. */
+function isRegistration(init?: RequestInit): boolean {
+	return (
+		init?.method === 'POST' &&
+		typeof init.body === 'string' &&
+		init.body.includes('"redirect_uris"')
+	);
+}
+
 /** Tool arguments are already checked by Pi against the tool schema; skipping ajv keeps it out of the bundle. */
 const NO_VALIDATION = {
 	getValidator: () => (input: unknown) => ({
@@ -207,6 +218,8 @@ export class McpManager {
 	private readonly interactive = new Set<string>();
 	/** Servers whose saved tokens the authorization server refused on the last attempt. */
 	private readonly rejected = new Set<string>();
+	/** The HTTP status with which a server refused to register this app, such as Figma's 403. */
+	private readonly refusedRegistration = new Map<string, number>();
 	/** Desktop sign-ins listening on 127.0.0.1, with the state sent in their authorization URL. */
 	private readonly signIns = new Map<string, { loopback: Loopback; state?: string }>();
 	/**
@@ -300,9 +313,11 @@ export class McpManager {
 				});
 				return;
 			}
+			const blocked = this.signInBlocked(id, error);
 			this.setState(id, {
 				status: 'error',
-				message: error instanceof Error ? error.message : String(error),
+				message: blocked ?? (error instanceof Error ? error.message : String(error)),
+				signInBlocked: blocked !== null,
 				tools: [],
 			});
 		} finally {
@@ -450,6 +465,8 @@ export class McpManager {
 						try {
 							result = await call();
 						} catch (error) {
+							const blocked = this.signInBlocked(server.id, error);
+							if (blocked) throw new Error(blocked);
 							if (signal?.aborted || !wasHiddenSince(startedAt)) throw error;
 							// The server may have run the call before the app froze, so only a call that
 							// is safe to repeat is sent again once the app is back.
@@ -473,6 +490,24 @@ export class McpManager {
 			}
 		}
 		return out;
+	}
+
+	/**
+	 * Why no sign-in can start, in words, when the server refused to register this app (Figma
+	 * accepts only the apps in its catalog) or offers no registration at all (Google wants a client
+	 * made in its console); null for any other error. Takes the refusal the failed attempt left.
+	 */
+	private signInBlocked(id: string, error: unknown): string | null {
+		const status = this.refusedRegistration.get(id);
+		this.refusedRegistration.delete(id);
+		if (status)
+			return `The server refused to register Vault Librarian for sign-in (HTTP ${status}). It may accept only apps it has approved.`;
+		if (
+			error instanceof Error &&
+			error.message.includes('does not support dynamic client registration')
+		)
+			return 'The server does not let apps register for sign-in on their own, so Vault Librarian cannot sign in to it.';
+		return null;
 	}
 
 	private setState(id: string, state: McpServerState): void {
@@ -517,6 +552,12 @@ export class McpManager {
 			}
 		};
 		return async (url, init) => {
+			if (isRegistration(init)) {
+				const response = await send(url, init);
+				if (response.status === 401 || response.status === 403)
+					this.refusedRegistration.set(id, response.status);
+				return response;
+			}
 			const body = init?.body instanceof URLSearchParams ? init.body : null;
 			if (init?.method !== 'POST' || body?.get('grant_type') !== 'refresh_token')
 				return send(url, init);

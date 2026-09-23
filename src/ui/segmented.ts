@@ -20,6 +20,18 @@ export function segment(parent: HTMLElement, label: string, choose: () => void):
 	return el;
 }
 
+/**
+ * Writes `current` into a button that can say any of `labels`. All of them sit in one grid cell
+ * and only `current` shows, so the button is as wide as its longest label and a column of such
+ * buttons lines up whatever each one says (Sign in beside Reconnect).
+ */
+export function steadyLabel(el: HTMLElement, labels: readonly string[], current: string): void {
+	el.empty();
+	el.addClass('librarian-steady-label');
+	for (const label of new Set([current, ...labels]))
+		el.createSpan({ text: label, cls: label === current ? 'is-current' : 'is-spare' });
+}
+
 export function setChecked(el: HTMLElement, checked: boolean): void {
 	el.toggleClass('is-active', checked);
 	el.setAttr('aria-checked', String(checked));

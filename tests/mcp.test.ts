@@ -256,6 +256,49 @@ describe('requestUrl fetch shim (LIB-TEST-107)', () => {
 		});
 		expect(stream.status).toBe(405);
 	});
+
+	it('LIB-TEST-215: falls back while a desktop window is covered, as by the settings window', async () => {
+		const g = globalThis as unknown as { document?: unknown };
+		g.document = { visibilityState: 'hidden' };
+		const realFetch = globalThis.fetch;
+		// Google refuses the CORS preflight, so the browser fetch fails before any response.
+		globalThis.fetch = (async () => {
+			throw new TypeError('Failed to fetch');
+		}) as typeof fetch;
+		requestUrlMock.impl = async () => ({
+			status: 200,
+			headers: { 'content-type': 'application/json' },
+			arrayBuffer: new TextEncoder().encode('{"ok":true}').buffer,
+		});
+		try {
+			const settings = mergeSettings({});
+			const manager = new McpManager({
+				settings: () => settings,
+				save: async () => undefined,
+				secrets: {} as SecretStore,
+				permissions: new ToolPermissionManager(
+					() => settings,
+					async () => undefined,
+				),
+				clientVersion: 'test',
+				open: () => {},
+				notice: () => {},
+			});
+			const fetchFor = (
+				manager as unknown as {
+					fetchFor(id: string): (url: string, init?: RequestInit) => Promise<Response>;
+				}
+			).fetchFor('calendar');
+			const response = await fetchFor('https://calendarmcp.googleapis.com/mcp/v1', {
+				method: 'POST',
+				body: '{"jsonrpc":"2.0"}',
+			});
+			expect(await response.json()).toEqual({ ok: true });
+		} finally {
+			globalThis.fetch = realFetch;
+			delete g.document;
+		}
+	});
 });
 
 describe('MCP calls interrupted while the app is away (LIB-TEST-148)', () => {
@@ -334,5 +377,135 @@ describe('desktop sign-in through 127.0.0.1 (LIB-TEST-201)', () => {
 		const state = loop.state();
 		expect(state.startsWith('srv.')).toBe(true);
 		expect(states).toEqual([state]);
+	});
+});
+
+describe('servers that will not register this app (LIB-TEST-214)', () => {
+	const MCP = 'https://mcp.example/mcp';
+	const json = (body: unknown, status = 200) =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { 'content-type': 'application/json' },
+		});
+	const unauthorized = () =>
+		new Response('Unauthorized', {
+			status: 401,
+			headers: {
+				'www-authenticate':
+					'Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"',
+			},
+		});
+
+	/**
+	 * Figma answers the registration with a bare 403; Google has no registration endpoint and lists
+	 * its tools without a token but asks for one on every call.
+	 */
+	function fakeServer(kind: 'refuses' | 'no-registration'): typeof fetch {
+		return (async (input: string | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === MCP && init?.method === 'GET') return new Response(null, { status: 405 });
+			if (url === MCP) {
+				const message = JSON.parse(String(init?.body)) as { id?: number; method: string };
+				if (kind === 'refuses' || message.method === 'tools/call') return unauthorized();
+				if (message.method === 'initialize')
+					return json({
+						jsonrpc: '2.0',
+						id: message.id,
+						result: {
+							protocolVersion: '2025-06-18',
+							capabilities: { tools: {} },
+							serverInfo: { name: 'fake', version: '1' },
+						},
+					});
+				if (message.method === 'tools/list')
+					return json({
+						jsonrpc: '2.0',
+						id: message.id,
+						result: {
+							tools: [{ name: 'list_events', inputSchema: { type: 'object' } }],
+						},
+					});
+				return new Response(null, { status: 202 });
+			}
+			if (url.includes('oauth-protected-resource'))
+				return json({ resource: MCP, authorization_servers: ['https://auth.example'] });
+			if (url.startsWith('https://auth.example/.well-known/'))
+				return json({
+					issuer: 'https://auth.example',
+					authorization_endpoint: 'https://auth.example/authorize',
+					token_endpoint: 'https://auth.example/token',
+					response_types_supported: ['code'],
+					code_challenge_methods_supported: ['S256'],
+					...(kind === 'refuses'
+						? { registration_endpoint: 'https://auth.example/register' }
+						: {}),
+				});
+			if (url === 'https://auth.example/register')
+				return new Response('Forbidden', {
+					status: 403,
+					headers: { 'content-type': 'application/json' },
+				});
+			return new Response('not found', { status: 404 });
+		}) as typeof fetch;
+	}
+
+	function managerFor() {
+		const settings = mergeSettings({
+			mcpServers: [
+				{
+					id: 'srv',
+					name: 'Server',
+					url: MCP,
+					auth: 'oauth',
+					enabled: true,
+					toolHashes: {},
+				},
+			],
+		});
+		const secrets = new Map<string, string>();
+		return new McpManager({
+			settings: () => settings,
+			save: async () => undefined,
+			secrets: {
+				get: (id: string) => secrets.get(id) ?? null,
+				set: (id: string, value: string) => secrets.set(id, value),
+				clear: (id: string) => secrets.delete(id),
+			} as unknown as SecretStore,
+			permissions: new ToolPermissionManager(
+				() => settings,
+				async () => undefined,
+			),
+			clientVersion: 'test',
+			open: () => {},
+			notice: () => {},
+		});
+	}
+
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
+
+	it('says a refused registration in words and offers no sign-in', async () => {
+		globalThis.fetch = fakeServer('refuses');
+		const manager = managerFor();
+		await manager.connect('srv');
+		expect(manager.state('srv')).toMatchObject({
+			status: 'error',
+			message:
+				'The server refused to register Vault Librarian for sign-in (HTTP 403). It may accept only apps it has approved.',
+			signInBlocked: true,
+		});
+	});
+
+	it('says why a call fails where the server has no registration', async () => {
+		globalThis.fetch = fakeServer('no-registration');
+		const manager = managerFor();
+		await manager.connect('srv');
+		expect(manager.state('srv').status).toBe('ready');
+		const tool = manager.tools().find((t) => t.name === 'srv__list_events');
+		await expect(tool?.execute('call', {}, undefined)).rejects.toThrow(
+			'The server does not let apps register for sign-in on their own, so Vault Librarian cannot sign in to it.',
+		);
 	});
 });

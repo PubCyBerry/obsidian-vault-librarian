@@ -44,7 +44,7 @@ import {
 	mentionQuery,
 	rankMentions,
 } from './mentions';
-import { segment, setChecked } from './segmented';
+import { segment, setChecked, steadyLabel } from './segmented';
 import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session-list';
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
@@ -427,6 +427,7 @@ export class LibrarianView extends ItemView {
 	private buildComposer(root: HTMLElement) {
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
 		this.composerEl = root.createDiv({ cls: 'librarian-composer' });
+		// Its line is kept while hidden, so a turn starting or ending moves nothing.
 		this.activityEl = this.composerEl.createDiv({ cls: 'librarian-activity is-hidden' });
 		this.suggestEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
 		const box = this.composerEl.createDiv({ cls: 'librarian-composer-box' });
@@ -1159,8 +1160,13 @@ export class LibrarianView extends ItemView {
 		this.activityEl.toggleClass('is-hidden', !activity);
 		this.activityEl.empty();
 		if (activity) {
-			this.activityEl.createSpan({ cls: 'librarian-spinner' });
-			this.activityEl.createSpan({ text: ` ${activity}` });
+			// The label shows the whole text on hover when a narrow pane cuts it short.
+			const line = this.activityEl.createDiv({
+				cls: 'librarian-activity-line',
+				attr: { 'aria-label': activity },
+			});
+			line.createSpan({ cls: 'librarian-spinner' });
+			line.createSpan({ text: activity });
 		}
 		this.updateSendEnabled();
 	}
@@ -1198,10 +1204,13 @@ export class LibrarianView extends ItemView {
 		for (const server of waiting) {
 			const row = this.mcpBannerEl.createDiv({ cls: 'librarian-key-banner-row' });
 			row.createSpan({ text: `Sign in to "${server.name}" to use its tools.` });
-			const button = row.createEl('button', {
-				cls: 'mod-cta',
-				text: server.auth === 'apiKey' ? 'Open settings' : 'Sign in',
-			});
+			const button = row.createEl('button', { cls: 'mod-cta' });
+			// One width for every row's button, whichever it says.
+			steadyLabel(
+				button,
+				['Sign in', 'Open settings'],
+				server.auth === 'apiKey' ? 'Open settings' : 'Sign in',
+			);
 			button.addEventListener('click', () => {
 				if (server.auth === 'apiKey') this.plugin.openSettings();
 				else void this.plugin.mcp.signIn(server.id);

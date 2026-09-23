@@ -40,7 +40,7 @@ import {
 	type ThinkingLevel,
 	type ToolPermission,
 } from '../types';
-import { segment, setChecked } from '../ui/segmented';
+import { segment, setChecked, steadyLabel } from '../ui/segmented';
 import {
 	ConfirmModal,
 	confirmDeleteSession,
@@ -50,6 +50,9 @@ import {
 import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
+
+/** Every label a server row's button can show; the button is as wide as the longest. */
+const MCP_BUTTON_LABELS = ['Sign in', 'Sign out', 'Add key', 'Reconnect'] as const;
 
 const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	disabled: 'Disabled',
@@ -1213,24 +1216,25 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					const keyMissing =
 						server.auth === 'apiKey' &&
 						!this.plugin.secrets.get(apiKeySecretId(server.id));
-					const label =
-						server.auth === 'oauth'
-							? state.status === 'ready'
-								? 'Sign out'
-								: 'Sign in'
-							: keyMissing
-								? 'Add key'
-								: 'Reconnect';
-					setting.addButton((b) =>
-						b.setButtonText(label).onClick(async () => {
+					// A server that will not register this app gets Reconnect: Sign in would fail the same way.
+					const oauth = server.auth === 'oauth' && !state.signInBlocked;
+					const label = oauth
+						? state.status === 'ready'
+							? 'Sign out'
+							: 'Sign in'
+						: keyMissing
+							? 'Add key'
+							: 'Reconnect';
+					setting.addButton((b) => {
+						steadyLabel(b.buttonEl, MCP_BUTTON_LABELS, label);
+						b.onClick(async () => {
 							if (keyMissing) return this.editMcpServer(server);
-							if (server.auth === 'oauth' && state.status === 'ready')
-								await mcp.signOut(server.id);
-							else if (server.auth === 'oauth') await mcp.signIn(server.id);
+							if (oauth && state.status === 'ready') await mcp.signOut(server.id);
+							else if (oauth) await mcp.signIn(server.id);
 							else await mcp.connect(server.id);
 							this.refresh();
-						}),
-					);
+						});
+					});
 				}
 				setting
 					.addExtraButton((b) =>
