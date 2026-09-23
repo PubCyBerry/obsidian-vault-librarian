@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.6.1...2.7.0) (2026-09-23)
+
+
+### Features
+
+* run read tools without asking and in parallel, and rebuild the settings on Obsidian's groups ([c6dcf79](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/c6dcf79aa83a5889b4619417eb3cfd5d931bd10a))
+
 ## [2.6.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.6.0...2.6.1) (2026-09-23)
 
 

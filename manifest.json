@@ -1,7 +1,7 @@
 {
 	"id": "vault-librarian",
 	"name": "Vault Librarian",
-	"version": "2.6.1",
+	"version": "2.7.0",
 	"minAppVersion": "1.11.5",
 	"description": "Chat with an agent that finds, reads, creates and edits your notes with tool calling. Bring your own OpenAI-compatible model.",
 	"author": "PubCyBerry",
