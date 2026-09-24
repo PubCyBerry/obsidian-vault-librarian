@@ -76,6 +76,8 @@ export class FakeVault {
 				};
 			}
 			if (this.folders.has(key)) return { type: 'folder', ctime: 0, mtime: 0, size: 0 };
+			const binary = this.binaries.get(key);
+			if (binary) return { type: 'file', ctime: 0, mtime: 0, size: binary.byteLength };
 			return null;
 		},
 	};

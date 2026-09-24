@@ -28,13 +28,53 @@ function enoent(path: string): Error {
 	return new Error(`ENOENT: no such file or directory, '${path}'`);
 }
 
+/** just-bash names an encoding as a bare string or as `{ encoding }`. */
+function isBinary(options: unknown): boolean {
+	const encoding =
+		typeof options === 'string'
+			? options
+			: (options as { encoding?: unknown } | null)?.encoding;
+	return encoding === 'binary' || encoding === 'latin1';
+}
+
+/**
+ * The shell carries bytes as a string with one byte per character, and a redirect of such output
+ * says `binary`; any other string is text and is stored as UTF-8 (issue #48).
+ */
+export function toBytes(content: unknown, options?: unknown): Uint8Array {
+	if (content instanceof Uint8Array) return content;
+	const text = String(content);
+	if (!isBinary(options)) return new TextEncoder().encode(text);
+	const bytes = new Uint8Array(text.length);
+	for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+	return bytes;
+}
+
+/** One character per byte. TextDecoder's `latin1` is windows-1252, which remaps 0x80 to 0x9f. */
+export function latin1(bytes: Uint8Array): string {
+	let out = '';
+	for (let i = 0; i < bytes.length; i += 0x8000)
+		out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	return out;
+}
+
+/** The text a UTF-8 file holds, or null when the bytes are not UTF-8, as in an image. */
+function utf8(bytes: Uint8Array): string | null {
+	try {
+		return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return null;
+	}
+}
+
 /**
  * The shell's filesystem. Paths under `/vault` are the real vault through Obsidian, so `grep` and
  * `sed` work on notes; everything else lives in a Map that lasts as long as the session. Writes to
  * the vault pass `gate` first, which is the one place the shell can change the user's files.
  */
 export class VaultFs implements IFileSystem {
-	private readonly mem = new Map<string, string>();
+	/** Scratch files as bytes, so a PNG saved to /tmp comes back out unchanged. */
+	private readonly mem = new Map<string, Uint8Array>();
 	private readonly dirs = new Set<string>(['/', '/tmp', VAULT_ROOT]);
 	/** Vault paths already approved during the command now running. */
 	private approved = new Set<string>();
@@ -96,19 +136,20 @@ export class VaultFs implements IFileSystem {
 
 	// Reading
 
-	async readFile(path: string): Promise<string> {
+	async readFile(path: string, options?: unknown): Promise<string> {
 		const rel = this.rel(path);
-		if (rel === null) {
-			const text = this.mem.get(normalizeShellPath(path));
-			if (text === undefined) throw enoent(path);
-			return text;
-		}
-		return await this.app.vault.adapter.read(rel);
+		if (rel !== null && !isBinary(options)) return await this.app.vault.adapter.read(rel);
+		const bytes = await this.readFileBuffer(path);
+		return isBinary(options) ? latin1(bytes) : new TextDecoder().decode(bytes);
 	}
 
 	async readFileBuffer(path: string): Promise<Uint8Array> {
 		const rel = this.rel(path);
-		if (rel === null) return new TextEncoder().encode(await this.readFile(path));
+		if (rel === null) {
+			const bytes = this.mem.get(normalizeShellPath(path));
+			if (bytes === undefined) throw enoent(path);
+			return bytes;
+		}
 		return new Uint8Array(await this.app.vault.adapter.readBinary(rel));
 	}
 
@@ -126,9 +167,9 @@ export class VaultFs implements IFileSystem {
 		if (rel === null) {
 			const full = normalizeShellPath(path);
 			if (this.dirs.has(full)) return statOf(true, 0);
-			const text = this.mem.get(full);
-			if (text === undefined) throw enoent(path);
-			return statOf(false, text.length);
+			const bytes = this.mem.get(full);
+			if (bytes === undefined) throw enoent(path);
+			return statOf(false, bytes.length);
 		}
 		if (rel === '') return statOf(true, 0);
 		const stat = await this.app.vault.adapter.stat(rel);
@@ -160,19 +201,34 @@ export class VaultFs implements IFileSystem {
 
 	// Writing
 
-	async writeFile(path: string, content: unknown): Promise<void> {
-		const text = typeof content === 'string' ? content : decode(content);
-		await this.change(path, text, async () => {
+	async writeFile(path: string, content: unknown, options?: unknown): Promise<void> {
+		const bytes = toBytes(content, options);
+		// The approval card shows text; an image goes by its path alone.
+		const text = utf8(bytes);
+		await this.change(path, text ?? '', async () => {
 			const rel = this.rel(path);
-			if (rel === null) this.mem.set(normalizeShellPath(path), text);
-			else await this.app.vault.adapter.write(rel, text);
+			if (rel === null) this.mem.set(normalizeShellPath(path), bytes);
+			else if (text !== null) await this.app.vault.adapter.write(rel, text);
+			else
+				await this.app.vault.adapter.writeBinary(
+					rel,
+					bytes.buffer.slice(
+						bytes.byteOffset,
+						bytes.byteOffset + bytes.byteLength,
+					) as ArrayBuffer,
+				);
 		});
 	}
 
-	async appendFile(path: string, content: unknown): Promise<void> {
-		const before = (await this.exists(path)) ? await this.readFile(path) : '';
-		const text = typeof content === 'string' ? content : decode(content);
-		await this.writeFile(path, before + text);
+	async appendFile(path: string, content: unknown, options?: unknown): Promise<void> {
+		const before = (await this.exists(path))
+			? await this.readFileBuffer(path)
+			: new Uint8Array();
+		const added = toBytes(content, options);
+		const joined = new Uint8Array(before.length + added.length);
+		joined.set(before);
+		joined.set(added, before.length);
+		await this.writeFile(path, joined);
 	}
 
 	async mkdir(path: string): Promise<void> {
@@ -196,7 +252,7 @@ export class VaultFs implements IFileSystem {
 	}
 
 	async cp(src: string, dest: string): Promise<void> {
-		await this.writeFile(dest, await this.readFile(src));
+		await this.writeFile(dest, await this.readFileBuffer(src));
 	}
 
 	async mv(src: string, dest: string): Promise<void> {
@@ -220,11 +276,6 @@ export class VaultFs implements IFileSystem {
 	async realpath(path: string): Promise<string> {
 		return normalizeShellPath(path);
 	}
-}
-
-function decode(content: unknown): string {
-	if (content instanceof Uint8Array) return new TextDecoder().decode(content);
-	return String(content);
 }
 
 function statOf(isDirectory: boolean, size: number): FsStat {

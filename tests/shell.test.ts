@@ -4,7 +4,7 @@ import { CurlUsageError, cliHandlers, parseCurl } from '../src/shell/commands';
 import { ShellSession } from '../src/shell/shell-tool';
 import { normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
-import { requestUrlMock } from './obsidian-stub';
+import { Platform, requestUrlMock } from './obsidian-stub';
 
 interface Asked {
 	name: string;
@@ -103,6 +103,24 @@ describe('the shell over the vault (LIB-TEST-174)', () => {
 		expect(slow).toContain('Exit code: 124');
 	});
 
+	it('keeps bytes as bytes in /tmp and in the vault (LIB-TEST-223, issue #48)', async () => {
+		const { run, app, asked } = shell();
+		// base64 -d writes bytes. printf '\200' does not: just-bash treats its escapes as characters.
+		expect(await run('echo gIH+/0FC | base64 -d > /tmp/t.bin && wc -c < /tmp/t.bin')).toBe(
+			'6\n',
+		);
+		expect(await run('od -An -t x1 /tmp/t.bin')).toMatch(/80 81 fe ff 41 42/);
+		expect(await run('cp /tmp/t.bin t.bin && cat /tmp/t.bin >> t.bin')).toBe('');
+		const saved = new Uint8Array(await app.vault.adapter.readBinary('t.bin'));
+		expect([...saved]).toEqual([
+			0x80, 0x81, 0xfe, 0xff, 0x41, 0x42, 0x80, 0x81, 0xfe, 0xff, 0x41, 0x42,
+		]);
+		// A picture has no text to show, so its approval card carries the path alone.
+		expect(asked[0]).toEqual({ name: 'write', args: { path: 't.bin' } });
+		// Text still goes in and out as UTF-8.
+		expect(await run('echo 한글 > /tmp/k && cat /tmp/k && wc -c < /tmp/k')).toBe('한글\n7\n');
+	});
+
 	it('keeps the tail of a long result and parks the rest in /tmp', async () => {
 		const { run } = shell();
 		const out = await run('seq 1 20000');
@@ -145,6 +163,26 @@ describe('curl (LIB-TEST-175)', () => {
 		);
 		await run('curl -s https://api.test/page -o /tmp/p.html');
 		expect(await run('wc -c < /tmp/p.html')).toBe(`${page.length}\n`);
+	});
+
+	it('keeps a binary body byte for byte and a text body as text (LIB-TEST-223)', async () => {
+		const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00]);
+		const page = new TextEncoder().encode('<p>한글</p>');
+		requestUrlMock.impl = async (req) => ({
+			status: 200,
+			headers: {},
+			arrayBuffer: ((req as { url: string }).url.endsWith('.png') ? png : page).buffer,
+			get text(): string {
+				throw new Error('the body must be read as bytes');
+			},
+		});
+		const { run } = shell();
+		expect(await run('curl -s -o /tmp/p.png https://x.test/a.png && wc -c < /tmp/p.png')).toBe(
+			'10\n',
+		);
+		expect(await run('od -An -t x1 /tmp/p.png')).toMatch(/89 50 4e 47 0d 0a 1a 0a ff 00/);
+		expect(await run('curl -s https://x.test/page')).toBe('<p>한글</p>');
+		expect(await run('curl -s https://x.test/page | grep -o 한글')).toBe('한글\n');
 	});
 
 	it('sends the method, headers and body it was given', async () => {
@@ -218,6 +256,74 @@ describe('the obsidian command (LIB-TEST-175)', () => {
 		expect(await s.run('obsidian sear')).toMatch(/Did you mean: search/);
 		const bare = shell();
 		expect(await bare.run('obsidian version')).toContain('Exit code: 127');
+	});
+
+	it('opens the developer verbs that only look (LIB-TEST-225)', async () => {
+		const s = shell();
+		const seen: string[] = [];
+		withCli(s.app, {
+			'dev:errors': () => 'No errors captured.',
+			'dev:dom': (flags) => `dom ${String(flags.selector)}`,
+			'dev:debug': (flags) => {
+				seen.push(`debug ${JSON.stringify(flags)}`);
+				return 'Debugger attached.';
+			},
+			'dev:console': () => 'No console messages captured.',
+			'dev:cdp': () => 'should never run',
+			eval: () => 'should never run',
+		});
+		expect(await s.run('obsidian dev:errors')).toBe('No errors captured.\n');
+		expect(await s.run("obsidian dev:dom selector='.librarian'")).toBe('dom .librarian\n');
+		// The console is captured only while the debugger is attached, so it is attached first.
+		expect(await s.run('obsidian dev:console')).toBe('No console messages captured.\n');
+		expect(seen).toEqual(['debug {"on":true}']);
+		for (const withheld of ['dev:cdp method=Runtime.evaluate', 'dev:debug on', 'eval code=1'])
+			expect(await s.run(`obsidian ${withheld}`)).toContain('unknown command');
+		const help = await s.run('obsidian help');
+		expect(help).toContain('dev:console');
+		expect(help).not.toContain('dev:cdp');
+	});
+
+	it('moves a screenshot into the shell instead of wherever path points (LIB-TEST-225)', async () => {
+		const s = shell();
+		const taken: Record<string, unknown>[] = [];
+		const disk = new Map<string, Uint8Array>();
+		withCli(s.app, {
+			'dev:screenshot': (flags) => {
+				taken.push(flags);
+				disk.set('/os/tmp/shot.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff]));
+				return '/os/tmp/shot.png';
+			},
+		});
+		expect(await s.run('obsidian dev:screenshot')).toContain('needs desktop');
+		const g = globalThis as { window?: unknown };
+		Platform.isDesktopApp = true;
+		g.window = {
+			require: () => ({
+				readFileSync: (p: string) => disk.get(p),
+				unlinkSync: (p: string) => disk.delete(p),
+			}),
+		};
+		try {
+			expect(await s.run('obsidian dev:screenshot path=/etc/x.png')).toBe('/etc/x.png\n');
+			// The app never saw the path, so it could not write outside the shell.
+			expect(taken.at(-1)).toEqual({});
+			expect(disk.size).toBe(0);
+			expect(await s.run('wc -c < /etc/x.png')).toBe('5\n');
+			expect(await s.run('obsidian dev:screenshot')).toMatch(
+				/^\/tmp\/screenshot-\d+\.png\n$/,
+			);
+			expect(await s.run('obsidian dev:screenshot path=shots/a.png')).toBe(
+				'/vault/shots/a.png\n',
+			);
+			// Into the vault it asks like any write and keeps every byte.
+			expect(s.asked).toEqual([{ name: 'write', args: { path: 'shots/a.png' } }]);
+			const saved = new Uint8Array(await s.app.vault.adapter.readBinary('shots/a.png'));
+			expect([...saved]).toEqual([0x89, 0x50, 0x4e, 0x47, 0xff]);
+		} finally {
+			Platform.isDesktopApp = false;
+			delete g.window;
+		}
 	});
 
 	it('reports what a verb threw', async () => {

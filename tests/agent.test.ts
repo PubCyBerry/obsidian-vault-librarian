@@ -857,6 +857,27 @@ describe('vault writes from bash (LIB-TEST-174)', () => {
 		expect(h.app.trashed).toEqual(['notes/b.md']);
 	});
 
+	it('leaves a binary file the shell overwrote as it is on rewind (LIB-TEST-223)', async () => {
+		const h = harness(
+			[
+				{ toolCalls: [{ name: 'bash', args: { command: 'echo new > pic.png' } }] },
+				{ text: 'ok' },
+			],
+			{ bash: 'always_allow', write: 'always_allow' },
+			{},
+			{ script: true },
+		);
+		h.app.vault.seed('pic.png', 'old');
+		await h.controller.send('replace the picture');
+		expect(h.app.vault.text('pic.png')).toBe('new\n');
+		const log = await sessions(h);
+		const back = await h.controller.rewind(log.findIndex((e) => e.type === 'user'));
+		expect(back?.unchanged).toEqual([
+			{ path: 'pic.png', reason: 'Rewind does not restore binary files.' },
+		]);
+		expect(h.app.vault.text('pic.png')).toBe('new\n');
+	});
+
 	it('refuses a blocked write without changing the vault', async () => {
 		const h = harness(
 			[{ toolCalls: [{ name: 'bash', args: { command } }] }, { text: 'done' }],

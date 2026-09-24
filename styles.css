@@ -1211,6 +1211,59 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-error);
 }
 
+/*
+ * How a server holds its sign-in or key, beside the button that changes it. A quiet pill in the
+ * row's smallest type: it tells the state at a glance while the server name stays the heading and
+ * the button the one thing to press. Its words sit in one grid cell, so every pill is as wide
+ * as the longest and the buttons after it line up.
+ */
+.librarian-mcp-auth {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	padding: var(--size-2-1) var(--size-4-2);
+	border-radius: var(--radius-l);
+	font-size: var(--font-ui-smaller);
+	line-height: var(--line-height-tight);
+	white-space: nowrap;
+	color: var(--text-muted);
+	background-color: var(--background-modifier-hover);
+}
+
+.librarian-mcp-auth-icon {
+	display: inline-flex;
+}
+
+.librarian-mcp-auth-icon svg {
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.librarian-mcp-auth.is-on {
+	color: var(--text-success);
+	background-color: rgba(var(--color-green-rgb), 0.12);
+}
+
+.librarian-mcp-auth.is-missing {
+	color: var(--text-warning);
+	background-color: rgba(var(--color-orange-rgb), 0.12);
+}
+
+/* A phone's control line has no room for the words: the icon and its color carry the state, and
+   the words stay as the badge's accessible name. */
+body.is-phone .librarian-mcp-auth {
+	padding: var(--size-4-1);
+}
+
+body.is-phone .librarian-mcp-auth > .librarian-steady-label {
+	display: none;
+}
+
+/* Room held for a badge or button a row does not have, so the columns stay put. */
+.librarian-mcp-spacer {
+	visibility: hidden;
+}
+
 .librarian-mcp-server .setting-item-description,
 .librarian-session-setting .setting-item-description {
 	overflow-wrap: anywhere;

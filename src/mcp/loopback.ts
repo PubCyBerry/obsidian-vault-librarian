@@ -44,8 +44,11 @@ export function listenForRedirect(
 		accept: (state: string | null) => boolean;
 		onResult: (result: LoopbackResult) => void;
 		timeoutMs?: number;
+		/** `/` for a client made in Google's console, whose documented form has no path. */
+		path?: '/' | '/callback';
 	},
 ): Promise<Loopback> {
+	const path = opts.path ?? '/callback';
 	return new Promise((resolve, reject) => {
 		let done = false;
 		const finish = (result: LoopbackResult | null) => {
@@ -58,7 +61,7 @@ export function listenForRedirect(
 		};
 		const server = http.createServer((req, res) => {
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-			if (url.pathname !== '/callback' || !opts.accept(url.searchParams.get('state'))) {
+			if (url.pathname !== path || !opts.accept(url.searchParams.get('state'))) {
 				res.writeHead(404).end();
 				return;
 			}
@@ -89,7 +92,7 @@ export function listenForRedirect(
 			const address = server.address();
 			const port = address && typeof address === 'object' ? address.port : 0;
 			resolve({
-				redirectUrl: `http://127.0.0.1:${port}/callback`,
+				redirectUrl: `http://127.0.0.1:${port}${path === '/' ? '' : path}`,
 				close: () => finish(null),
 			});
 		});

@@ -31,7 +31,7 @@ The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, so
 
 Two commands are specific to Obsidian:
 - curl sends an HTTP request to any URL and writes the response body to stdout exactly as the server sent it. Pipe it through grep, sed or jq to keep only what you need, or use -o to save it.
-- obsidian runs an Obsidian command, such as \`obsidian search query=... limit=5\`, \`obsidian command id=<command id>\` or \`obsidian backlinks path=<note> format=json\`. Run \`obsidian help\` to see what this vault offers.
+- obsidian runs an Obsidian command, such as \`obsidian search query=... limit=5\`, \`obsidian command id=<command id>\` or \`obsidian backlinks path=<note> format=json\`. Run \`obsidian help\` to see what this vault offers. To look at the app itself, \`obsidian dev:errors\`, \`dev:console\`, \`dev:dom selector=...\` and \`dev:css selector=...\` read its errors, console, DOM and styles, and \`dev:screenshot path=...\` saves a PNG of the window (to /tmp when no path is given).
 
 Prefer the read, write and edit tools for ordinary note work: they show sources with line numbers and can be undone. Use this when you need to combine steps, filter a large result, or reach the web.`;
 

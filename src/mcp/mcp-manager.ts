@@ -1,7 +1,8 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { OAuthClientInformationMixed } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
@@ -10,7 +11,12 @@ import type { LibrarianSettings, McpServerConfig } from '../types';
 import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
 import { isNetworkFailure, requestUrlFetch } from './fetch-shim';
 import { type HttpModule, type Loopback, type LoopbackResult, listenForRedirect } from './loopback';
-import { OAUTH_REDIRECT_URL, ObsidianOAuthProvider, oauthSecretId } from './oauth-provider';
+import {
+	clientSecretId,
+	OAUTH_REDIRECT_URL,
+	ObsidianOAuthProvider,
+	oauthSecretId,
+} from './oauth-provider';
 
 /** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
 export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {
@@ -250,6 +256,14 @@ export class McpManager {
 		return this.states.get(id) ?? { status: 'disconnected', tools: [] };
 	}
 
+	/**
+	 * Whether this device holds a sign-in for the server. It follows the saved tokens, not the
+	 * connection: a disabled server keeps its sign-in, and Google lists tools with none.
+	 */
+	signedIn(id: string): boolean {
+		return this.server(id)?.auth === 'oauth' && !!this.oauthProvider(id).tokens();
+	}
+
 	/** Servers that cannot serve tools until the user signs in or saves a key. */
 	needingSignIn(): McpServerConfig[] {
 		return this.servers().filter(
@@ -344,12 +358,37 @@ export class McpManager {
 			const loopback = await listenForRedirect(http, {
 				accept: (state) => state !== null && state === this.signIns.get(id)?.state,
 				onResult: (result) => void this.loopbackResult(id, result),
+				path: this.configuredClient(id) ? '/' : '/callback',
 			});
 			this.signIns.set(id, { loopback });
 			// A client registered for another redirect address would be refused, so start clean.
 			this.oauthProvider(id).invalidateCredentials('all');
 		}
 		await this.connect(id);
+		// A server that lists its tools without a token (Google) connects unsigned and asks only
+		// when a tool is called, so the sign-in the user pressed for is started here.
+		const connection = this.connections.get(id);
+		const server = this.server(id);
+		if (!connection || !server || server.auth !== 'oauth' || this.signedIn(id)) return;
+		this.interactive.add(id);
+		try {
+			const result = await auth(this.oauthProvider(id), {
+				serverUrl: new URL(server.url),
+				fetchFn: this.fetchFor(id),
+			});
+			if (result === 'REDIRECT') this.pendingAuth.set(id, connection.transport);
+		} catch (error) {
+			this.endSignIn(id);
+			const blocked = this.signInBlocked(id, error);
+			this.setState(id, {
+				...this.state(id),
+				status: 'error',
+				message: blocked ?? (error instanceof Error ? error.message : String(error)),
+				signInBlocked: blocked !== null,
+			});
+		} finally {
+			this.interactive.delete(id);
+		}
 	}
 
 	private async loopbackResult(id: string, result: LoopbackResult): Promise<void> {
@@ -396,11 +435,14 @@ export class McpManager {
 		this.deps.secrets.clear(oauthSecretId(id));
 		this.deps.secrets.clear(apiKeySecretId(id));
 		this.pendingAuth.delete(id);
-		this.setState(id, { status: 'disconnected', tools: [] });
+		// Signing out of a disabled server leaves it disabled; the toggle alone decides that.
+		const status = this.server(id)?.enabled === false ? 'disabled' : 'disconnected';
+		this.setState(id, { status, tools: [] });
 	}
 
 	async remove(id: string): Promise<void> {
 		await this.signOut(id);
+		this.deps.secrets.clear(clientSecretId(id));
 		this.states.delete(id);
 		const settings = this.deps.settings();
 		settings.mcpServers = settings.mcpServers.filter((s) => s.id !== id);
@@ -506,7 +548,7 @@ export class McpManager {
 			error instanceof Error &&
 			error.message.includes('does not support dynamic client registration')
 		)
-			return 'The server does not let apps register for sign-in on their own, so Vault Librarian cannot sign in to it.';
+			return 'The server does not let apps register for sign-in on their own. Add a client ID made in its console under Edit.';
 		return null;
 	}
 
@@ -519,10 +561,22 @@ export class McpManager {
 		for (const listener of this.listeners) listener();
 	}
 
+	/**
+	 * A client the user made in the server's console, for servers that register none on their own
+	 * (Google). The id is in the settings; the secret, when the client has one, on this device.
+	 */
+	private configuredClient(id: string): OAuthClientInformationMixed | undefined {
+		const clientId = this.server(id)?.oauthClientId?.trim();
+		if (!clientId) return undefined;
+		const secret = this.deps.secrets.get(clientSecretId(id));
+		return secret ? { client_id: clientId, client_secret: secret } : { client_id: clientId };
+	}
+
 	private oauthProvider(id: string): ObsidianOAuthProvider {
 		return new ObsidianOAuthProvider({
 			serverId: id,
 			secrets: this.deps.secrets,
+			configuredClient: () => this.configuredClient(id),
 			interactive: () => this.interactive.has(id),
 			open: this.deps.open,
 			onTokensRejected: () => this.rejected.add(id),

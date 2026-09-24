@@ -11,7 +11,12 @@ import {
 	repeatable,
 	untrustedPrefix,
 } from '../src/mcp/mcp-manager';
-import { ObsidianOAuthProvider, serverIdFromState } from '../src/mcp/oauth-provider';
+import {
+	clientSecretId,
+	ObsidianOAuthProvider,
+	oauthSecretId,
+	serverIdFromState,
+} from '../src/mcp/oauth-provider';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import type { SecretStore } from '../src/storage/secret-store';
 import { mergeSettings } from '../src/types';
@@ -350,6 +355,38 @@ describe('desktop sign-in through 127.0.0.1 (LIB-TEST-201)', () => {
 		]);
 	});
 
+	it('listens at the root for a client made in the console (LIB-TEST-231)', async () => {
+		const results: LoopbackResult[] = [];
+		const loopback = await listenForRedirect(node, {
+			accept: (state) => state === 'g.1',
+			onResult: (r) => results.push(r),
+			path: '/',
+		});
+		expect(loopback.redirectUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+		expect((await fetch(`${loopback.redirectUrl}/callback?code=x&state=g.1`)).status).toBe(404);
+		const ok = await fetch(`${loopback.redirectUrl}?code=c&state=g.1`);
+		expect(ok.status).toBe(200);
+		expect(results).toEqual([{ code: 'c' }]);
+	});
+
+	it('asks Google for offline access so the sign-in outlives the hour (LIB-TEST-231)', () => {
+		const opened: string[] = [];
+		const provider = new ObsidianOAuthProvider({
+			serverId: 'g',
+			secrets: { get: () => null, set: () => {}, clear: () => {} } as unknown as SecretStore,
+			interactive: () => true,
+			open: (url) => opened.push(url),
+			onAuthorizationUrl: () => {},
+		});
+		provider.redirectToAuthorization(
+			new URL('https://accounts.google.com/o/oauth2/v2/auth?a=1'),
+		);
+		provider.redirectToAuthorization(new URL('https://auth.example/authorize?a=1'));
+		const google = new URL(opened[0]!).searchParams;
+		expect([google.get('access_type'), google.get('prompt')]).toEqual(['offline', 'consent']);
+		expect(new URL(opened[1]!).searchParams.has('access_type')).toBe(false);
+	});
+
 	it('registers the client for the address the sign-in listens on', () => {
 		const secrets = {
 			get: () => null,
@@ -400,7 +437,7 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 	 * Figma answers the registration with a bare 403; Google has no registration endpoint and lists
 	 * its tools without a token but asks for one on every call.
 	 */
-	function fakeServer(kind: 'refuses' | 'no-registration'): typeof fetch {
+	function fakeServer(kind: 'refuses' | 'no-registration' | 'registers'): typeof fetch {
 		return (async (input: string | URL, init?: RequestInit) => {
 			const url = String(input);
 			if (url === MCP && init?.method === 'GET') return new Response(null, { status: 405 });
@@ -436,20 +473,38 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 					token_endpoint: 'https://auth.example/token',
 					response_types_supported: ['code'],
 					code_challenge_methods_supported: ['S256'],
-					...(kind === 'refuses'
-						? { registration_endpoint: 'https://auth.example/register' }
-						: {}),
+					...(kind === 'no-registration'
+						? {}
+						: { registration_endpoint: 'https://auth.example/register' }),
 				});
 			if (url === 'https://auth.example/register')
-				return new Response('Forbidden', {
-					status: 403,
-					headers: { 'content-type': 'application/json' },
+				return kind === 'registers'
+					? json(
+							{
+								client_id: 'c1',
+								redirect_uris: ['obsidian://vault-librarian-oauth'],
+							},
+							201,
+						)
+					: new Response('Forbidden', {
+							status: 403,
+							headers: { 'content-type': 'application/json' },
+						});
+			if (url === 'https://auth.example/token') {
+				tokenRequests.push({
+					authorization: new Headers(init?.headers).get('authorization'),
+					body: new URLSearchParams(String(init?.body)),
 				});
+				return json({ access_token: 'a', token_type: 'Bearer', refresh_token: 'r' });
+			}
 			return new Response('not found', { status: 404 });
 		}) as typeof fetch;
 	}
 
-	function managerFor() {
+	/** What the fake token endpoint received, newest last. */
+	const tokenRequests: { authorization: string | null; body: URLSearchParams }[] = [];
+
+	function managerFor(secrets = new Map<string, string>(), opened: string[] = []) {
 		const settings = mergeSettings({
 			mcpServers: [
 				{
@@ -462,7 +517,6 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 				},
 			],
 		});
-		const secrets = new Map<string, string>();
 		return new McpManager({
 			settings: () => settings,
 			save: async () => undefined,
@@ -476,7 +530,7 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 				async () => undefined,
 			),
 			clientVersion: 'test',
-			open: () => {},
+			open: (url: string) => opened.push(url),
 			notice: () => {},
 		});
 	}
@@ -505,7 +559,80 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		expect(manager.state('srv').status).toBe('ready');
 		const tool = manager.tools().find((t) => t.name === 'srv__list_events');
 		await expect(tool?.execute('call', {}, undefined)).rejects.toThrow(
-			'The server does not let apps register for sign-in on their own, so Vault Librarian cannot sign in to it.',
+			'The server does not let apps register for sign-in on their own. Add a client ID made in its console under Edit.',
 		);
+	});
+
+	it('LIB-TEST-222: keeps the sign-in while the server is turned off and on', async () => {
+		globalThis.fetch = fakeServer('no-registration');
+		const secrets = new Map([
+			[
+				oauthSecretId('srv'),
+				JSON.stringify({ tokens: { access_token: 'a', token_type: 'Bearer' } }),
+			],
+		]);
+		const manager = managerFor(secrets);
+		const server = manager.server('srv')!;
+		server.enabled = false;
+		await manager.connect('srv');
+		expect(manager.state('srv').status).toBe('disabled');
+		expect(manager.signedIn('srv')).toBe(true);
+		server.enabled = true;
+		await manager.connect('srv');
+		expect(manager.state('srv').status).toBe('ready');
+		expect(manager.signedIn('srv')).toBe(true);
+		// Signing out of a disabled server leaves it disabled.
+		server.enabled = false;
+		await manager.connect('srv');
+		await manager.signOut('srv');
+		expect(manager.signedIn('srv')).toBe(false);
+		expect(manager.state('srv').status).toBe('disabled');
+	});
+
+	it('LIB-TEST-222: a server that lists its tools unsigned is not signed in, and Sign in asks', async () => {
+		globalThis.fetch = fakeServer('registers');
+		const opened: string[] = [];
+		const manager = managerFor(new Map(), opened);
+		await manager.connect('srv');
+		expect(manager.state('srv').status).toBe('ready');
+		expect(manager.signedIn('srv')).toBe(false);
+		await manager.signIn('srv');
+		expect(opened).toHaveLength(1);
+		expect(opened[0]).toMatch(/^https:\/\/auth\.example\/authorize\?/);
+		expect(manager.state('srv').status).toBe('ready');
+	});
+
+	it('LIB-TEST-231: a client made in the console signs in where registration is missing', async () => {
+		globalThis.fetch = fakeServer('no-registration');
+		const secrets = new Map([[clientSecretId('srv'), 'the-secret']]);
+		const opened: string[] = [];
+		const manager = managerFor(secrets, opened);
+		manager.server('srv')!.oauthClientId = 'console-client';
+		await manager.connect('srv');
+		await manager.signIn('srv');
+		expect(manager.state('srv').status).toBe('ready');
+		expect(new URL(opened[0]!).searchParams.get('client_id')).toBe('console-client');
+		await manager.finishAuth('srv', 'the-code');
+		// The client authenticates with its secret, as Google's token endpoint requires.
+		const exchange = tokenRequests.at(-1)!;
+		expect(exchange.body.get('code')).toBe('the-code');
+		expect(exchange.authorization).toBe(`Basic ${btoa('console-client:the-secret')}`);
+		expect(manager.signedIn('srv')).toBe(true);
+		// The console client lives in the settings, so nothing was registered or stored for it.
+		expect(JSON.parse(secrets.get(oauthSecretId('srv'))!).client).toBeUndefined();
+		const tool = manager.tools().find((t) => t.name === 'srv__list_events');
+		expect(tool).toBeDefined();
+	});
+
+	it('LIB-TEST-222: Sign in says at once why a server without registration cannot sign in', async () => {
+		globalThis.fetch = fakeServer('no-registration');
+		const manager = managerFor();
+		await manager.signIn('srv');
+		expect(manager.state('srv')).toMatchObject({
+			status: 'error',
+			message:
+				'The server does not let apps register for sign-in on their own. Add a client ID made in its console under Edit.',
+			signInBlocked: true,
+		});
 	});
 });

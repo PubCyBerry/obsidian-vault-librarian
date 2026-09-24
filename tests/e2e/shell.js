@@ -58,6 +58,21 @@
 	await run('obsWithheld', 'obsidian eval code=1');
 	await run('tmp', 'curl -s https://example.com -o /tmp/p.html && wc -c < /tmp/p.html');
 	await run('tmpAgain', "grep -c 'a' /tmp/p.html");
+	// LIB-TEST-223: a PNG keeps its size (15,829 bytes) and its signature 89 50 4e 47.
+	await run(
+		'curlPng',
+		'curl -s -o /tmp/w.png https://www.wikipedia.org/portal/wikipedia.org/assets/img/Wikipedia-logo-v2.png && wc -c < /tmp/w.png && head -c 8 /tmp/w.png | od -An -t x1',
+	);
+	// LIB-TEST-225: the developer verbs that only look run; dev:cdp stays withheld.
+	await run('devErrors', 'obsidian dev:errors | head -3');
+	await run('devDom', 'obsidian dev:dom selector=.workspace-ribbon total');
+	await run('devCss', 'obsidian dev:css selector=body prop=background-color | head -4');
+	await run('devConsole', 'obsidian dev:console limit=3');
+	await run(
+		'devShot',
+		'p=$(obsidian dev:screenshot) && echo $p && head -c 4 $p | od -An -t x1 && wc -c < $p',
+	);
+	await run('devCdp', 'obsidian dev:cdp method=Runtime.evaluate');
 	await run('loop', 'while true; do :; done', 30);
 	await run('deadline', 'sleep 10', 1);
 	await run('gzip', 'echo x | gzip | wc -c');

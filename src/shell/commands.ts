@@ -1,14 +1,21 @@
-import type { Command, ExecResult } from 'just-bash/browser';
+import type { Command, CommandContext, ExecResult } from 'just-bash/browser';
 import { defineCommand } from 'just-bash/browser';
 import type { App } from 'obsidian';
-import { requestUrl } from 'obsidian';
+import { Platform, requestUrl } from 'obsidian';
 import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
+import { latin1, toBytes } from './vault-fs';
 
 export const NO_CLI = 'obsidian: the command registry is not available in this version';
 
-/** Verbs that reach the whole app or the developer tools, making every permission meaningless. */
+/** Developer verbs that only look at the app: its DOM, styles, logs and a picture of it. */
+const DEV_LOOKS = new Set(['dev:screenshot', 'dev:errors', 'dev:console', 'dev:dom', 'dev:css']);
+
+/**
+ * Verbs that reach the whole app or the developer tools, making every permission meaningless:
+ * `eval`, and `dev:cdp` which can evaluate through the debugger. Those in DEV_LOOKS stay open.
+ */
 const WITHHELD = (verb: string) =>
-	verb === 'eval' || verb === 'devtools' || verb.startsWith('dev:');
+	verb === 'eval' || verb === 'devtools' || (verb.startsWith('dev:') && !DEV_LOOKS.has(verb));
 
 export interface CommandDeps {
 	app: App;
@@ -143,13 +150,7 @@ export function createCurl(deps: CommandDeps): Command {
 async function fetchIt(
 	args: CurlArgs,
 	deps: CommandDeps,
-	ctx: {
-		fs: {
-			writeFile: (p: string, c: string) => Promise<void>;
-			resolvePath: (b: string, p: string) => string;
-		};
-		cwd: string;
-	},
+	ctx: Pick<CommandContext, 'fs' | 'cwd'>,
 ): Promise<ExecResult> {
 	{
 		const send = () =>
@@ -185,9 +186,14 @@ async function fetchIt(
 					.map(([k, v]) => `${k}: ${String(v)}`)
 					.join('\n')}\n\n`
 			: '';
-		const body = args.method === 'HEAD' ? '' : bodyOf(response);
+		const body = args.method === 'HEAD' ? new Uint8Array() : bodyOf(response);
+		// Bytes, not text: an image read as text comes out with U+FFFD in place of its bytes.
+		const out = toBytes(head);
+		const all = new Uint8Array(out.length + body.length);
+		all.set(out);
+		all.set(body, out.length);
 		if (args.output) {
-			await ctx.fs.writeFile(ctx.fs.resolvePath(ctx.cwd, args.output), head + body);
+			await ctx.fs.writeFile(ctx.fs.resolvePath(ctx.cwd, args.output), all);
 			return { stdout: '', stderr: '', exitCode: 0 };
 		}
 		if (args.failOnError && response.status >= 400)
@@ -196,14 +202,14 @@ async function fetchIt(
 				stderr: args.silent ? '' : `curl: (22) HTTP ${response.status}\n`,
 				exitCode: 22,
 			};
-		return { stdout: head + body, stderr: '', exitCode: 0 };
+		return { stdout: latin1(all), stdoutKind: 'bytes', stderr: '', exitCode: 0 };
 	}
 }
 
-function bodyOf(response: { text?: string; arrayBuffer?: ArrayBuffer }): string {
-	if (typeof response.text === 'string') return response.text;
-	if (!response.arrayBuffer) return '';
-	return new TextDecoder().decode(new Uint8Array(response.arrayBuffer));
+/** Obsidian's response decodes `text` on read; the raw bytes are in `arrayBuffer`. */
+function bodyOf(response: { text?: string; arrayBuffer?: ArrayBuffer }): Uint8Array {
+	if (response.arrayBuffer) return new Uint8Array(response.arrayBuffer);
+	return toBytes(response.text ?? '');
 }
 
 function fail(error: unknown, args: CurlArgs, away: boolean): ExecResult {
@@ -260,6 +266,37 @@ export function cliHandlers(app: App): Map<string, CliEntry> | null {
 	return cli?.handlers instanceof Map ? (cli.handlers as Map<string, CliEntry>) : null;
 }
 
+interface NodeFs {
+	readFileSync(path: string): Uint8Array;
+	unlinkSync(path: string): void;
+}
+
+/**
+ * Obsidian's `dev:screenshot` writes the PNG with Node's fs wherever `path` points, past the
+ * vault's approval and its read-only folders. So it runs without a path, into the system's temp
+ * folder, and the picture moves into the shell's filesystem: to `path`, which asks like any
+ * other write when it is in the vault, or to /tmp.
+ */
+async function screenshot(
+	entry: CliEntry,
+	flags: Record<string, unknown>,
+	ctx: CommandContext,
+): Promise<ExecResult> {
+	const nodeRequire = Platform.isDesktopApp
+		? (window as unknown as { require?: (id: string) => unknown }).require
+		: undefined;
+	const fs = nodeRequire ? (nodeRequire('fs') as NodeFs) : null;
+	if (!fs) return { stdout: '', stderr: 'obsidian: dev:screenshot needs desktop\n', exitCode: 1 };
+	const taken = String(await entry.handler({}));
+	const bytes = new Uint8Array(fs.readFileSync(taken));
+	fs.unlinkSync(taken);
+	const wanted =
+		typeof flags.path === 'string' ? flags.path : `/tmp/screenshot-${Date.now()}.png`;
+	const target = ctx.fs.resolvePath(ctx.cwd, wanted);
+	await ctx.fs.writeFile(target, bytes);
+	return { stdout: `${target}\n`, stderr: '', exitCode: 0 };
+}
+
 function nearest(verb: string, known: string[]): string[] {
 	return known
 		.filter((k) => k.startsWith(verb.slice(0, 3)) || verb.startsWith(k.slice(0, 3)))
@@ -284,7 +321,7 @@ function helpText(handlers: Map<string, CliEntry>): string {
  * the vault and workspace APIs, so the same ones answer on desktop and on a phone.
  */
 export function createObsidian(deps: CommandDeps): Command {
-	return defineCommand('obsidian', async (argv): Promise<ExecResult> => {
+	return defineCommand('obsidian', async (argv, ctx): Promise<ExecResult> => {
 		const verb = argv[0];
 		if (!verb)
 			return {
@@ -315,6 +352,9 @@ export function createObsidian(deps: CommandDeps): Command {
 			else flags[arg] = true;
 		}
 		try {
+			if (verb === 'dev:screenshot') return await screenshot(entry, flags, ctx);
+			// The console is captured only while the debugger is attached; attaching twice is a no-op.
+			if (verb === 'dev:console') await handlers.get('dev:debug')?.handler({ on: true });
 			const result = await entry.handler(flags);
 			// Handlers answer with a string; a few return a value, which is clearest as JSON.
 			const text =

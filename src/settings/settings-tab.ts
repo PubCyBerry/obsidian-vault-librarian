@@ -17,6 +17,7 @@ import {
 } from 'obsidian';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
+import { clientSecretId } from '../mcp/oauth-provider';
 import {
 	PERMISSION_DESCRIPTIONS,
 	PERMISSION_ICONS,
@@ -53,6 +54,14 @@ const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blo
 
 /** Every label a server row's button can show; the button is as wide as the longest. */
 const MCP_BUTTON_LABELS = ['Sign in', 'Sign out', 'Add key', 'Reconnect'] as const;
+
+/** How a server holds its credentials on this device, shown beside the button that changes it. */
+const MCP_BADGES = {
+	signedIn: { text: 'Signed in', icon: 'user-round-check', tone: 'on' },
+	signedOut: { text: 'Signed out', icon: 'user-round', tone: 'off' },
+	keySaved: { text: 'Key saved', icon: 'key-round', tone: 'on' },
+	noKey: { text: 'No key', icon: 'key-round', tone: 'missing' },
+} as const;
 
 const MCP_STATUS_LABELS: Record<McpStatus, string> = {
 	disabled: 'Disabled',
@@ -113,15 +122,24 @@ function rowMatches(def: { name: string; desc?: unknown }, query: string): boole
 	return `${def.name}\n${desc}`.toLowerCase().includes(q);
 }
 
+/** What the editor hands back beside the server: secrets typed into it, empty when unchanged. */
+interface McpSecretsTyped {
+	key: string;
+	clientSecret: string;
+}
+
 class McpServerEditorModal extends Modal {
 	private draft: McpServerConfig;
-	private key = '';
+	private readonly typed: McpSecretsTyped = { key: '', clientSecret: '' };
 
 	constructor(
 		app: App,
 		private readonly plugin: LibrarianPlugin,
 		private readonly existing: McpServerConfig | null,
-		private readonly onSaved: (server: McpServerConfig, key: string) => Promise<void>,
+		private readonly onSaved: (
+			server: McpServerConfig,
+			typed: McpSecretsTyped,
+		) => Promise<void>,
 	) {
 		super(app);
 		this.draft = existing ? { ...existing } : newMcpServer('');
@@ -164,9 +182,42 @@ class McpServerEditorModal extends Modal {
 				t.inputEl.type = 'password';
 				t.setPlaceholder(saved ? 'Saved on this device' : 'Paste the key');
 				t.onChange((v) => {
-					this.key = v.trim();
+					this.typed.key = v.trim();
 				});
 			});
+		// Servers that register no apps on their own (Google) take a client made in their console.
+		const clientId: Setting = new Setting(el)
+			.setName('Client ID')
+			.setDesc(
+				"For servers that do not let apps register, such as Google's: a desktop app client from the server's console. Desktop only.",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder('Optional')
+					.setValue(this.draft.oauthClientId ?? '')
+					.onChange((v) => {
+						this.draft.oauthClientId = v.trim() || undefined;
+						clearError(clientId);
+					}),
+			);
+		clientId.settingEl.addClass('librarian-wide-input');
+		const secretSaved =
+			!!this.existing && !!this.plugin.secrets.get(clientSecretId(this.existing.id));
+		const clientSecret = new Setting(el)
+			.setName('Client secret')
+			.setDesc('Kept on this device only.')
+			.addText((t) => {
+				t.inputEl.type = 'password';
+				t.setPlaceholder(secretSaved ? 'Saved on this device' : 'Paste the secret');
+				t.onChange((v) => {
+					this.typed.clientSecret = v.trim();
+				});
+			});
+		const showFor = (auth: string) => {
+			key.settingEl.toggle(auth === 'apiKey');
+			clientId.settingEl.toggle(auth === 'oauth');
+			clientSecret.settingEl.toggle(auth === 'oauth');
+		};
 		new Setting(el)
 			.setName('Authentication')
 			.setDesc('Sign in through the browser, or paste an API key once per device.')
@@ -176,19 +227,19 @@ class McpServerEditorModal extends Modal {
 					.setValue(this.draft.auth)
 					.onChange((v) => {
 						this.draft.auth = v as McpServerConfig['auth'];
-						key.settingEl.toggle(v === 'apiKey');
+						showFor(v);
 					}),
 			);
-		// The key row belongs after the choice that shows it.
-		el.appendChild(key.settingEl);
-		key.settingEl.toggle(this.draft.auth === 'apiKey');
+		// The rows a choice shows belong after that choice.
+		el.append(key.settingEl, clientId.settingEl, clientSecret.settingEl);
+		showFor(this.draft.auth);
 		const buttons = modalButtons(el, () => this.close());
 		buttons
 			.createEl('button', { cls: 'mod-cta', text: 'Save' })
-			.addEventListener('click', () => void this.save(name, url));
+			.addEventListener('click', () => void this.save(name, url, clientId));
 	}
 
-	private async save(name: Setting, url: Setting) {
+	private async save(name: Setting, url: Setting, clientId: Setting) {
 		const trimmed = this.draft.name.trim();
 		if (!trimmed) return invalid(name, 'Name is required.');
 		if (!MCP_SERVER_ID_PATTERN.test(this.draft.id))
@@ -199,7 +250,9 @@ class McpServerEditorModal extends Modal {
 		if (taken) return invalid(name, 'This name is already used.');
 		if (!/^https?:\/\//.test(this.draft.url))
 			return invalid(url, 'The URL must start with http or https.');
-		await this.onSaved({ ...this.draft, name: trimmed }, this.key);
+		if (this.draft.auth === 'oauth' && this.typed.clientSecret && !this.draft.oauthClientId)
+			return invalid(clientId, 'A client secret needs its client ID.');
+		await this.onSaved({ ...this.draft, name: trimmed }, this.typed);
 		this.close();
 	}
 
@@ -1175,6 +1228,13 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					addItem: { name: 'Add server', action: () => this.editMcpServer(null) },
 					emptyState:
 						'No servers yet. Their tools ask first, and their results are marked untrusted.',
+					// The order is also the order of their tool permission groups.
+					onReorder: (from, to) => {
+						const [moved] = servers.splice(from, 1);
+						if (!moved) return;
+						servers.splice(to, 0, moved);
+						void this.save().then(() => this.refresh());
+					},
 					items: servers.map((server) => this.mcpServerRow(server)),
 				},
 			],
@@ -1212,24 +1272,62 @@ export class LibrarianSettingTab extends PluginSettingTab {
 							this.refresh();
 						}),
 				);
-				if (server.enabled) {
-					const keyMissing =
-						server.auth === 'apiKey' &&
-						!this.plugin.secrets.get(apiKeySecretId(server.id));
+				// The button follows the saved sign-in, not the connection, so turning a server off
+				// and on never looks like a sign-out, and a server that lists its tools without a
+				// token (Google) is not shown as signed in.
+				const signedIn = mcp.signedIn(server.id);
+				const keyMissing =
+					server.auth === 'apiKey' && !this.plugin.secrets.get(apiKeySecretId(server.id));
+				// The button names what it does; this badge names what is, so Sign in and Sign out
+				// never have to be read to know where a server stands (LIB-FEAT-228).
+				const badge =
+					server.auth === 'oauth'
+						? signedIn
+							? MCP_BADGES.signedIn
+							: MCP_BADGES.signedOut
+						: server.auth === 'apiKey'
+							? keyMissing
+								? MCP_BADGES.noKey
+								: MCP_BADGES.keySaved
+							: null;
+				// A row without a badge or a button keeps their room, so every row's controls line up.
+				const shown = badge ?? MCP_BADGES.signedOut;
+				const el = setting.controlEl.createDiv({
+					cls: `librarian-mcp-auth is-${shown.tone}`,
+					attr: badge
+						? { role: 'img', 'aria-label': badge.text }
+						: { 'aria-hidden': 'true' },
+				});
+				el.toggleClass('librarian-mcp-spacer', !badge);
+				setIcon(el.createSpan({ cls: 'librarian-mcp-auth-icon' }), shown.icon);
+				steadyLabel(
+					el.createSpan(),
+					Object.values(MCP_BADGES).map((b) => b.text),
+					shown.text,
+				);
+				if (!server.enabled && !signedIn)
+					setting.addButton((b) => {
+						steadyLabel(b.buttonEl, MCP_BUTTON_LABELS, 'Sign in');
+						b.buttonEl.addClass('librarian-mcp-spacer');
+						b.buttonEl.setAttrs({ 'aria-hidden': 'true', tabindex: '-1' });
+					});
+				else {
 					// A server that will not register this app gets Reconnect: Sign in would fail the same way.
 					const oauth = server.auth === 'oauth' && !state.signInBlocked;
-					const label = oauth
-						? state.status === 'ready'
-							? 'Sign out'
-							: 'Sign in'
-						: keyMissing
-							? 'Add key'
-							: 'Reconnect';
+					const label = signedIn
+						? 'Sign out'
+						: oauth
+							? 'Sign in'
+							: keyMissing
+								? 'Add key'
+								: 'Reconnect';
 					setting.addButton((b) => {
 						steadyLabel(b.buttonEl, MCP_BUTTON_LABELS, label);
+						// Only the step the server waits for is accented; Sign out stays quiet.
+						if (label === 'Sign in' || label === 'Add key') b.setCta();
 						b.onClick(async () => {
-							if (keyMissing) return this.editMcpServer(server);
-							if (oauth && state.status === 'ready') await mcp.signOut(server.id);
+							if (signedIn) await mcp.signOut(server.id);
+							else if (keyMissing) return this.editMcpServer(server);
 							else if (oauth) await mcp.signIn(server.id);
 							else await mcp.connect(server.id);
 							this.refresh();
@@ -1270,11 +1368,15 @@ export class LibrarianSettingTab extends PluginSettingTab {
 
 	private editMcpServer(existing: McpServerConfig | null) {
 		const mcp = this.plugin.mcp;
-		new McpServerEditorModal(this.app, this.plugin, existing, async (saved, key) => {
+		new McpServerEditorModal(this.app, this.plugin, existing, async (saved, typed) => {
 			if (existing) Object.assign(existing, saved);
 			else this.plugin.settings.mcpServers.push(saved);
-			if (key && saved.auth === 'apiKey')
-				this.plugin.secrets.set(apiKeySecretId(saved.id), key);
+			if (typed.key && saved.auth === 'apiKey')
+				this.plugin.secrets.set(apiKeySecretId(saved.id), typed.key);
+			if (typed.clientSecret && saved.auth === 'oauth')
+				this.plugin.secrets.set(clientSecretId(saved.id), typed.clientSecret);
+			// A secret without its client is of no use and must not linger on the device.
+			if (!saved.oauthClientId) this.plugin.secrets.clear(clientSecretId(saved.id));
 			await this.save();
 			await mcp.connect(saved.id);
 			this.refresh();

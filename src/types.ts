@@ -25,6 +25,11 @@ export interface McpServerConfig {
 	url: string;
 	auth: McpAuthMode;
 	enabled: boolean;
+	/**
+	 * An OAuth client the user made in the server's console (Google), used instead of registering
+	 * one. Its secret stays in SecretStorage on each device.
+	 */
+	oauthClientId?: string;
 	/** Fingerprint of each tool declaration as last seen, keyed by exposed tool name. */
 	toolHashes: Record<string, string>;
 }

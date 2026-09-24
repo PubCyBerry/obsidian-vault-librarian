@@ -37,7 +37,7 @@ export class TFolder extends TAbstractFile {
 	}
 }
 
-export const Platform = { isMobile: false, isDesktop: true };
+export const Platform = { isMobile: false, isDesktop: true, isDesktopApp: false };
 
 export const requestUrlMock: { impl: ((req: unknown) => Promise<unknown>) | null } = { impl: null };
 

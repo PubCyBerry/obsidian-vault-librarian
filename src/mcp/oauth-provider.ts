@@ -14,6 +14,11 @@ export function oauthSecretId(serverId: string): string {
 	return `vault-librarian-mcp-${serverId}-oauth`;
 }
 
+/** The secret of an OAuth client the user made in the server's console. */
+export function clientSecretId(serverId: string): string {
+	return `vault-librarian-mcp-${serverId}-client-secret`;
+}
+
 /** The OAuth `state` carries the server id so the redirect can be routed without a query string. */
 export function serverIdFromState(state: string | undefined): string | null {
 	const id = state?.split('.')[0];
@@ -40,6 +45,8 @@ export interface OAuthProviderDeps {
 	redirectUrl?: () => string;
 	/** Told each `state` sent out, so the loopback can recognize the answer to this sign-in. */
 	onState?: (state: string) => void;
+	/** A client made in the server's console; when set, no client is registered or stored. */
+	configuredClient?: () => OAuthClientInformationMixed | undefined;
 }
 
 /**
@@ -73,7 +80,7 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	clientInformation(): OAuthClientInformationMixed | undefined {
-		return this.read().client;
+		return this.deps.configuredClient?.() ?? this.read().client;
 	}
 
 	saveClientInformation(client: OAuthClientInformationMixed): void {
@@ -89,6 +96,12 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	redirectToAuthorization(url: URL): void {
+		// Google hands out a refresh token only when asked for offline access, and again only on
+		// a fresh consent; without one the sign-in would end with the hour-long access token.
+		if (url.hostname === 'accounts.google.com') {
+			url.searchParams.set('access_type', 'offline');
+			url.searchParams.set('prompt', 'consent');
+		}
 		const href = url.toString();
 		this.deps.onAuthorizationUrl(href);
 		if (this.deps.interactive()) this.deps.open(href);

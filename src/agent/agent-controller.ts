@@ -26,6 +26,7 @@ import type {
 	StoredUsage,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
+import { isBinaryPath } from '../tools/path-policy';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
 import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
@@ -1259,6 +1260,14 @@ export class AgentController {
 			if (event.ref === null) {
 				await this.deps.app.fileManager.trashFile(file);
 				reverted.push(event.path);
+				continue;
+			}
+			// Snapshots are text, so a picture the shell overwrote would come back with other bytes.
+			if (isBinaryPath(event.path)) {
+				unchanged.push({
+					path: event.path,
+					reason: 'Rewind does not restore binary files.',
+				});
 				continue;
 			}
 			const previous = await this.deps.sessions.readSnapshot(sessionId, event.ref);

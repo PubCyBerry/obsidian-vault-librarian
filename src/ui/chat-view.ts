@@ -273,6 +273,15 @@ export class LibrarianView extends ItemView {
 			const el = this.messagesEl;
 			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 		});
+		// MarkdownRenderer draws [[links]] but leaves opening them to the view; a new tab keeps
+		// the chat where it is (LIB-FEAT-226).
+		this.messagesEl.addEventListener('click', (e) => {
+			const link = (e.target as HTMLElement).closest('a.internal-link');
+			const target = link?.getAttribute('data-href') ?? link?.getAttribute('href');
+			if (!target) return;
+			e.preventDefault();
+			void this.app.workspace.openLinkText(target, '', 'tab');
+		});
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
 		// Messages sent while the agent works, waiting above the composer (LIB-FEAT-184).
 		this.queueEl = root.createDiv({ cls: 'librarian-queue is-hidden' });
@@ -1513,14 +1522,6 @@ export class LibrarianView extends ItemView {
 				usage.usedTokens > 0
 					? 'As reported by the server for the last response.'
 					: 'Updates when the server reports the first response.',
-		});
-		this.popoverEl.createDiv({
-			cls: 'librarian-popover-detail',
-			text: `Reserved output: ${formatTokens(usage.reservedOutputTokens)}`,
-		});
-		this.popoverEl.createDiv({
-			cls: 'librarian-popover-detail',
-			text: `Usable input: ${formatTokens(usage.availableInputTokens)}`,
 		});
 		if (usage.state !== 'normal') {
 			this.popoverEl.createDiv({
