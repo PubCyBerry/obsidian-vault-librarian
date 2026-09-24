@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.11.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.10.0...2.11.0) (2026-09-24)
+
+
+### Features
+
+* back up settings to a file and call OpenAI reasoning models through the Responses API ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+
+
+### Bug Fixes
+
+* keep a browser sign-in waiting while tool calls ask for another one ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+* keep a sign-in handed to a phone until its server arrives with the settings ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+* say why an MCP server refused a request instead of printing its whole reply ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+* send Gemini's thought signatures back with its tool calls ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+* sign in to MCP servers in the system browser instead of Obsidian's web viewer ([875974f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/875974fa64c7a7d04d7adc3f30a8f63fc373be17))
+
 ## [2.10.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.9.0...2.10.0) (2026-09-24)
 
 
