@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.9.0...2.10.0) (2026-09-24)
+
+
+### Features
+
+* carry keys and MCP sign-ins to other devices with a sync passphrase ([7c5702c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7c5702cbe6d0f3af9d303b9e2203d8ab4a940e26))
+
 ## [2.9.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.8.0...2.9.0) (2026-09-24)
 
 
