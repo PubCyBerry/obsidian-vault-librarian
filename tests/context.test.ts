@@ -253,6 +253,24 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 	});
 });
 
+describe("Gemini's signature in the session (LIB-TEST-251)", () => {
+	it('comes back on the tool call when the session is read again', async () => {
+		const { cm } = manager();
+		const messages = await cm.project({
+			model: piModel,
+			events: [
+				ev('user', { content: 'find x' }),
+				ev('assistant', {
+					content: '',
+					toolCalls: [{ id: 'c1', name: 'grep', args: {}, thoughtSignature: 'SIG' }],
+				}),
+			].map((event, index) => ({ event, index })),
+		});
+		const call = (messages[1] as { content: { type: string }[] }).content[0];
+		expect(call).toMatchObject({ type: 'toolCall', id: 'c1', thoughtSignature: 'SIG' });
+	});
+});
+
 describe('compaction (LIB-TEST-065, LIB-TEST-066)', () => {
 	function longConversation(turns: number) {
 		const list: SessionEvent[] = [

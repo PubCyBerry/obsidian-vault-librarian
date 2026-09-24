@@ -5,6 +5,7 @@ import { requestUrlFetch } from '../src/mcp/fetch-shim';
 import { type HttpModule, type LoopbackResult, listenForRedirect } from '../src/mcp/loopback';
 import {
 	changedTools,
+	errorText,
 	exposedToolName,
 	McpManager,
 	readsOnly,
@@ -316,6 +317,48 @@ describe('MCP calls interrupted while the app is away (LIB-TEST-148)', () => {
 	});
 });
 
+describe('refused requests in words (LIB-TEST-239)', () => {
+	const refused = (status: number, body: string) =>
+		Object.assign(new Error(`Streamable HTTP error: Error POSTing to endpoint: ${body}`), {
+			code: status,
+		});
+
+	it('keeps the reason a JSON-RPC reply gives, not the whole reply', () => {
+		const disabled = JSON.stringify({
+			jsonrpc: '2.0',
+			id: 2,
+			result: {
+				isError: true,
+				content: [{ type: 'text', text: 'Calendar MCP API is disabled.' }],
+			},
+		});
+		expect(errorText(refused(403, disabled))).toBe(
+			'The server refused the request (HTTP 403): Calendar MCP API is disabled.',
+		);
+		const rpcError = JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			error: { code: -32600, message: 'Bad' },
+		});
+		expect(errorText(refused(400, rpcError))).toBe(
+			'The server refused the request (HTTP 400): Bad',
+		);
+	});
+
+	it('drops a reply that holds no reason, such as a tool list sent with a 403', () => {
+		const list = JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			result: { tools: Array.from({ length: 500 }, (_, i) => ({ name: `tool_${i}` })) },
+		});
+		const text = errorText(refused(403, list));
+		expect(text).toMatch(/^The server refused the request \(HTTP 403\)\. /);
+		expect(text).not.toContain('tool_');
+		expect(errorText(refused(502, 'x'.repeat(2000))).length).toBeLessThanOrEqual(501);
+		expect(errorText(new Error('plain'))).toBe('plain');
+	});
+});
+
 describe('desktop sign-in through 127.0.0.1 (LIB-TEST-201)', () => {
 	const g = globalThis as { window?: unknown };
 	g.window ??= globalThis;
@@ -505,7 +548,11 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 	/** What the fake token endpoint received, newest last. */
 	const tokenRequests: { authorization: string | null; body: URLSearchParams }[] = [];
 
-	function managerFor(secrets = new Map<string, string>(), opened: string[] = []) {
+	function managerFor(
+		secrets = new Map<string, string>(),
+		opened: string[] = [],
+		loopback = false,
+	) {
 		const settings = mergeSettings({
 			mcpServers: [
 				{
@@ -533,6 +580,7 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 			clientVersion: 'test',
 			open: (url: string) => opened.push(url),
 			notice: () => {},
+			loopback: loopback ? () => http as unknown as HttpModule : undefined,
 		});
 	}
 
@@ -637,6 +685,33 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		});
 	});
 
+	it('LIB-TEST-237: a tool call during a browser sign-in leaves that sign-in alone', async () => {
+		globalThis.fetch = fakeServer('registers');
+		(globalThis as { window?: unknown }).window ??= globalThis;
+		const opened: string[] = [];
+		const manager = managerFor(new Map(), opened, true);
+		await manager.connect('srv');
+		const tool = () => manager.tools().find((t) => t.name === 'srv__list_events')!;
+		// Before any sign-in, a call says what to do instead of passing on the bare 401.
+		await expect(tool().execute('c0', {}, undefined)).rejects.toThrow(
+			'Sign in to Server first, under Settings, MCP servers.',
+		);
+		await manager.signIn('srv');
+		expect(opened).toHaveLength(1);
+		const asked = new URL(opened[0]!).searchParams;
+		// The agent calls a tool while the browser is still open. Google answers 401, and the SDK
+		// would start an authorization of its own, replacing the state and the verifier.
+		await expect(tool().execute('c1', {}, undefined)).rejects.toThrow('waiting in the browser');
+		expect(opened).toHaveLength(1);
+		const back = new URL(asked.get('redirect_uri')!);
+		back.searchParams.set('code', 'the-code');
+		back.searchParams.set('state', asked.get('state')!);
+		expect((await realFetch(back)).status).toBe(200);
+		for (let i = 0; i < 100 && !manager.signedIn('srv'); i++)
+			await new Promise((r) => setTimeout(r, 10));
+		expect(manager.signedIn('srv')).toBe(true);
+	});
+
 	it('LIB-TEST-236: a desktop signs in for a phone, which takes a grant of its own', async () => {
 		globalThis.fetch = fakeServer('registers');
 		(globalThis as { window?: unknown }).window ??= globalThis;
@@ -724,5 +799,10 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		await phone.manager.claimHandoffs();
 		expect(settings.oauthHandoffs).toEqual({});
 		expect(phone.app.secretStorage.getSecret(oauthSecretId('srv'))).toContain('newer');
+
+		// LIB-TEST-243: a sign-in for a server this device does not have yet waits for its settings.
+		settings.oauthHandoffs = { later: { ...handoff!, nonce: 'another' } };
+		await phone.manager.claimHandoffs();
+		expect(settings.oauthHandoffs?.later).toBeDefined();
 	});
 });

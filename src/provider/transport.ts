@@ -9,6 +9,7 @@ import type {
 	Usage,
 } from '@earendil-works/pi-ai';
 import { convertMessages, streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
+import { streamSimple as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { parseStreamingJson } from '@earendil-works/pi-ai/utils/json-parse';
 import {
@@ -17,9 +18,10 @@ import {
 	toToolDeclaration,
 } from '@earendil-works/pi-ai/utils/transcript';
 import { requestUrl } from 'obsidian';
-import type { ProviderConfig, ThinkingLevel, TransportMode } from '../types';
+import { requestUrlFetch } from '../mcp/fetch-shim';
+import type { InputModality, ProviderConfig, ThinkingLevel, TransportMode } from '../types';
 import { appIsHidden, wasHiddenSince } from '../visibility';
-import type { EffectiveRequestOptions, PiModel } from './provider-manager';
+import type { CompletionsModel, EffectiveRequestOptions, PiModel } from './provider-manager';
 
 export const NO_STREAMING_NOTICE =
 	'Streaming is not available for this provider. Waiting for the full response.';
@@ -42,15 +44,16 @@ export interface ResolvedRequest {
 	options: EffectiveRequestOptions;
 }
 
-type Compat = NonNullable<PiModel['compat']>;
+type Compat = NonNullable<CompletionsModel['compat']>;
 
 /** Fill the defaults `pi-ai` derives from the URL so `convertMessages` gets a complete compat. */
-function resolveCompat(model: PiModel) {
+function resolveCompat(model: CompletionsModel) {
 	const c: Compat = model.compat ?? {};
 	return {
 		supportsStore: c.supportsStore ?? false,
 		supportsDeveloperRole: c.supportsDeveloperRole ?? false,
-		supportsReasoningEffort: c.supportsReasoningEffort ?? false,
+		// Google's OpenAI endpoint takes it, as pi-ai's own detection says (LIB-FEAT-250).
+		supportsReasoningEffort: c.supportsReasoningEffort ?? isGoogle(model.baseUrl),
 		supportsUsageInStreaming: c.supportsUsageInStreaming ?? true,
 		supportsFinishReason: c.supportsFinishReason ?? true,
 		maxTokensField: c.maxTokensField ?? 'max_tokens',
@@ -107,7 +110,7 @@ function emptyUsage(): Usage {
 	};
 }
 
-function usageFrom(model: PiModel, raw: Record<string, unknown> | undefined): Usage {
+function usageFrom(model: CompletionsModel, raw: Record<string, unknown> | undefined): Usage {
 	const u = emptyUsage();
 	if (!raw) return u;
 	const n = (v: unknown) => (typeof v === 'number' ? v : 0);
@@ -128,7 +131,10 @@ function usageFrom(model: PiModel, raw: Record<string, unknown> | undefined): Us
 	return u;
 }
 
-function reasoningEffort(model: PiModel, level: ThinkingLevel | undefined): string | undefined {
+function reasoningEffort(
+	model: CompletionsModel,
+	level: ThinkingLevel | undefined,
+): string | undefined {
 	if (!model.reasoning) return undefined;
 	const wanted = level ?? 'off';
 	const mapped = model.thinkingLevelMap?.[wanted];
@@ -137,12 +143,61 @@ function reasoningEffort(model: PiModel, level: ThinkingLevel | undefined): stri
 	return wanted === 'off' ? undefined : wanted;
 }
 
+/** Google's placeholder for a call it did not sign, such as one kept before signatures were. */
+export const UNSIGNED_CALL = 'skip_thought_signature_validator';
+
+function isGoogle(baseUrl: string): boolean {
+	try {
+		return /(^|\.)generativelanguage\.googleapis\.com$/.test(new URL(baseUrl).hostname);
+	} catch {
+		return false;
+	}
+}
+
+type SignedCall = { id?: string; extra_content?: { google?: { thought_signature?: unknown } } };
+
+/** The signature Gemini put on a call in a Chat Completions response, if any. */
+function signatureOf(call: SignedCall): string | undefined {
+	const value = call.extra_content?.google?.thought_signature;
+	return typeof value === 'string' && value ? value : undefined;
+}
+
+/**
+ * Gemini signs the first function call of each step and wants that signature back on the call in
+ * every later request, under `extra_content.google` (LIB-FEAT-250). Calls keep the signatures
+ * their responses gave; on Google's own endpoint a first call without one, such as one from
+ * another model or an older session, gets Google's placeholder instead of a 400.
+ */
+export function withThoughtSignatures(
+	messages: unknown[],
+	context: TranscriptContext,
+	baseUrl: string,
+): void {
+	const signed = new Map<string, string>();
+	for (const m of context.messages)
+		if (m.role === 'assistant')
+			for (const c of m.content)
+				if (c.type === 'toolCall' && c.thoughtSignature)
+					signed.set(c.id, c.thoughtSignature);
+	const google = isGoogle(baseUrl);
+	if (!signed.size && !google) return;
+	for (const m of messages as { role?: string; tool_calls?: SignedCall[] }[]) {
+		if (m.role !== 'assistant' || !m.tool_calls) continue;
+		m.tool_calls.forEach((call, i) => {
+			const signature =
+				(call.id ? signed.get(call.id) : undefined) ??
+				(google && i === 0 ? UNSIGNED_CALL : undefined);
+			if (signature) call.extra_content = { google: { thought_signature: signature } };
+		});
+	}
+}
+
 /**
  * The non-streaming request body. Assembly order is fixed so the prefix stays byte-identical
  * across requests of the same conversation: instructions and tools first, conversation last.
  */
 export function buildRequestBody(
-	model: PiModel,
+	model: CompletionsModel,
 	context: TranscriptContext,
 	options: SimpleStreamOptions & { thinkingLevel?: ThinkingLevel },
 ): Record<string, unknown> {
@@ -160,6 +215,7 @@ export function buildRequestBody(
 			},
 		};
 	});
+	withThoughtSignatures(messages, transcript, model.baseUrl);
 	const body: Record<string, unknown> = { model: model.id, messages };
 	if (tools.length > 0) body.tools = tools;
 	body.stream = false;
@@ -188,7 +244,7 @@ function buildHeaders(apiKey: string | null, authHeader: boolean): Record<string
 
 /** OpenAI-compatible request through Obsidian's `requestUrl`: no CORS, but no streaming either. */
 export function streamViaRequestUrl(
-	model: PiModel,
+	model: CompletionsModel,
 	context: TranscriptContext,
 	options: SimpleStreamOptions & { thinkingLevel?: ThinkingLevel },
 	auth: { apiKey: string | null; authHeader: boolean },
@@ -275,6 +331,7 @@ export function streamViaRequestUrl(
 			for (const call of calls) {
 				const fn = (call.function ?? {}) as Record<string, unknown>;
 				const args = fn.arguments;
+				const signature = signatureOf(call);
 				const block: ToolCall = {
 					type: 'toolCall',
 					id:
@@ -286,6 +343,7 @@ export function streamViaRequestUrl(
 						typeof args === 'string'
 							? parseStreamingJson(args)
 							: ((args as ToolCall['arguments'] | undefined) ?? {}),
+					...(signature ? { thoughtSignature: signature } : {}),
 				};
 				output.content.push(block);
 				const idx = output.content.length - 1;
@@ -330,12 +388,42 @@ export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(win
 	let status: number | null = null;
 	let bytes = 0;
 	let failure: string | null = null;
+	// Pi's Chat Completions parser drops `extra_content`, so the signatures are read here (LIB-FEAT-250).
+	const signatures = new Map<string, string>();
+	const idAt = new Map<number, string>();
+	const decoder = new TextDecoder();
+	let pending = '';
+	const readSignatures = (bytes: Uint8Array) => {
+		pending += decoder.decode(bytes, { stream: true });
+		const lines = pending.split('\n');
+		pending = lines.pop() ?? '';
+		for (const line of lines) {
+			if (!line.startsWith('data:') || !line.includes('"tool_calls"')) continue;
+			try {
+				const chunk = JSON.parse(line.slice(5)) as {
+					choices?: { delta?: { tool_calls?: (SignedCall & { index?: number })[] } }[];
+				};
+				for (const call of chunk.choices?.[0]?.delta?.tool_calls ?? []) {
+					if (call.id && call.index !== undefined) idAt.set(call.index, call.id);
+					const id =
+						call.id ?? (call.index !== undefined ? idAt.get(call.index) : undefined);
+					const signature = signatureOf(call);
+					if (id && signature) signatures.set(id, signature);
+				}
+			} catch {
+				// Not every data line is JSON ([DONE]); the parser reports real errors itself.
+			}
+		}
+	};
 	const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)} s`;
 	const wrapped: typeof fetch = async (input, init) => {
 		startedAt = Date.now();
 		status = null;
 		bytes = 0;
 		failure = null;
+		signatures.clear();
+		idAt.clear();
+		pending = '';
 		let response: Response;
 		try {
 			response = await base(input, init);
@@ -354,6 +442,7 @@ export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(win
 					if (done) controller.close();
 					else {
 						bytes += value.byteLength;
+						readSignatures(value);
 						controller.enqueue(value);
 					}
 				} catch (error) {
@@ -372,6 +461,12 @@ export function createDiagnosticFetch(base: typeof fetch = window.fetch.bind(win
 	};
 	return {
 		fetch: wrapped,
+		/** Puts the signatures the response carried on the finished message's tool calls. */
+		sign(message: AssistantMessage): void {
+			for (const c of message.content)
+				if (c.type === 'toolCall' && !c.thoughtSignature && signatures.has(c.id))
+					c.thoughtSignature = signatures.get(c.id);
+		},
 		/** One parenthetical for the error block, empty before any request. */
 		describe(): string {
 			if (!startedAt) return '';
@@ -428,32 +523,49 @@ export class TransportRouter {
 			};
 			const piModel = model as PiModel;
 			const mode = this.effectiveMode(provider);
-			if (mode === 'requestUrl') {
-				this.events.onNonStreaming?.();
-				return streamViaRequestUrl(piModel, context, opts, req);
-			}
 			const fetchOpts: SimpleStreamOptions = {
 				...opts,
 				apiKey: req.authHeader && req.apiKey ? req.apiKey : 'unused',
 				headers: req.authHeader && req.apiKey ? undefined : { Authorization: null },
 			};
-			if (mode === 'fetch') return this.fetchStream(piModel, context, fetchOpts, false);
-			return this.autoStream(provider, piModel, context, fetchOpts, opts, req);
+			// One request in the model's format (LIB-FEAT-247). Without streaming, Chat Completions has a
+			// request of its own; the Responses API takes requestUrl as its fetch and reads the whole
+			// event stream at once.
+			const send = (o: SimpleStreamOptions) =>
+				piModel.api === 'openai-responses'
+					? streamResponses(piModel, context, o)
+					: streamSimple(piModel, context, {
+							...o,
+							onPayload: async (params, m) => {
+								const next = (await o.onPayload?.(params, m)) ?? params;
+								const messages = (next as { messages?: unknown[] }).messages;
+								if (messages)
+									withThoughtSignatures(messages, context, piModel.baseUrl);
+								return next;
+							},
+						});
+			const viaRequestUrl = () =>
+				piModel.api === 'openai-responses'
+					? streamResponses(piModel, context, { ...fetchOpts, fetch: requestUrlFetch })
+					: streamViaRequestUrl(piModel, context, opts, req);
+			if (mode === 'requestUrl') {
+				this.events.onNonStreaming?.();
+				return viaRequestUrl();
+			}
+			if (mode === 'fetch') return this.fetchStream(send, fetchOpts);
+			return this.autoStream(provider, send, viaRequestUrl, fetchOpts);
 		};
 	}
 
+	/** A fixed fetch transport reports network failures with the hint to switch transports. */
 	private fetchStream(
-		model: PiModel,
-		context: TranscriptContext,
+		send: (options: SimpleStreamOptions) => AssistantMessageEventStream,
 		options: SimpleStreamOptions,
-		allowFallback: boolean,
 	): AssistantMessageEventStream {
-		if (allowFallback) return streamSimple(model, context, options);
-		// A fixed fetch transport reports network failures with the hint to switch transports.
 		const out = createAssistantMessageEventStream();
 		const diag = createDiagnosticFetch();
 		let gotResponse = false;
-		const inner = streamSimple(model, context, {
+		const inner = send({
 			...options,
 			fetch: diag.fetch,
 			onResponse: async (r, m) => {
@@ -463,6 +575,7 @@ export class TransportRouter {
 		});
 		void (async () => {
 			for await (const ev of inner) {
+				if (ev.type === 'done') diag.sign(ev.message);
 				if (ev.type === 'error' && ev.reason === 'error') {
 					const raw = ev.error.errorMessage ?? '';
 					ev.error.errorMessage =
@@ -479,17 +592,15 @@ export class TransportRouter {
 
 	private autoStream(
 		provider: ProviderConfig,
-		model: PiModel,
-		context: TranscriptContext,
+		send: (options: SimpleStreamOptions) => AssistantMessageEventStream,
+		viaRequestUrl: () => AssistantMessageEventStream,
 		fetchOptions: SimpleStreamOptions,
-		urlOptions: SimpleStreamOptions & { thinkingLevel?: ThinkingLevel },
-		auth: ResolvedRequest,
 	): AssistantMessageEventStream {
 		const out = createAssistantMessageEventStream();
 		const diag = createDiagnosticFetch();
 		let gotResponse = false;
 		const startedAt = Date.now();
-		const inner = streamSimple(model, context, {
+		const inner = send({
 			...fetchOptions,
 			fetch: diag.fetch,
 			onResponse: async (r, m) => {
@@ -499,11 +610,12 @@ export class TransportRouter {
 		});
 		void (async () => {
 			for await (const ev of inner) {
+				if (ev.type === 'done') diag.sign(ev.message);
 				const networkFailure =
 					ev.type === 'error' &&
 					ev.reason === 'error' &&
 					!gotResponse &&
-					!urlOptions.signal?.aborted &&
+					!fetchOptions.signal?.aborted &&
 					!looksLikeHttpError(ev.error.errorMessage) &&
 					// A phone blocks requests while the app is away; that is not CORS, and requestUrl
 					// would fail the same way. The controller asks again when the app returns.
@@ -515,14 +627,7 @@ export class TransportRouter {
 					this.fallenBack.add(provider.id);
 					this.events.onFallback?.(provider.id);
 					this.events.onNonStreaming?.();
-					for await (const retryEv of streamViaRequestUrl(
-						model,
-						context,
-						urlOptions,
-						auth,
-					)) {
-						out.push(retryEv);
-					}
+					for await (const retryEv of viaRequestUrl()) out.push(retryEv);
 					out.end();
 					return;
 				}
@@ -534,26 +639,46 @@ export class TransportRouter {
 	}
 }
 
-/** A model a server lists at /models, with its context window when the server reports one. */
+/** A model a server lists at /models, with whatever details the server reports about it. */
 export interface ServerModel {
 	id: string;
 	name?: string;
 	contextWindow?: number;
+	maxTokens?: number;
+	input?: InputModality[];
+	reasoning?: boolean;
+	toolCalling?: boolean;
 }
 
-/** vLLM reports max_model_len and OpenRouter context_length; most servers report neither. */
+const positive = (n: unknown): n is number => typeof n === 'number' && n > 0;
+
+/**
+ * vLLM reports max_model_len; OpenRouter reports context_length, the output limit, the input kinds
+ * and the parameters it takes (LIB-FEAT-246). OpenAI and most servers report only the name.
+ */
 function serverModel(entry: unknown): ServerModel[] {
 	if (!entry || typeof entry !== 'object') return [];
 	const e = entry as Record<string, unknown>;
 	if (typeof e.id !== 'string' || !e.id) return [];
-	const size = [e.max_model_len, e.context_length, e.context_window].find(
-		(n): n is number => typeof n === 'number' && n > 0,
-	);
+	const size = [e.max_model_len, e.context_length, e.context_window].find(positive);
+	const top = e.top_provider as { max_completion_tokens?: unknown } | undefined;
+	const modalities = (e.architecture as { input_modalities?: unknown } | undefined)
+		?.input_modalities;
+	const params = Array.isArray(e.supported_parameters) ? e.supported_parameters : undefined;
 	return [
 		{
 			id: e.id,
 			...(typeof e.name === 'string' && e.name ? { name: e.name } : {}),
 			...(size ? { contextWindow: size } : {}),
+			...(positive(top?.max_completion_tokens)
+				? { maxTokens: top.max_completion_tokens }
+				: {}),
+			...(Array.isArray(modalities)
+				? { input: modalities.includes('image') ? ['text', 'image'] : ['text'] }
+				: {}),
+			...(params
+				? { reasoning: params.includes('reasoning'), toolCalling: params.includes('tools') }
+				: {}),
 		},
 	];
 }

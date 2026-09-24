@@ -19,6 +19,8 @@ export interface StoredToolCall {
 	id: string;
 	name: string;
 	args: Record<string, unknown>;
+	/** Gemini's thought signature, which the next request must send back with the call (LIB-FEAT-250). */
+	thoughtSignature?: string;
 }
 
 export interface StoredUsage {

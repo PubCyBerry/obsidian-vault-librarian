@@ -98,6 +98,41 @@ export function readsOnly(tool: Pick<Tool, 'name' | 'annotations'>): boolean {
 	);
 }
 
+const POSTING = 'Error POSTing to endpoint: ';
+const clip = (text: string) => (text.length > 500 ? `${text.slice(0, 500)}…` : text);
+
+/**
+ * A failure in words a person can read (LIB-FEAT-238). The SDK puts a refused request's whole
+ * reply in the message, and Google refuses with its full tool list, over 100 KB; the reason in a
+ * JSON-RPC reply is kept instead.
+ */
+export function errorText(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	const at = message.indexOf(POSTING);
+	if (at < 0) return clip(message);
+	const status = Number((error as { code?: unknown }).code);
+	const reason = replyReason(message.slice(at + POSTING.length));
+	if (reason) return clip(`The server refused the request (HTTP ${status}): ${reason}`);
+	return status === 403
+		? 'The server refused the request (HTTP 403). The signed-in account, or the project of a client made in its console, may lack access.'
+		: `The server refused the request (HTTP ${status}).`;
+}
+
+function replyReason(body: string): string {
+	try {
+		const reply = JSON.parse(body) as {
+			error?: { message?: string };
+			result?: { isError?: boolean; content?: { text?: string }[] };
+		};
+		return (
+			reply.error?.message ??
+			(reply.result?.isError ? (reply.result.content?.[0]?.text ?? '') : '')
+		);
+	} catch {
+		return body.trim();
+	}
+}
+
 /** A token response, kept so every caller of one refresh gets its own copy. */
 interface SharedResponse {
 	status: number;
@@ -339,7 +374,7 @@ export class McpManager {
 			const blocked = this.signInBlocked(id, error);
 			this.setState(id, {
 				status: 'error',
-				message: blocked ?? (error instanceof Error ? error.message : String(error)),
+				message: blocked ?? errorText(error),
 				signInBlocked: blocked !== null,
 				tools: [],
 			});
@@ -392,7 +427,7 @@ export class McpManager {
 			this.setState(id, {
 				...this.state(id),
 				status: 'error',
-				message: blocked ?? (error instanceof Error ? error.message : String(error)),
+				message: blocked ?? errorText(error),
 				signInBlocked: blocked !== null,
 			});
 		} finally {
@@ -429,7 +464,7 @@ export class McpManager {
 		} catch (error) {
 			this.setState(id, {
 				status: 'error',
-				message: `Sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
+				message: `Sign-in failed: ${errorText(error)}`,
 				tools: [],
 			});
 			return;
@@ -547,7 +582,7 @@ export class McpManager {
 			);
 		} catch (error) {
 			const blocked = this.signInBlocked(id, error);
-			const reason = blocked ?? (error instanceof Error ? error.message : String(error));
+			const reason = blocked ?? errorText(error);
 			this.deps.notice(`Sign-in for a mobile device failed: ${reason}`);
 		} finally {
 			loopback.close();
@@ -557,7 +592,9 @@ export class McpManager {
 	/**
 	 * Takes the sign-ins another device made for this one: each goes into this device's own
 	 * storage, its slot is emptied, and the server connects. One this device cannot open yet (no
-	 * passphrase, or another one) waits; one it already took, which sync can bring back, is dropped.
+	 * passphrase, or another one) waits, and so does one for a server this device does not have
+	 * yet: its settings may still be on their way (LIB-TEST-243). One it already took, which sync
+	 * can bring back, is dropped. Removing a server on the desktop empties its slot.
 	 */
 	async claimHandoffs(): Promise<void> {
 		const settings = this.deps.settings();
@@ -566,8 +603,8 @@ export class McpManager {
 		let changed = false;
 		for (const [id, handoff] of Object.entries(handoffs)) {
 			const server = this.server(id);
-			if (handoff.from === me && server) continue;
-			if (!server || this.deps.taken?.has(handoff.nonce)) {
+			if (handoff.from === me || !server) continue;
+			if (this.deps.taken?.has(handoff.nonce)) {
 				delete handoffs[id];
 				changed = true;
 				continue;
@@ -675,13 +712,19 @@ export class McpManager {
 						} catch (error) {
 							const blocked = this.signInBlocked(server.id, error);
 							if (blocked) throw new Error(blocked);
-							if (signal?.aborted || !wasHiddenSince(startedAt)) throw error;
+							// A server that lists its tools unsigned (Google) asks only here; say what to do.
+							if (error instanceof UnauthorizedError && !this.signedIn(server.id))
+								throw new Error(
+									this.signIns.has(server.id)
+										? `Finish signing in to ${server.name} in the browser, then try again.`
+										: `Sign in to ${server.name} first, under Settings, MCP servers.`,
+								);
+							if (signal?.aborted) throw error;
+							if (!wasHiddenSince(startedAt)) throw new Error(errorText(error));
 							// The server may have run the call before the app froze, so only a call that
 							// is safe to repeat is sent again once the app is back.
 							if (!repeatable(tool))
-								throw new Error(
-									`${error instanceof Error ? error.message : String(error)}. ${AWAY_UNKNOWN}`,
-								);
+								throw new Error(`${errorText(error)}. ${AWAY_UNKNOWN}`);
 							await whenVisible(signal);
 							if (signal?.aborted) throw error;
 							result = await call();
@@ -744,6 +787,8 @@ export class McpManager {
 			secrets: this.deps.secrets,
 			configuredClient: () => this.configuredClient(id),
 			interactive: () => this.interactive.has(id),
+			// Only the sign-in the user pressed may start an authorization while one waits.
+			busy: () => this.signIns.has(id) && !this.interactive.has(id),
 			open: this.deps.open,
 			onTokensRejected: () => this.rejected.add(id),
 			redirectUrl: () => this.signIns.get(id)?.loopback.redirectUrl ?? OAUTH_REDIRECT_URL,

@@ -109,6 +109,9 @@ describe('settings pages', () => {
 			'NAS',
 			'Rewind',
 			'obsidian-markdown',
+			// A settings backup to carry to another device (LIB-TEST-242).
+			'Export settings',
+			'Restore',
 		])
 			expect(all.some((r) => text(r).includes(query))).toBe(true);
 	});

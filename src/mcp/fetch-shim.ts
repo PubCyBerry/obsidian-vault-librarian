@@ -4,8 +4,13 @@ import { requestUrl } from 'obsidian';
  * A `fetch` built on Obsidian's `requestUrl` for MCP servers that do not allow the Obsidian origin
  * through CORS. It cannot stream, so the server-to-client event stream (a GET for
  * `text/event-stream`) is answered with 405 locally, which the MCP client treats as "not offered".
+ * The Responses API also sends through it when a provider's transport is requestUrl; its POST
+ * answer, an event stream, arrives whole (LIB-FEAT-247).
  */
-export async function requestUrlFetch(input: string | URL, init?: RequestInit): Promise<Response> {
+export async function requestUrlFetch(
+	input: string | URL | Request,
+	init?: RequestInit,
+): Promise<Response> {
 	const method = (init?.method ?? 'GET').toUpperCase();
 	const headers = new Headers(init?.headers);
 	if (method === 'GET' && (headers.get('accept') ?? '').includes('text/event-stream'))
@@ -17,7 +22,7 @@ export async function requestUrlFetch(input: string | URL, init?: RequestInit): 
 				? init.body.toString()
 				: undefined;
 	const response = await requestUrl({
-		url: String(input),
+		url: input instanceof Request ? input.url : String(input),
 		method,
 		headers: headerRecord(headers),
 		body,

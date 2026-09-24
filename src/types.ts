@@ -1,4 +1,8 @@
-export type ApiType = 'openai-completions' | (string & {});
+/** Chat Completions (`/chat/completions`), which every OpenAI-compatible server speaks. */
+export const COMPLETIONS_API = 'openai-completions';
+/** OpenAI's Responses API (`/responses`), which newer reasoning models need to call tools (LIB-FEAT-247). */
+export const RESPONSES_API = 'openai-responses';
+export type ApiType = typeof COMPLETIONS_API | typeof RESPONSES_API | (string & {});
 export type TransportMode = 'auto' | 'requestUrl' | 'fetch';
 export type InputModality = 'text' | 'image';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';

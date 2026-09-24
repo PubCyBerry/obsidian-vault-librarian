@@ -146,6 +146,11 @@ export class SecretStore {
 		return 'locked';
 	}
 
+	/** Resolves once every change so far is sealed into the settings. */
+	settled(): Promise<void> {
+		return this.sealing;
+	}
+
 	/** Seals any text with this device's passphrase; null when it has none. */
 	async seal(text: string): Promise<string | null> {
 		const passphrase = this.passphrase();

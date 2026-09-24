@@ -25,6 +25,20 @@ export function desktopHttp(): HttpModule | null {
 	return Platform.isDesktopApp && nodeRequire ? (nodeRequire('http') as HttpModule) : null;
 }
 
+/**
+ * Opens a sign-in page in the system browser. window.open lands in Obsidian's Web viewer when
+ * it opens external links, and Google refuses to sign in inside an embedded webview.
+ */
+export function openInBrowser(url: string): void {
+	const nodeRequire = (window as unknown as { require?: (id: string) => unknown }).require;
+	const electron =
+		Platform.isDesktopApp && nodeRequire
+			? (nodeRequire('electron') as { shell?: { openExternal(url: string): Promise<void> } })
+			: null;
+	if (electron?.shell) void electron.shell.openExternal(url);
+	else window.open(url);
+}
+
 export interface Loopback {
 	redirectUrl: string;
 	close(): void;

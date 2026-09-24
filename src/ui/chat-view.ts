@@ -282,6 +282,28 @@ export class LibrarianView extends ItemView {
 			e.preventDefault();
 			void this.app.workspace.openLinkText(target, '', 'tab');
 		});
+		// A web link offers its text and its address to copy (LIB-FEAT-244).
+		this.messagesEl.addEventListener('contextmenu', (e) => {
+			const link = (e.target as HTMLElement).closest('a.external-link');
+			const href = link?.getAttribute('href');
+			if (!link || !href) return;
+			e.preventDefault();
+			const copy = (text: string) => void navigator.clipboard.writeText(text);
+			new Menu()
+				.addItem((i) =>
+					i
+						.setTitle('Copy text')
+						.setIcon('copy')
+						.onClick(() => copy(link.textContent ?? '')),
+				)
+				.addItem((i) =>
+					i
+						.setTitle('Copy link')
+						.setIcon('link')
+						.onClick(() => copy(href)),
+				)
+				.showAtMouseEvent(e);
+		});
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
 		// Messages sent while the agent works, waiting above the composer (LIB-FEAT-184).
 		this.queueEl = root.createDiv({ cls: 'librarian-queue is-hidden' });

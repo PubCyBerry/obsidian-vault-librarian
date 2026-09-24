@@ -4,13 +4,14 @@ import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
 import { ContextManager } from './context/context-manager';
-import { desktopHttp } from './mcp/loopback';
+import { desktopHttp, openInBrowser } from './mcp/loopback';
 import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
 import { clientSecretId, OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import { SHELL_GROUP, ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
 import { replay, SessionManager } from './session/session-manager';
+import { backupFileName, backupOf } from './settings/backup';
 import { LibrarianSettingTab } from './settings/settings-tab';
 import { createShellTool, ShellSession } from './shell/shell-tool';
 import {
@@ -88,7 +89,7 @@ export default class LibrarianPlugin extends Plugin {
 			secrets: this.secrets,
 			permissions: this.permissions,
 			clientVersion: this.manifest.version,
-			open: (url) => window.open(url),
+			open: openInBrowser,
 			notice: (message) => new Notice(message),
 			loopback: desktopHttp,
 			deviceId: () => this.deviceId(),
@@ -346,6 +347,32 @@ export default class LibrarianPlugin extends Plugin {
 		this.settings.oauthHandoffs = fresh.oauthHandoffs;
 		if (sealedChanged) await this.secrets.unlock();
 		await this.mcp.claimHandoffs();
+	}
+
+	/** Writes every setting to a JSON file at the top of the vault and returns its path (LIB-FEAT-241). */
+	async exportSettings(): Promise<string> {
+		// A key typed a moment ago may still be on its way into the sealed bundle.
+		await this.secrets.settled();
+		const path = backupFileName();
+		const text = JSON.stringify(backupOf(this.settings, this.manifest.version), null, '\t');
+		const existing = this.app.vault.getFileByPath(path);
+		if (existing) await this.app.vault.modify(existing, text);
+		else await this.app.vault.create(path, text);
+		return path;
+	}
+
+	/**
+	 * Replaces every setting on this device with a backup's. Its keys come back when this device's
+	 * sync passphrase opens the sealed bundle in it; sign-ins waiting for this device are kept.
+	 */
+	async importSettings(next: LibrarianSettings): Promise<void> {
+		for (const server of this.settings.mcpServers) await this.mcp.disconnect(server.id);
+		this.settings = { ...next, oauthHandoffs: this.settings.oauthHandoffs };
+		await this.saveSettings();
+		await this.secrets.unlock();
+		await this.mcp.claimHandoffs();
+		await this.mcp.connectAll();
+		await this.controller.refreshReadiness();
 	}
 
 	/** This device's id, made once and kept in its local storage, never synced. */

@@ -1,6 +1,7 @@
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 import type { App } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
+import { modelFromServer } from '../src/provider/model-catalog';
 import {
 	effectiveRequestOptions,
 	mergeCompat,
@@ -8,7 +9,13 @@ import {
 	selectableThinkingLevels,
 	toPiModel,
 } from '../src/provider/provider-manager';
-import { buildRequestBody, TransportRouter, testConnection } from '../src/provider/transport';
+import {
+	buildRequestBody,
+	createDiagnosticFetch,
+	TransportRouter,
+	testConnection,
+	UNSIGNED_CALL,
+} from '../src/provider/transport';
 import { isValidSecretId, SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider } from '../src/types';
@@ -38,6 +45,14 @@ describe('connection check', () => {
 								{ id: 'qwen', name: 'Qwen', max_model_len: 262144 },
 								{ id: 'router', context_length: 131072 },
 								{ name: 'no id' },
+								// OpenRouter's entry also tells the output limit, inputs and parameters (LIB-TEST-248).
+								{
+									id: 'openai/gpt-6-luna',
+									context_length: 1050000,
+									top_provider: { max_completion_tokens: 128000 },
+									architecture: { input_modalities: ['text', 'image', 'file'] },
+									supported_parameters: ['tools', 'reasoning', 'max_tokens'],
+								},
 							],
 						},
 					};
@@ -48,6 +63,14 @@ describe('connection check', () => {
 						{ id: 'model' },
 						{ id: 'qwen', name: 'Qwen', contextWindow: 262144 },
 						{ id: 'router', contextWindow: 131072 },
+						{
+							id: 'openai/gpt-6-luna',
+							contextWindow: 1050000,
+							maxTokens: 128000,
+							input: ['text', 'image'],
+							reasoning: true,
+							toolCalling: true,
+						},
 					],
 				});
 				requestUrlMock.impl = async () => ({
@@ -243,6 +266,266 @@ describe('secrets (LIB-TEST-024)', () => {
 		expect(store.get('vault-librarian-openwebui')).toBe('secret');
 		store.clear('vault-librarian-openwebui');
 		expect(store.get('vault-librarian-openwebui')).toBe('');
+	});
+});
+
+describe("Gemini's thought signatures (LIB-TEST-251)", () => {
+	afterEach(() => {
+		requestUrlMock.impl = null;
+	});
+
+	const google = {
+		...newProvider('google'),
+		baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+		transport: 'requestUrl' as const,
+	};
+	const gemini = modelFromServer(google.baseUrl, { id: 'models/gemini-3.6-flash' });
+	const signedCall = {
+		id: 'call_a',
+		type: 'function',
+		function: { name: 'grep', arguments: '{"query":"x"}' },
+		extra_content: { google: { thought_signature: 'SIG_A' } },
+	};
+	const assistant = (calls: { id: string; signature?: string }[]) => ({
+		role: 'assistant' as const,
+		content: calls.map((c) => ({
+			type: 'toolCall' as const,
+			id: c.id,
+			name: 'grep',
+			arguments: { query: 'x' },
+			...(c.signature ? { thoughtSignature: c.signature } : {}),
+		})),
+		api: 'openai-completions',
+		provider: 'google',
+		model: gemini.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: 'toolUse' as const,
+		timestamp: 2,
+	});
+	const result = (id: string) => ({
+		role: 'toolResult' as const,
+		toolCallId: id,
+		toolName: 'grep',
+		content: [{ type: 'text' as const, text: 'none' }],
+		isError: false,
+		timestamp: 3,
+	});
+
+	it('keeps the signature of a call through requestUrl and sends it back', async () => {
+		requestUrlMock.impl = async () => ({
+			status: 200,
+			json: {
+				choices: [
+					{
+						message: { content: '', tool_calls: [signedCall] },
+						finish_reason: 'tool_calls',
+					},
+				],
+			},
+		});
+		const streamFn = new TransportRouter().createStreamFn(google, () => ({
+			apiKey: 'k',
+			authHeader: true,
+			options: effectiveRequestOptions(google, gemini, 'low'),
+		}));
+		const first = await (
+			await streamFn(toPiModel(google, gemini), context('find x'), {})
+		).result();
+		expect(first.content).toContainEqual(
+			expect.objectContaining({ type: 'toolCall', id: 'call_a', thoughtSignature: 'SIG_A' }),
+		);
+
+		const body = buildRequestBody(
+			toPiModel(google, gemini) as Parameters<typeof buildRequestBody>[0],
+			context('find x', [
+				assistant([{ id: 'call_a', signature: 'SIG_A' }]),
+				result('call_a'),
+			]),
+			{ thinkingLevel: 'low' },
+		);
+		const sent = (body.messages as { role: string; tool_calls?: unknown[] }[]).find(
+			(m) => m.role === 'assistant',
+		);
+		expect(sent?.tool_calls?.[0]).toMatchObject({
+			id: 'call_a',
+			extra_content: { google: { thought_signature: 'SIG_A' } },
+		});
+		// Google's endpoint takes reasoning_effort, and Gemini 3 offers minimal to high only.
+		expect(body.reasoning_effort).toBe('low');
+		expect(selectableThinkingLevels(gemini)).toEqual(['minimal', 'low', 'medium', 'high']);
+	});
+
+	it("gives Google's placeholder to an unsigned first call, and nothing to other servers", () => {
+		const history = [
+			assistant([{ id: 'old_1' }, { id: 'old_2' }]),
+			result('old_1'),
+			result('old_2'),
+		];
+		const messages = (
+			buildRequestBody(
+				toPiModel(google, gemini) as Parameters<typeof buildRequestBody>[0],
+				context('again', history),
+				{},
+			).messages as { role: string; tool_calls?: { extra_content?: unknown }[] }[]
+		).find((m) => m.role === 'assistant')!;
+		expect(messages.tool_calls?.[0]?.extra_content).toEqual({
+			google: { thought_signature: UNSIGNED_CALL },
+		});
+		expect(messages.tool_calls?.[1]?.extra_content).toBeUndefined();
+
+		const local = { ...newProvider('local'), baseUrl: 'http://localhost:8000/v1' };
+		const plain = (
+			buildRequestBody(
+				toPiModel(local, newModel('m')) as Parameters<typeof buildRequestBody>[0],
+				context('again', history),
+				{},
+			).messages as { role: string; tool_calls?: { extra_content?: unknown }[] }[]
+		).find((m) => m.role === 'assistant')!;
+		expect(plain.tool_calls?.[0]?.extra_content).toBeUndefined();
+	});
+
+	it('reads the signature out of a streamed response for the finished message', async () => {
+		const chunks = [
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									...signedCall,
+									function: { name: 'grep', arguments: '' },
+								},
+							],
+						},
+					},
+				],
+			},
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: [{ index: 0, function: { arguments: '{"query":"x"}' } }],
+						},
+					},
+				],
+			},
+		];
+		const text = `${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('')}data: [DONE]\n\n`;
+		const diag = createDiagnosticFetch(async () => new Response(text, { status: 200 }));
+		await (await diag.fetch('https://x')).text();
+		const message = assistant([{ id: 'call_a' }]);
+		diag.sign(message as unknown as Parameters<typeof diag.sign>[0]);
+		expect(message.content[0]).toMatchObject({ thoughtSignature: 'SIG_A' });
+	});
+});
+
+describe('Responses API (LIB-TEST-249)', () => {
+	afterEach(() => {
+		requestUrlMock.impl = null;
+	});
+
+	const sse = (events: Record<string, unknown>[]) =>
+		new TextEncoder().encode(
+			events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''),
+		).buffer;
+	const call = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'read' };
+	const args = '{"path":"a.md"}';
+
+	it('goes to /responses with the reasoning effort and tools, also through requestUrl', async () => {
+		const sent: { url: string; body: Record<string, unknown> }[] = [];
+		requestUrlMock.impl = async (request) => {
+			const r = request as { url: string; body: string };
+			sent.push({ url: r.url, body: JSON.parse(r.body) });
+			return {
+				status: 200,
+				headers: { 'content-type': 'text/event-stream' },
+				arrayBuffer: sse([
+					{
+						type: 'response.created',
+						response: { id: 'resp_1', status: 'in_progress', output: [] },
+					},
+					{
+						type: 'response.output_item.added',
+						output_index: 0,
+						item: { ...call, arguments: '', status: 'in_progress' },
+					},
+					{
+						type: 'response.function_call_arguments.delta',
+						item_id: 'fc_1',
+						output_index: 0,
+						delta: args,
+					},
+					{
+						type: 'response.output_item.done',
+						output_index: 0,
+						item: { ...call, arguments: args, status: 'completed' },
+					},
+					{
+						type: 'response.completed',
+						response: {
+							id: 'resp_1',
+							status: 'completed',
+							output: [{ ...call, arguments: args, status: 'completed' }],
+							usage: {
+								input_tokens: 20,
+								output_tokens: 5,
+								total_tokens: 25,
+								input_tokens_details: { cached_tokens: 0 },
+								output_tokens_details: { reasoning_tokens: 3 },
+							},
+						},
+					},
+				]),
+			};
+		};
+		const provider = {
+			...newProvider('openai'),
+			baseUrl: 'https://api.openai.com/v1',
+			transport: 'requestUrl' as const,
+		};
+		const model = modelFromServer(provider.baseUrl, { id: 'gpt-6-luna' });
+		provider.models = [model];
+		const streamFn = new TransportRouter().createStreamFn(provider, () => ({
+			apiKey: 'k',
+			authHeader: true,
+			options: effectiveRequestOptions(provider, model, 'medium'),
+		}));
+		const read = createVaultTools({
+			app: new FakeApp() as unknown as App,
+			settings: () => mergeSettings({}),
+		}).find((t) => t.name === 'read')!;
+		const context = normalizeContext({
+			systemPrompt: 's',
+			messages: [{ role: 'user', content: 'read a.md', timestamp: 0 }],
+			tools: [read],
+		});
+		const stream = await streamFn(toPiModel(provider, model), context, { reasoning: 'medium' });
+		const result = await stream.result();
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0]!.url).toBe('https://api.openai.com/v1/responses');
+		expect(sent[0]!.body).toMatchObject({
+			model: 'gpt-6-luna',
+			reasoning: { effort: 'medium' },
+			tools: [expect.objectContaining({ type: 'function', name: 'read' })],
+		});
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.stopReason).toBe('toolUse');
+		expect(result.content).toContainEqual(
+			expect.objectContaining({
+				type: 'toolCall',
+				name: 'read',
+				arguments: { path: 'a.md' },
+			}),
+		);
 	});
 });
 

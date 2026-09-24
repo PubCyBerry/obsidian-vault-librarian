@@ -6,9 +6,15 @@ import type {
 	ProviderConfig,
 	ThinkingLevel,
 } from '../types';
-import { THINKING_LEVELS } from '../types';
+import { COMPLETIONS_API, RESPONSES_API, THINKING_LEVELS } from '../types';
 
-export type PiModel = Model<'openai-completions'>;
+export type CompletionsModel = Model<'openai-completions'>;
+export type PiModel = CompletionsModel | Model<'openai-responses'>;
+
+/** The request format a model goes out in: its own override, else its provider's (LIB-FEAT-247). */
+export function apiOf(provider: ProviderConfig, model: ModelConfig): PiModel['api'] {
+	return (model.api ?? provider.api) === RESPONSES_API ? RESPONSES_API : COMPLETIONS_API;
+}
 
 export interface ActiveSelection {
 	provider: ProviderConfig;
@@ -68,11 +74,9 @@ export function selectableThinkingLevels(model: ModelConfig): ThinkingLevel[] {
 }
 
 export function toPiModel(provider: ProviderConfig, model: ModelConfig): PiModel {
-	const { cacheControlFormat, thinkingFormat, ...rest } = mergeCompat(provider, model);
-	return {
+	const base = {
 		id: model.id,
 		name: model.name,
-		api: 'openai-completions',
 		provider: provider.id,
 		baseUrl: provider.baseUrl.replace(/\/+$/, ''),
 		reasoning: model.reasoning,
@@ -81,13 +85,20 @@ export function toPiModel(provider: ProviderConfig, model: ModelConfig): PiModel
 		cost: model.cost,
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
+	};
+	// The compatibility switches describe Chat Completions servers; the Responses API is OpenAI's own.
+	if (apiOf(provider, model) === RESPONSES_API) return { ...base, api: RESPONSES_API };
+	const { cacheControlFormat, thinkingFormat, ...rest } = mergeCompat(provider, model);
+	return {
+		...base,
+		api: COMPLETIONS_API,
 		compat: {
 			...rest,
 			...(cacheControlFormat ? { cacheControlFormat } : {}),
 			...(thinkingFormat
 				? {
 						thinkingFormat: thinkingFormat as NonNullable<
-							PiModel['compat']
+							CompletionsModel['compat']
 						>['thinkingFormat'],
 					}
 				: {}),

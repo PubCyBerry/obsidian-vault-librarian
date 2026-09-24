@@ -195,6 +195,9 @@ export class ContextManager {
 						id: call.id,
 						name: call.name,
 						arguments: call.args as ToolCall['arguments'],
+						...(call.thoughtSignature
+							? { thoughtSignature: call.thoughtSignature }
+							: {}),
 					};
 					content.push(tc);
 					pendingCalls.set(call.id, call.name);

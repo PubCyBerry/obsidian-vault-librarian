@@ -52,7 +52,16 @@ export interface OAuthProviderDeps {
 	 * sign-in made for another device keeps them in memory, apart from this device's own.
 	 */
 	storage?: { read(): StoredOAuth; write(stored: StoredOAuth): void };
+	/**
+	 * A sign-in the user started waits in the browser. An authorization started meanwhile by
+	 * anything else (a tool call, a reconnect) would replace its state and PKCE verifier, and the
+	 * browser's answer would no longer be recognized, so none may start.
+	 */
+	busy?: () => boolean;
 }
+
+export const SIGN_IN_WAITING =
+	'A sign-in to this server is waiting in the browser. Finish it, then try again.';
 
 /**
  * OAuth 2.1 client state for one MCP server. Client registration, tokens and the PKCE verifier
@@ -76,6 +85,8 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	state(): string {
+		// The SDK asks for a state before it saves a new verifier, so refusing here keeps both.
+		if (this.deps.busy?.()) throw new Error(SIGN_IN_WAITING);
 		const bytes = new Uint8Array(16);
 		crypto.getRandomValues(bytes);
 		const random = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');

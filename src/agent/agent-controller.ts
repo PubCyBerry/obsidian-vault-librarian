@@ -666,8 +666,10 @@ export class AgentController {
 						ctx.isError,
 						signal,
 					),
-				shouldStopAfterTurn: (ctx, signal) =>
-					signal?.aborted === true || this.shouldStopAfterTurn(ctx.toolResults.length),
+				finishTurn: (ctx, signal) =>
+					signal?.aborted === true || this.shouldStopAfterTurn(ctx.toolResults.length)
+						? { action: 'end' }
+						: undefined,
 				prepareNextTurnWithContext: (ctx, signal) =>
 					this.prepareNextTurn(ctx.context.messages, model, streamFn, signal),
 			});
@@ -1118,6 +1120,7 @@ export class AgentController {
 							id: c.id,
 							name: c.name,
 							args: c.arguments,
+							...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
 						}));
 					await this.deps.sessions.append(sessionId, {
 						type: 'assistant',

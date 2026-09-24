@@ -14,6 +14,7 @@ import {
 	SettingGroup,
 	setIcon,
 	setTooltip,
+	type TFile,
 } from 'obsidian';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
@@ -23,12 +24,14 @@ import {
 	PERMISSION_ICONS,
 	PERMISSION_LABELS,
 } from '../permissions/tool-permission-manager';
+import { modelFromServer } from '../provider/model-catalog';
 import { type ServerModel, testConnection } from '../provider/transport';
 import type { SessionSummary } from '../session/session-types';
 import { SKILL_SEARCH_NAME, SKILLS_GROUP_ID, type Skill, skillKey } from '../skills/skill-manager';
 import { isValidSecretId, PASSPHRASE_ID, type SecretStore } from '../storage/secret-store';
 import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
 import {
+	COMPLETIONS_API,
 	MCP_SERVER_ID_PATTERN,
 	type McpServerConfig,
 	type ModelConfig,
@@ -37,6 +40,7 @@ import {
 	newProvider,
 	type ProviderCompat,
 	type ProviderConfig,
+	RESPONSES_API,
 	THINKING_LEVELS,
 	type ThinkingLevel,
 	type ToolPermission,
@@ -49,6 +53,7 @@ import {
 	renameSession,
 } from '../ui/session-list';
 import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
+import { settingsFromBackup } from './backup';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
 
@@ -298,7 +303,11 @@ const THINKING_FORMATS = [
 	'ant-ling',
 ];
 
-const DEFAULT_API = 'openai-completions';
+/** The request formats Librarian speaks (LIB-FEAT-247). */
+const API_LABELS: Record<string, string> = {
+	[COMPLETIONS_API]: 'Chat Completions',
+	[RESPONSES_API]: 'Responses',
+};
 
 function slug(s: string): string {
 	return s
@@ -438,12 +447,16 @@ class ModelEditorModal extends Modal {
 				.setValue(d.name === d.id ? '' : d.name)
 				.onChange((v) => (d.name = v.trim())),
 		);
-		new Setting(el).setName('API override').addText((t) =>
-			t
-				.setPlaceholder('Provider API')
-				.setValue(d.api ?? '')
-				.onChange((v) => (d.api = v.trim() || undefined)),
-		);
+		new Setting(el)
+			.setName('API override')
+			.setDesc('Request format for this model when it differs from the provider.')
+			.addDropdown((dd) =>
+				dd
+					.addOption('', 'Same as the provider')
+					.addOptions(API_LABELS)
+					.setValue(d.api ?? '')
+					.onChange((v) => (d.api = v || undefined)),
+			);
 		new Setting(el)
 			.setName('Tool calling')
 			.setDesc('Librarian only lists models that can call tools.')
@@ -559,6 +572,34 @@ class ServerModelModal extends FuzzySuggestModal<ServerModel> {
 	}
 }
 
+/** A JSON file in the vault to import settings from, the newest first (LIB-FEAT-241). */
+class BackupFileModal extends FuzzySuggestModal<TFile> {
+	constructor(
+		app: App,
+		private readonly onPick: (file: TFile) => void,
+	) {
+		super(app);
+		this.setPlaceholder('Pick a settings backup');
+		this.emptyStateText =
+			'No JSON files in the vault. Export settings on another device first.';
+	}
+
+	getItems(): TFile[] {
+		return this.app.vault
+			.getFiles()
+			.filter((f) => f.extension === 'json')
+			.sort((a, b) => b.stat.mtime - a.stat.mtime);
+	}
+
+	getItemText(file: TFile): string {
+		return file.path;
+	}
+
+	onChooseItem(file: TFile): void {
+		this.onPick(file);
+	}
+}
+
 class ProviderEditorModal extends Modal {
 	private readonly draft: ProviderConfig;
 	private readonly isNew: boolean;
@@ -628,12 +669,14 @@ class ProviderEditorModal extends Modal {
 		baseUrl.settingEl.addClass('librarian-wide-input');
 		new Setting(el)
 			.setName('API')
-			.setDesc('Request format of the endpoint.')
-			.addText((t) =>
-				t
-					.setPlaceholder(DEFAULT_API)
-					.setValue(d.api === DEFAULT_API ? '' : d.api)
-					.onChange((v) => (d.api = v.trim() || DEFAULT_API)),
+			.setDesc(
+				"Request format of the endpoint. OpenAI's reasoning models call tools while they reason only through /responses.",
+			)
+			.addDropdown((dd) =>
+				dd
+					.addOptions(API_LABELS)
+					.setValue(d.api === RESPONSES_API ? RESPONSES_API : COMPLETIONS_API)
+					.onChange((v) => (d.api = v)),
 			);
 		const stored = this.plugin.secrets.get(d.secretId);
 		new Setting(el)
@@ -764,16 +807,7 @@ class ProviderEditorModal extends Modal {
 						return;
 					}
 					new ServerModelModal(this.app, fresh, (m) => {
-						const model = { ...newModel(m.id), name: m.name ?? m.id };
-						if (m.contextWindow) {
-							model.contextWindow = m.contextWindow;
-							// A small window cannot hold the default output reserve.
-							model.maxTokens = Math.min(
-								model.maxTokens,
-								Math.floor(m.contextWindow / 4),
-							);
-						}
-						d.models.push(model);
+						d.models.push(modelFromServer(d.baseUrl, m));
 						this.renderModels();
 					}).open();
 				}),
@@ -1434,7 +1468,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		let pending = '';
 		return {
 			name: 'Device sync',
-			desc: 'Keys and sign-ins for your other devices.',
+			desc: 'Keys and sign-ins for your other devices, and a settings backup.',
 			displayValue: state === 'on' ? 'On' : state === 'locked' ? 'Locked' : 'Off',
 			status: state === 'locked' || waiting ? 'warning' : null,
 			items: [
@@ -1488,8 +1522,82 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						},
 					],
 				},
+				{
+					type: 'group',
+					heading: 'Backup',
+					items: [
+						{
+							name: 'Export settings',
+							desc: 'Writes every setting to a JSON file at the top of the vault. Keys go in sealed with the sync passphrase, so only a device with the same passphrase opens them. MCP sign-ins and chat history are not included.',
+							aliases: ['Backup', 'Export', 'Save settings'],
+							render: (setting) => {
+								setting.addButton((b) =>
+									b.setButtonText('Export').onClick(async () => {
+										const path = await this.plugin.exportSettings();
+										new Notice(
+											secrets.state === 'on'
+												? `Settings exported to ${path}, with the keys sealed.`
+												: `Settings exported to ${path}. The keys of this device are not in it: set a sync passphrase first to include them.`,
+										);
+									}),
+								);
+							},
+						},
+						{
+							name: 'Import settings',
+							desc: 'Replaces every setting on this device with an exported file.',
+							aliases: ['Backup', 'Import', 'Restore'],
+							render: (setting) => {
+								setting.addButton((b) =>
+									b
+										.setButtonText('Import')
+										.onClick(() =>
+											new BackupFileModal(
+												this.app,
+												(file) => void this.importFrom(file),
+											).open(),
+										),
+								);
+							},
+						},
+					],
+				},
 			],
 		};
+	}
+
+	/** Checks the file, asks before replacing everything, then says what came back (LIB-FEAT-241). */
+	private async importFrom(file: TFile): Promise<void> {
+		const next = settingsFromBackup(await this.app.vault.read(file));
+		if ('error' in next) {
+			new Notice(next.error);
+			return;
+		}
+		new ConfirmModal(
+			this.app,
+			'Import settings?',
+			(el) => {
+				el.createEl('p', {
+					text: `Every setting on this device is replaced with the ones in ${file.name}.`,
+				});
+				el.createEl('p', {
+					text: 'Server sign-ins are not in it. Sign in again, or on a phone take one from the desktop.',
+				});
+			},
+			'Import',
+			async () => {
+				await this.plugin.importSettings(next);
+				const state = this.plugin.secrets.state;
+				new Notice(
+					!next.sealedSecrets
+						? 'Settings imported. They held no keys, so enter them again.'
+						: state === 'on'
+							? 'Settings imported, with their keys.'
+							: 'Settings imported. Enter the sync passphrase they were exported with under Device sync to bring back the keys.',
+				);
+				this.refresh();
+			},
+		).open();
 	}
 
 	// WebDAV storage
