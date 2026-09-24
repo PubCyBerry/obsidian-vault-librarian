@@ -806,3 +806,48 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		expect(settings.oauthHandoffs?.later).toBeDefined();
 	});
 });
+
+describe('server lists from another device (LIB-TEST-255)', () => {
+	it('closes removed servers and connects only new ones and those that reach their server differently', async () => {
+		const server = (id: string, url = `https://${id}.example/mcp`) => ({
+			id,
+			name: id,
+			url,
+			auth: 'none' as const,
+			enabled: true,
+			toolHashes: {},
+		});
+		const settings = mergeSettings({ mcpServers: [server('a'), server('b'), server('c')] });
+		const manager = new McpManager({
+			settings: () => settings,
+			save: async () => undefined,
+			secrets: {} as SecretStore,
+			permissions: new ToolPermissionManager(
+				() => settings,
+				async () => undefined,
+			),
+			clientVersion: 'test',
+			open: () => {},
+			notice: () => {},
+		});
+		const connected: string[] = [];
+		const closed: string[] = [];
+		manager.connect = async (id) => {
+			connected.push(id);
+		};
+		manager.disconnect = async (id) => {
+			closed.push(id);
+		};
+		manager.states.set('c', { status: 'ready', tools: [] });
+		const previous = settings.mcpServers;
+		settings.mcpServers = [
+			{ ...server('a'), name: 'Renamed', toolHashes: { a__search: 'x' } },
+			server('b', 'https://moved.example/mcp'),
+			server('d'),
+		];
+		await manager.reconcile(previous);
+		expect(connected).toEqual(['b', 'd']);
+		expect(closed).toEqual(['c']);
+		expect(manager.states.has('c')).toBe(false);
+	});
+});

@@ -1557,7 +1557,8 @@ export class LibrarianView extends ItemView {
 			return {
 				icon: toolIcon(d.name),
 				title: d.name || 'Tool call',
-				subtitle: summarizeCall(d.name, d.args, d.result),
+				// A bash call's summary is its command, which the Command section already shows.
+				subtitle: d.name === 'bash' ? undefined : summarizeCall(d.name, d.args, d.result),
 				status: { text: STATUS_LABELS[d.status], cls: `is-${d.status}` },
 				live: d.status === 'pending' || d.status === 'running',
 				body: (el) => renderToolDetails(el, d),

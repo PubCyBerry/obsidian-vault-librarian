@@ -181,6 +181,7 @@ export class StepPopover {
 	private parts: {
 		icon: HTMLElement;
 		title: HTMLElement;
+		spinner: HTMLElement;
 		subtitle: HTMLElement;
 		status: HTMLElement;
 		body: HTMLElement;
@@ -209,7 +210,10 @@ export class StepPopover {
 		const header = el.createDiv({ cls: 'librarian-step-pop-header' });
 		const icon = header.createSpan({ cls: 'librarian-step-pop-icon' });
 		const heading = header.createDiv({ cls: 'librarian-step-pop-heading' });
-		const title = heading.createDiv({ cls: 'librarian-step-pop-title' });
+		const titleRow = heading.createDiv({ cls: 'librarian-step-pop-title' });
+		const title = titleRow.createSpan();
+		// Made once and only shown or hidden: a new one each redraw would restart its turn.
+		const spinner = titleRow.createSpan({ cls: 'librarian-spinner' });
 		const subtitle = heading.createDiv({ cls: 'librarian-step-pop-subtitle' });
 		const status = header.createSpan({ cls: 'librarian-step-pop-status' });
 		const close = header.createEl('button', {
@@ -222,7 +226,7 @@ export class StepPopover {
 		this.el = el;
 		this.anchor = anchor;
 		this.content = content;
-		this.parts = { icon, title, subtitle, status, body };
+		this.parts = { icon, title, spinner, subtitle, status, body };
 		this.openKey = anchor.dataset.popKey ?? null;
 		anchor.addClass('is-open');
 		anchor.setAttr('aria-expanded', 'true');
@@ -271,10 +275,12 @@ export class StepPopover {
 		const parts = this.parts;
 		if (!el || !parts || !this.content) return;
 		const c = this.content();
-		setIcon(parts.icon, c.icon);
-		parts.title.empty();
-		parts.title.createSpan({ text: c.title });
-		if (c.live) parts.title.createSpan({ cls: 'librarian-spinner' });
+		if (parts.icon.dataset.icon !== c.icon) {
+			setIcon(parts.icon, c.icon);
+			parts.icon.dataset.icon = c.icon;
+		}
+		if (parts.title.textContent !== c.title) parts.title.setText(c.title);
+		parts.spinner.toggleClass('is-hidden', !c.live);
 		parts.subtitle.setText(c.subtitle ?? '');
 		parts.subtitle.toggleClass('is-hidden', !c.subtitle);
 		parts.status.className = `librarian-step-pop-status ${c.status?.cls ?? ''}`;

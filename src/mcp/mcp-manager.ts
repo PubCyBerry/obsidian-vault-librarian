@@ -390,6 +390,27 @@ export class McpManager {
 	}
 
 	/**
+	 * Another device's settings replaced the server list. Servers that are gone close, and those
+	 * that are new or reach their server differently (address, sign-in, switch, client) connect
+	 * again; the rest keep their connection (LIB-FEAT-254).
+	 */
+	async reconcile(previous: McpServerConfig[]): Promise<void> {
+		const reach = (s: McpServerConfig) =>
+			JSON.stringify([s.url, s.auth, s.enabled, s.oauthClientId ?? '']);
+		const before = new Map(previous.map((s) => [s.id, reach(s)]));
+		const now = this.servers();
+		for (const id of before.keys()) {
+			if (now.some((s) => s.id === id)) continue;
+			await this.disconnect(id);
+			this.states.delete(id);
+		}
+		this.emit();
+		await Promise.all(
+			now.filter((s) => before.get(s.id) !== reach(s)).map((s) => this.connect(s.id)),
+		);
+	}
+
+	/**
 	 * Opens the browser for OAuth. For API key servers the settings tab holds the key input. On
 	 * desktop the answer comes back to 127.0.0.1, which authorization servers allow where some
 	 * refuse `obsidian://` (Atlassian); a phone keeps the `obsidian://` redirect.

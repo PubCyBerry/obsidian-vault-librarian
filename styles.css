@@ -1527,6 +1527,10 @@ body.is-mobile
 	font-family: inherit;
 }
 
+.librarian-step-pop-title .librarian-spinner {
+	flex: none;
+}
+
 .librarian-chip-mark .librarian-spinner {
 	width: 10px;
 	height: 10px;

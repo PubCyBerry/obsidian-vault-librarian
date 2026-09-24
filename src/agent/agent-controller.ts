@@ -391,6 +391,20 @@ export class AgentController {
 		}
 	}
 
+	/**
+	 * Settings from another device replaced this one's: the chat's model is looked up again in
+	 * them, so it follows an edit there and goes when it was removed. A running turn keeps its own.
+	 */
+	reselect(): void {
+		if (this.driving) return;
+		const wanted = this.selection
+			? { providerId: this.selection.provider.id, modelId: this.selection.model.id }
+			: this.session;
+		if (!wanted) return;
+		const found = this.deps.providers.getModel(wanted.providerId, wanted.modelId);
+		this.selection = found?.model.toolCalling ? found : undefined;
+	}
+
 	/** Recomputes the idle state (key missing, model missing) and the usage indicator. */
 	async refreshReadiness(): Promise<void> {
 		// Between queued turns too: the Stop button must not flicker off and on.

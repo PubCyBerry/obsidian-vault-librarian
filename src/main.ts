@@ -45,6 +45,7 @@ export default class LibrarianPlugin extends Plugin {
 	skills!: SkillManager;
 	registry!: ToolRegistry;
 	controller!: AgentController;
+	private settingTab!: LibrarianSettingTab;
 	shell!: ShellSession;
 	/** Numbers each thing the shell asks about, so concurrent approvals keep separate cards. */
 	private shellActions = 0;
@@ -269,6 +270,7 @@ export default class LibrarianPlugin extends Plugin {
 			callback: () => void this.activateView('tab'),
 		});
 		const settingTab = new LibrarianSettingTab(this.app, this);
+		this.settingTab = settingTab;
 		this.addSettingTab(settingTab);
 		// Obsidian 1.13 draws the tab from its definitions and never calls display(), so the
 		// tab is told here when a server's state or the skill list changes.
@@ -336,17 +338,30 @@ export default class LibrarianPlugin extends Plugin {
 	}
 
 	/**
-	 * The vault's sync brought settings another device wrote. Only what devices write for each
-	 * other is taken now, the sealed secrets and the sign-ins handed over; the rest waits for the
-	 * next start, as before.
+	 * The vault's sync brought settings another device wrote. They replace this device's whole:
+	 * keeping the old ones in memory would write them back over the other device's on the next
+	 * save here (LIB-FEAT-254). A file that is missing or half written is left alone.
 	 */
 	async onExternalSettingsChange() {
-		const fresh = mergeSettings(await this.loadData());
-		const sealedChanged = fresh.sealedSecrets !== this.settings.sealedSecrets;
-		this.settings.sealedSecrets = fresh.sealedSecrets;
-		this.settings.oauthHandoffs = fresh.oauthHandoffs;
-		if (sealedChanged) await this.secrets.unlock();
+		let stored: unknown;
+		try {
+			stored = await this.loadData();
+		} catch {
+			return;
+		}
+		if (!stored || typeof stored !== 'object') return;
+		const before = this.settings;
+		const fresh = mergeSettings(stored);
+		if (JSON.stringify(fresh) === JSON.stringify(before)) return;
+		this.settings = fresh;
+		this.controller.reselect();
+		if (fresh.sealedSecrets !== before.sealedSecrets) await this.secrets.unlock();
 		await this.mcp.claimHandoffs();
+		await this.mcp.reconcile(before.mcpServers);
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN))
+			if (leaf.view instanceof LibrarianView) leaf.view.renderModelSelect();
+		this.settingTab.refresh();
+		await this.controller.refreshReadiness();
 	}
 
 	/** Writes every setting to a JSON file at the top of the vault and returns its path (LIB-FEAT-241). */

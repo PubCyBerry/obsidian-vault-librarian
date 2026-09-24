@@ -18,7 +18,13 @@ import type { SessionEvent } from '../src/session/session-types';
 import { createShellTool, ShellSession } from '../src/shell/shell-tool';
 import { SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
-import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
+import {
+	type LibrarianSettings,
+	mergeSettings,
+	newModel,
+	newProvider,
+	type ToolPermission,
+} from '../src/types';
 import { FakeApp } from './fake-app';
 import { Platform } from './obsidian-stub';
 import { type ScriptedTurn, scriptedStream } from './scripted-stream';
@@ -1214,5 +1220,24 @@ describe('messages sent while the agent works (LIB-TEST-186)', () => {
 		await h.controller.send('hi');
 		expect(unsent).toEqual(['hi']);
 		expect(h.controller.state).toBe('no-key');
+	});
+});
+
+describe('settings from another device (LIB-TEST-255)', () => {
+	it('looks the chat model up again in the new settings and lets it go when it was removed', async () => {
+		const h = harness([]);
+		await h.controller.newSession();
+		const settings = (
+			h.controller as unknown as { deps: { settings(): LibrarianSettings } }
+		).deps.settings();
+		settings.providers = settings.providers.map((p) => ({
+			...p,
+			models: p.models.map((m) => ({ ...m, maxTokens: 2000 })),
+		}));
+		h.controller.reselect();
+		expect(h.controller.selection?.model.maxTokens).toBe(2000);
+		settings.providers = [];
+		h.controller.reselect();
+		expect(h.controller.selection).toBeUndefined();
 	});
 });
