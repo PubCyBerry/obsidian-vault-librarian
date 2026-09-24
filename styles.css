@@ -22,6 +22,8 @@ body {
 	min-height: 0;
 	padding: 0;
 	gap: var(--size-4-2);
+	/* The step popover is placed inside the pane. */
+	position: relative;
 }
 
 .librarian .is-hidden {
@@ -254,9 +256,8 @@ body {
 
 .librarian-markdown code,
 .librarian-markdown pre,
-.librarian-tool pre,
+.librarian-tool-details pre,
 .librarian-approval pre,
-.librarian-tool-name,
 .librarian-source {
 	font-family: var(--librarian-font-mono);
 }
@@ -271,28 +272,6 @@ body {
 
 .librarian-stream-text {
 	white-space: pre-wrap;
-}
-
-.librarian-thinking {
-	font-size: var(--font-small);
-	color: var(--text-muted);
-}
-
-.librarian-thinking > summary {
-	cursor: pointer;
-}
-
-.librarian-thinking pre {
-	white-space: pre-wrap;
-	word-break: break-word;
-	font-family: inherit;
-	font-size: inherit;
-	line-height: var(--line-height-normal);
-	background: transparent;
-	padding: var(--size-2-2) 0 0;
-	margin: 0;
-	border-left: 2px solid var(--background-modifier-border);
-	padding-left: var(--size-4-3);
 }
 
 .librarian-source {
@@ -316,84 +295,7 @@ body {
 	padding-top: var(--size-2-2);
 }
 
-/* Tool cards */
-
-.librarian-tool {
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-m);
-	font-size: var(--font-small);
-	overflow: hidden;
-}
-
-.librarian-tool-header {
-	display: flex;
-	align-items: center;
-	gap: var(--size-2-2);
-	padding: var(--size-2-2) var(--size-4-2);
-	cursor: pointer;
-	min-height: 44px;
-}
-
-.librarian-tool-icon {
-	display: inline-flex;
-	color: var(--text-muted);
-}
-
-.librarian-tool-name {
-	font-family: var(--font-monospace);
-	font-weight: var(--font-semibold);
-}
-
-.librarian-tool-summary {
-	flex: 1 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	color: var(--text-muted);
-}
-
-.librarian-tool-status {
-	flex: 0 0 auto;
-	font-size: var(--font-ui-smaller);
-	padding: 0 var(--size-2-2);
-	border-radius: var(--radius-s);
-	background: var(--background-secondary);
-	color: var(--text-muted);
-}
-
-.librarian-tool.is-running .librarian-tool-status,
-.librarian-tool.is-pending .librarian-tool-status {
-	color: var(--text-accent);
-}
-
-.librarian-tool.is-awaiting-approval .librarian-tool-status {
-	color: var(--text-warning);
-}
-
-.librarian-tool.is-ok .librarian-tool-status {
-	color: var(--text-success);
-}
-
-.librarian-tool.is-failed .librarian-tool-status,
-.librarian-tool.is-rejected .librarian-tool-status,
-.librarian-tool.is-blocked .librarian-tool-status,
-.librarian-tool.is-expired .librarian-tool-status {
-	color: var(--text-error);
-}
-
-.librarian-tool.is-blocked,
-.librarian-tool.is-expired,
-.librarian-tool.is-skipped {
-	opacity: 0.7;
-}
-
-.librarian-tool-body {
-	padding: var(--size-2-2) var(--size-4-2) var(--size-4-2);
-	border-top: 1px solid var(--background-modifier-border);
-}
-
-.librarian-tool-body pre,
+.librarian-tool-details pre,
 .librarian-approval-body pre,
 .librarian-change-body pre,
 .librarian-diff pre {
@@ -547,36 +449,6 @@ body.is-mobile.keyboard-animating .librarian-composer {
 body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	transition-duration: 300ms;
 	transition-timing-function: cubic-bezier(0.12, 0, 0.44, 0.99);
-}
-
-/* What the agent is doing, one line above the composer box. The line keeps its height while
-   hidden, because showing it at every turn start and dropping it at every end made the messages
-   above jump by a line. A long notice ends in an ellipsis rather than taking a second line. */
-.librarian .librarian-activity {
-	display: flex;
-	align-items: center;
-	height: var(--size-4-5);
-	min-width: 0;
-}
-
-.librarian .librarian-activity.is-hidden {
-	display: flex;
-	visibility: hidden;
-}
-
-.librarian-activity-line {
-	display: flex;
-	align-items: center;
-	gap: var(--size-2-2);
-	min-width: 0;
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-}
-
-.librarian-activity-line > span:last-child {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .librarian-spinner {
@@ -1427,10 +1299,6 @@ body.is-phone .modal .setting-item.librarian-secret-input .setting-item-control 
 	}
 }
 
-.librarian.is-mobile .librarian-tool-header {
-	min-height: 48px;
-}
-
 .librarian.is-mobile .librarian-composer-row {
 	--librarian-tool-size: 44px;
 }
@@ -1445,4 +1313,413 @@ body.is-mobile
 	.view-actions
 	.view-action.mod-bookmark {
 	display: none;
+}
+
+/* A request's work (LIB-FEAT-252): a header that says Working, then how long it worked; under it a
+   dotted timeline of steps that folds away; the answer follows the block. Folding animates the
+   body's grid row between 0fr and 1fr, so no height has to be measured. */
+
+.librarian-work {
+	--librarian-chip-height: 24px;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.librarian.is-mobile .librarian-work {
+	--librarian-chip-height: 30px;
+}
+
+.librarian-work-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	align-self: flex-start;
+	max-width: 100%;
+	min-width: 0;
+	min-height: 28px;
+	padding: 0 var(--size-2-2);
+	margin-left: calc(-1 * var(--size-2-2));
+	border-radius: var(--radius-s);
+}
+
+.librarian-work-header[role="button"] {
+	cursor: pointer;
+}
+
+.librarian-work-header[role="button"]:hover,
+.librarian-work-header[role="button"]:focus-visible {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.librarian-work-title {
+	flex: 0 0 auto;
+	white-space: nowrap;
+}
+
+.librarian-work.is-running .librarian-work-title {
+	color: var(--text-normal);
+}
+
+.librarian-work-activity {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-work-chevron {
+	display: inline-flex;
+	flex: 0 0 auto;
+	transition: transform 200ms ease;
+}
+
+.librarian-work-chevron svg {
+	width: 14px;
+	height: 14px;
+}
+
+.librarian-work:not(.is-collapsed) .librarian-work-chevron {
+	transform: rotate(90deg);
+}
+
+.librarian-work-body {
+	display: grid;
+	grid-template-rows: 1fr;
+	padding: var(--size-2-2) 0;
+	opacity: 1;
+	transition:
+		grid-template-rows 240ms ease,
+		padding 240ms ease,
+		opacity 200ms ease;
+}
+
+.librarian-work.is-collapsed .librarian-work-body {
+	grid-template-rows: 0fr;
+	padding: 0;
+	opacity: 0;
+}
+
+.librarian-work.is-empty .librarian-work-chevron,
+.librarian-work.is-empty .librarian-work-body {
+	display: none;
+}
+
+/* The dotted line runs through a dot on each step. */
+.librarian-timeline {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	min-height: 0;
+	overflow: hidden;
+	padding-left: 18px;
+}
+
+.librarian-timeline::before {
+	content: "";
+	position: absolute;
+	left: 6px;
+	top: calc(var(--librarian-chip-height) / 2);
+	bottom: calc(var(--librarian-chip-height) / 2);
+	border-left: 2px dotted var(--background-modifier-border-hover);
+}
+
+.librarian-step {
+	position: relative;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-2-2);
+	min-width: 0;
+	min-height: var(--librarian-chip-height);
+}
+
+.librarian-step::before {
+	content: "";
+	position: absolute;
+	left: -16px;
+	top: calc(var(--librarian-chip-height) / 2 - 5px);
+	width: 10px;
+	height: 10px;
+	box-sizing: border-box;
+	border: 2px solid var(--background-modifier-border-hover);
+	border-radius: 50%;
+	background: var(--background-primary);
+}
+
+.librarian-work.is-running .librarian-step:last-child::before {
+	border-color: var(--interactive-accent);
+}
+
+.librarian-step-new {
+	animation: librarian-step-in 260ms ease-out both;
+}
+
+@keyframes librarian-step-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.librarian-step-note {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* A step you can open: a tool call, a thinking, or a note the model wrote between calls. Calls the
+   model made together sit side by side on one step. */
+.librarian .librarian-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	max-width: 100%;
+	min-width: 0;
+	height: var(--librarian-chip-height);
+	padding: 0 var(--size-2-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: calc(var(--librarian-chip-height) / 2);
+	background: var(--background-primary);
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.librarian .librarian-chip:hover,
+.librarian .librarian-chip.is-open {
+	color: var(--text-normal);
+	border-color: var(--background-modifier-border-hover);
+	background: var(--background-modifier-hover);
+}
+
+.librarian-chip-icon,
+.librarian-chip-mark {
+	display: inline-flex;
+	flex: 0 0 auto;
+}
+
+.librarian-chip svg {
+	width: 12px;
+	height: 12px;
+}
+
+.librarian-chip-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--librarian-font-mono);
+}
+
+.librarian-step-button .librarian-chip-name {
+	font-family: inherit;
+}
+
+.librarian-chip-mark .librarian-spinner {
+	width: 10px;
+	height: 10px;
+}
+
+.librarian-chip.is-ok .librarian-chip-mark {
+	color: var(--text-success);
+}
+
+.librarian-chip.is-awaiting-approval .librarian-chip-mark {
+	color: var(--text-warning);
+}
+
+.librarian-chip.is-failed .librarian-chip-mark,
+.librarian-chip.is-rejected .librarian-chip-mark,
+.librarian-chip.is-blocked .librarian-chip-mark,
+.librarian-chip.is-expired .librarian-chip-mark {
+	color: var(--text-error);
+}
+
+.librarian-chip.is-skipped,
+.librarian-chip.is-blocked,
+.librarian-chip.is-expired {
+	opacity: 0.7;
+}
+
+/* What a step holds (LIB-FEAT-252): a header bar with the step's icon, title, summary, status and
+   a close button over a body that scrolls. As wide as the conversation allows up to 720px and as
+   tall as the room under or over its step; a step still streaming keeps the full height. */
+.librarian-step-pop {
+	position: absolute;
+	z-index: var(--layer-popover);
+	top: var(--librarian-pop-top);
+	left: var(--librarian-pop-left);
+	display: flex;
+	flex-direction: column;
+	width: var(--librarian-pop-width);
+	max-height: var(--librarian-pop-max);
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border-hover);
+	border-radius: var(--radius-l);
+	background: var(--background-primary);
+	box-shadow: var(--shadow-l);
+	color: var(--text-normal);
+	animation: librarian-pop-in 160ms ease-out both;
+}
+
+@keyframes librarian-pop-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.librarian-step-pop-header {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-2) var(--size-4-2) var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+
+.librarian-step-pop-icon {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	border-radius: var(--radius-m);
+	background: var(--background-modifier-hover);
+	color: var(--text-accent);
+}
+
+.librarian-step-pop-icon svg {
+	width: 18px;
+	height: 18px;
+}
+
+.librarian-step-pop-heading {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.librarian-step-pop-title {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-3);
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	font-family: var(--librarian-font-mono);
+}
+
+.librarian-step-pop-subtitle {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-step-pop-status {
+	flex: 0 0 auto;
+	padding: 2px var(--size-4-2);
+	border-radius: var(--radius-l);
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+}
+
+.librarian-step-pop-status.is-pending,
+.librarian-step-pop-status.is-running {
+	color: var(--text-accent);
+}
+
+.librarian-step-pop-status.is-awaiting-approval {
+	color: var(--text-warning);
+}
+
+.librarian-step-pop-status.is-ok {
+	color: var(--text-success);
+}
+
+.librarian-step-pop-status.is-failed,
+.librarian-step-pop-status.is-rejected,
+.librarian-step-pop-status.is-blocked,
+.librarian-step-pop-status.is-expired {
+	color: var(--text-error);
+}
+
+.librarian-step-pop-close {
+	flex: 0 0 auto;
+}
+
+.librarian-step-pop-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--size-4-3) var(--size-4-4) var(--size-4-4);
+	font-size: var(--font-ui-small);
+	line-height: var(--line-height-normal);
+}
+
+/* Sections of a tool call: a small caption over a block of code. The body scrolls as one. */
+.librarian-step-pop-body .librarian-tool-label {
+	margin: var(--size-4-3) 0 var(--size-2-2);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.librarian-step-pop-body .librarian-tool-label:first-child {
+	margin-top: 0;
+}
+
+.librarian-step-pop-body pre {
+	max-height: none;
+	margin: 0;
+	padding: var(--size-4-2) var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+	font-size: var(--font-small);
+	line-height: 1.5;
+}
+
+/* Thinking reads as prose. */
+.librarian-step-pop-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--text-normal);
+	font-size: var(--font-ui-medium);
+	line-height: 1.65;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.librarian-work-body,
+	.librarian-work-chevron {
+		transition: none;
+	}
+
+	.librarian-step-new,
+	.librarian-step-pop {
+		animation: none;
+	}
 }

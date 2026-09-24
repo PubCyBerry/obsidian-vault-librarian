@@ -29,8 +29,9 @@ import { skillKey } from '../skills/skill-manager';
 import { isBinaryPath } from '../tools/path-policy';
 import {
 	renderApprovalCard,
-	renderToolCard,
+	renderToolDetails,
 	STATUS_LABELS,
+	summarizeCall,
 	type ToolCardData,
 	toolIcon,
 } from './cards';
@@ -49,6 +50,18 @@ import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta } from './stream-text';
+import {
+	firstLine,
+	formatDuration,
+	groupRuns,
+	type PopoverContent,
+	type Run,
+	renderChip,
+	type Step,
+	StepPopover,
+	setChipStatus,
+	viewOf,
+} from './work-log';
 
 export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
@@ -188,7 +201,19 @@ class VaultImageModal extends FuzzySuggestModal<TFile> {
 export class LibrarianView extends ItemView {
 	private readonly controller: AgentController;
 	private unsubscribe: (() => void) | null = null;
-	private readonly expanded = new Set<string>();
+	/** The popover a timeline step opens (LIB-FEAT-252). */
+	private popover!: StepPopover;
+	/** Finished runs the user opened, and whether the user folded the running one. */
+	private readonly openRuns = new Set<number>();
+	private runningFolded = false;
+	/** The run being worked on as last drawn, to fold it once it finishes. */
+	private runningKey: number | null = null;
+	/** Steps of the running run already shown, so only new ones animate in. */
+	private readonly seenSteps = new Set<string>();
+	/** Each drawn step's popover, by key, to open it again after a redraw. */
+	private popFills = new Map<string, { anchor: HTMLElement; content: () => PopoverContent }>();
+	/** The last saved response as last drawn, to tell when the streaming one has been saved. */
+	private lastAssistant = -1;
 
 	private modelButton!: HTMLButtonElement;
 	private attachButton!: HTMLButtonElement;
@@ -201,14 +226,24 @@ export class LibrarianView extends ItemView {
 	private sessionsEl!: HTMLElement;
 	/** Auto-scroll follows new content only while the user is reading at the bottom. */
 	private followBottom = true;
-	private streamEl: HTMLElement | null = null;
-	private streamParts: {
-		thinking: HTMLElement;
-		text: HTMLElement;
-		tools: HTMLElement;
-		shownThinking: string;
+	/** Where the response being streamed goes: its steps on the timeline, its text under it. */
+	private live: {
+		timeline: HTMLElement;
+		answer: HTMLElement;
+		thinking: HTMLElement | null;
+		thinkingText: string;
+		/** Thinking is still the part growing: no text and no call has come after it yet. */
+		thinkingLive: boolean;
+		tools: HTMLElement | null;
+		/** The calls as streamed so far, for their popovers. */
+		calls: { id: string; name: string; args: Record<string, unknown> }[];
+		text: HTMLElement | null;
 		shownText: string;
 	} | null = null;
+	/** What the agent is doing, in the running run's header. */
+	private runActivityEl: HTMLElement | null = null;
+	/** Compacting asked for outside a run has no block, so it gets a line of its own. */
+	private compactLineEl: HTMLElement | null = null;
 	private approvalEl: HTMLElement | null = null;
 	private composerEl!: HTMLElement;
 	private activeNoteEl!: HTMLElement;
@@ -222,7 +257,6 @@ export class LibrarianView extends ItemView {
 	private ringEl!: HTMLElement;
 	private popoverEl!: HTMLElement;
 	private pickModelEl!: HTMLElement;
-	private activityEl!: HTMLElement;
 	private fileInput!: HTMLInputElement;
 
 	private historyMode = false;
@@ -269,9 +303,17 @@ export class LibrarianView extends ItemView {
 		});
 		this.noticeEl = root.createDiv({ cls: 'librarian-notice is-hidden' });
 		this.messagesEl = root.createDiv({ cls: 'librarian-messages' });
+		this.popover = new StepPopover(root, () => this.messagesEl.getBoundingClientRect());
 		this.messagesEl.addEventListener('scroll', () => {
 			const el = this.messagesEl;
 			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+			this.popover.reposition();
+		});
+		this.registerDomEvent(document, 'pointerdown', (e) => {
+			if (!this.popover.contains(e.target)) this.popover.close();
+		});
+		this.registerDomEvent(document, 'keydown', (e) => {
+			if (e.key === 'Escape') this.popover.close();
 		});
 		// MarkdownRenderer draws [[links]] but leaves opening them to the view; a new tab keeps
 		// the chat where it is (LIB-FEAT-226).
@@ -458,8 +500,6 @@ export class LibrarianView extends ItemView {
 	private buildComposer(root: HTMLElement) {
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
 		this.composerEl = root.createDiv({ cls: 'librarian-composer' });
-		// Its line is kept while hidden, so a turn starting or ending moves nothing.
-		this.activityEl = this.composerEl.createDiv({ cls: 'librarian-activity is-hidden' });
 		this.suggestEl = this.composerEl.createDiv({ cls: 'librarian-slash is-hidden' });
 		const box = this.composerEl.createDiv({ cls: 'librarian-composer-box' });
 		this.activeNoteEl = box.createDiv({ cls: 'librarian-active-note is-hidden' });
@@ -1099,7 +1139,12 @@ export class LibrarianView extends ItemView {
 				this.renderState(event.state);
 				break;
 			case 'session':
-				this.expanded.clear();
+				this.openRuns.clear();
+				this.seenSteps.clear();
+				this.runningFolded = false;
+				this.runningKey = null;
+				this.lastAssistant = -1;
+				this.popover.close();
 				this.renderModelSelect();
 				break;
 			case 'events':
@@ -1172,33 +1217,10 @@ export class LibrarianView extends ItemView {
 		this.pickModelEl.toggleClass('is-hidden', state !== 'model-unavailable');
 		this.renderModelSelect();
 		this.composerEl.toggleClass('is-hidden', state === 'model-unavailable');
-		const provider = this.controller.selection?.provider;
-		const nonStreaming = provider
-			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
-			: false;
-		const activity =
-			state === 'compacting'
-				? 'Compacting context'
-				: state === 'requesting'
-					? nonStreaming
-						? NO_STREAMING_NOTICE
-						: 'Waiting for the model'
-					: state === 'tool-running'
-						? 'Running tools'
-						: state === 'awaiting-approval'
-							? 'Waiting for your approval'
-							: '';
-		this.activityEl.toggleClass('is-hidden', !activity);
-		this.activityEl.empty();
-		if (activity) {
-			// The label shows the whole text on hover when a narrow pane cuts it short.
-			const line = this.activityEl.createDiv({
-				cls: 'librarian-activity-line',
-				attr: { 'aria-label': activity },
-			});
-			line.createSpan({ cls: 'librarian-spinner' });
-			line.createSpan({ text: activity });
-		}
+		this.renderActivity(state);
+		// The last events of a run are drawn while it still runs; once it has ended, it folds.
+		if (this.controller.session && !this.controller.isRunning && this.runningKey !== null)
+			this.renderEvents(this.controller.events);
 		this.updateSendEnabled();
 	}
 
@@ -1278,39 +1300,282 @@ export class LibrarianView extends ItemView {
 
 	// Messages
 
+	/** What the agent is doing, in the running run's header, or on a line of its own for compacting. */
+	private renderActivity(state: AgentController['state']) {
+		const provider = this.controller.selection?.provider;
+		const nonStreaming = provider
+			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
+			: false;
+		const activity =
+			state === 'compacting'
+				? 'Compacting context'
+				: state === 'requesting'
+					? nonStreaming
+						? NO_STREAMING_NOTICE
+						: 'Waiting for the model'
+					: state === 'tool-running'
+						? 'Running tools'
+						: state === 'awaiting-approval'
+							? 'Waiting for your approval'
+							: '';
+		if (this.runActivityEl) {
+			this.runActivityEl.setText(activity);
+			// A narrow pane cuts it short; the whole text shows on hover.
+			this.runActivityEl.setAttr('aria-label', activity);
+		}
+		const standalone = state === 'compacting' && !this.controller.isRunning;
+		if (standalone && !this.compactLineEl) {
+			this.compactLineEl = this.messagesEl.createDiv({ cls: 'librarian-work is-running' });
+			const header = this.compactLineEl.createDiv({ cls: 'librarian-work-header' });
+			header.createSpan({ cls: 'librarian-spinner' });
+			header.createSpan({ cls: 'librarian-work-title', text: 'Compacting context' });
+			this.scrollToBottom();
+		} else if (!standalone) {
+			this.compactLineEl?.remove();
+			this.compactLineEl = null;
+		}
+	}
+
 	private renderEvents(events: IndexedEvent[]) {
 		const atBottom = this.followBottom;
 		this.messagesEl.empty();
-		this.streamEl = null;
-		this.streamParts = null;
+		this.live = null;
+		this.runActivityEl = null;
+		this.compactLineEl = null;
 		this.approvalEl = null;
+		this.popFills = new Map();
 		const results = new Map<string, Extract<SessionEvent, { type: 'tool_result' }>>();
 		for (const { event } of events)
 			if (event.type === 'tool_result') results.set(event.toolCallId, event);
-		for (const { index, event } of events) {
-			switch (event.type) {
-				case 'user':
-					this.renderUser(index, event);
-					break;
-				case 'assistant':
-					this.renderAssistant(event, results);
-					break;
-				case 'compaction':
-					this.messagesEl.createDiv({
-						cls: 'librarian-compaction',
-						text: `Context compacted: ${compactTokens(event.tokensBefore)} to ${compactTokens(event.tokensAfter)}`,
-					});
-					break;
-				case 'error':
-					this.renderStoredError(event.message);
-					break;
-				default:
-					break;
-			}
+		// The thinking read while it streamed is now the thinking of the response it was saved as.
+		let lastAssistant = -1;
+		for (const { index, event } of events)
+			if (event.type === 'assistant') lastAssistant = index;
+		if (this.popover.openKey === 'thinking:live' && lastAssistant > this.lastAssistant)
+			this.popover.openKey = `thinking:${lastAssistant}:thinking`;
+		this.lastAssistant = lastAssistant;
+		const runs = groupRuns(events);
+		const running = this.controller.isRunning ? (runs[runs.length - 1]?.key ?? null) : null;
+		const finished =
+			this.runningKey !== null && this.runningKey !== running ? this.runningKey : null;
+		if (running !== this.runningKey) this.runningFolded = false;
+		this.runningKey = running;
+		for (const run of runs) {
+			if (run.user) this.renderUser(run.key, run.user);
+			this.renderRun(run, results, run.key === running, run.key === finished);
 		}
 		if (this.pendingStream) this.renderStream(this.pendingStream);
 		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
+		this.renderActivity(this.controller.state);
+		this.popover.reopen(
+			(key) =>
+				this.popFills.get(key) ?? (key === 'thinking:live' ? this.lastThinking() : null),
+		);
 		if (atBottom) this.scrollToBottom(true);
+	}
+
+	/** The newest saved thinking step: where a live thinking popover goes once its stream ends. */
+	private lastThinking(): { anchor: HTMLElement; content: () => PopoverContent } | null {
+		let found: { anchor: HTMLElement; content: () => PopoverContent } | null = null;
+		for (const [key, pop] of this.popFills)
+			if (key.startsWith('thinking:') && key !== 'thinking:live') found = pop;
+		return found;
+	}
+
+	/**
+	 * One request's work (LIB-FEAT-252): a header that says Working, then how long it worked, a
+	 * dotted timeline of what it did that folds under the header, and the answer below. The
+	 * running run stays open until the user folds it; a finished one folds, animated when it has
+	 * just finished, and stays open once the user opens it.
+	 */
+	private renderRun(
+		run: Run,
+		results: Map<string, Extract<SessionEvent, { type: 'tool_result' }>>,
+		running: boolean,
+		justFinished: boolean,
+	) {
+		const view = viewOf(run);
+		// Before the first message there may be only a model change: nothing to show.
+		if (!run.user && !view.steps.length && !view.errors.length && view.answer === null) return;
+		const hasSteps = view.steps.length > 0;
+		const block = this.messagesEl.createDiv({ cls: 'librarian-work' });
+		block.toggleClass('is-running', running);
+		const header = block.createDiv({ cls: 'librarian-work-header' });
+		if (running) header.createSpan({ cls: 'librarian-spinner' });
+		const took =
+			view.startedAt !== null && view.endedAt !== null ? view.endedAt - view.startedAt : 0;
+		header.createSpan({
+			cls: 'librarian-work-title',
+			text: running ? 'Working' : `Worked for ${formatDuration(took)}`,
+		});
+		const chevron = header.createSpan({ cls: 'librarian-work-chevron' });
+		setIcon(chevron, 'chevron-right');
+		if (running) this.runActivityEl = header.createSpan({ cls: 'librarian-work-activity' });
+		const body = block.createDiv({ cls: 'librarian-work-body' });
+		const timeline = body.createDiv({ cls: 'librarian-timeline' });
+		for (const step of view.steps) this.renderStep(timeline, step, results, running);
+		const userOpened = this.openRuns.has(run.key);
+		const open = running ? !this.runningFolded : userOpened || justFinished;
+		block.toggleClass('is-collapsed', !open);
+		// Nothing to unfold: a quick answer, or a run that has not done anything yet.
+		block.toggleClass('is-empty', !hasSteps && !running);
+		if (hasSteps || running) {
+			header.setAttr('role', 'button');
+			header.setAttr('tabindex', '0');
+			header.setAttr('aria-expanded', String(open));
+			const toggle = () => {
+				const opening = block.hasClass('is-collapsed');
+				block.toggleClass('is-collapsed', !opening);
+				header.setAttr('aria-expanded', String(opening));
+				if (running) this.runningFolded = !opening;
+				else if (opening) this.openRuns.add(run.key);
+				else this.openRuns.delete(run.key);
+				if (!opening) this.popover.close();
+			};
+			header.addEventListener('click', toggle);
+			header.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					toggle();
+				}
+			});
+		}
+		if (justFinished && !userOpened)
+			window.requestAnimationFrame(() => {
+				block.addClass('is-collapsed');
+				header.setAttr('aria-expanded', 'false');
+			});
+		if (view.answer !== null || running) {
+			const answer = this.messagesEl.createDiv({
+				cls: 'librarian-msg librarian-msg-assistant',
+			});
+			if (view.answer) this.renderMarkdown(answer.createDiv(), view.answer);
+			if (running)
+				this.live = {
+					timeline,
+					answer,
+					thinking: null,
+					thinkingText: '',
+					thinkingLive: false,
+					tools: null,
+					calls: [],
+					text: null,
+					shownText: '',
+				};
+		}
+		for (const message of view.errors) this.renderStoredError(message);
+	}
+
+	private renderStep(
+		timeline: HTMLElement,
+		step: Step,
+		results: Map<string, Extract<SessionEvent, { type: 'tool_result' }>>,
+		running: boolean,
+	) {
+		const row = timeline.createDiv({ cls: `librarian-step is-${step.kind}` });
+		if (running && !this.seenSteps.has(step.key)) row.addClass('librarian-step-new');
+		if (running) this.seenSteps.add(step.key);
+		switch (step.kind) {
+			case 'thinking':
+				this.stepButton(row, `thinking:${step.key}`, 'brain', 'Thinking', () => ({
+					icon: 'brain',
+					title: 'Thinking',
+					body: (el) => el.createDiv({ cls: 'librarian-step-pop-text', text: step.text }),
+				}));
+				break;
+			case 'text':
+				this.stepButton(
+					row,
+					`text:${step.key}`,
+					'message-square',
+					firstLine(step.text),
+					() => ({
+						icon: 'message-square',
+						title: 'Message',
+						body: (el) => this.renderMarkdown(el.createDiv(), step.text),
+					}),
+				);
+				break;
+			case 'tools':
+				for (const call of step.calls) {
+					const result = results.get(call.id);
+					// A finished run's call with no result was cut off; it did not run.
+					const status =
+						this.controller.toolStatusOf(call.id) ??
+						(result ? (result.ok ? 'ok' : 'failed') : running ? 'pending' : 'skipped');
+					const chip = renderChip(row, call, status);
+					this.bindPopover(
+						chip,
+						`call:${call.id}`,
+						this.toolContent(() => ({
+							toolCallId: call.id,
+							name: call.name,
+							args: call.args,
+							status: this.controller.toolStatusOf(call.id) ?? status,
+							result: result?.content ?? null,
+							truncated: result?.truncated ?? false,
+						})),
+					);
+				}
+				break;
+			case 'compaction':
+				row.createSpan({
+					cls: 'librarian-step-note',
+					text: `Context compacted: ${compactTokens(step.before)} to ${compactTokens(step.after)}`,
+				});
+				break;
+		}
+	}
+
+	/** A step shown by its icon and a short label; what it holds opens in the popover. */
+	private stepButton(
+		row: HTMLElement,
+		key: string,
+		icon: string,
+		label: string,
+		content: () => PopoverContent,
+	): HTMLButtonElement {
+		const button = row.createEl('button', { cls: 'librarian-chip librarian-step-button' });
+		setIcon(button.createSpan({ cls: 'librarian-chip-icon' }), icon);
+		button.createSpan({ cls: 'librarian-chip-name', text: label });
+		this.bindPopover(button, key, content);
+		return button;
+	}
+
+	private bindPopover(anchor: HTMLElement, key: string, content: () => PopoverContent) {
+		anchor.dataset.popKey = key;
+		anchor.setAttr('aria-haspopup', 'dialog');
+		anchor.setAttr('aria-expanded', 'false');
+		this.popFills.set(key, { anchor, content });
+		anchor.addEventListener('click', () => this.popover.toggle(anchor, content));
+	}
+
+	/** A tool call's popover: its name, summary and status over what it was given and got back. */
+	private toolContent(data: () => ToolCardData): () => PopoverContent {
+		return () => {
+			const d = data();
+			return {
+				icon: toolIcon(d.name),
+				title: d.name || 'Tool call',
+				subtitle: summarizeCall(d.name, d.args, d.result),
+				status: { text: STATUS_LABELS[d.status], cls: `is-${d.status}` },
+				live: d.status === 'pending' || d.status === 'running',
+				body: (el) => renderToolDetails(el, d),
+			};
+		};
+	}
+
+	/** Markdown with [[links]] and `path:line` sources that open their notes. */
+	private renderMarkdown(el: HTMLElement, text: string) {
+		el.addClass('librarian-markdown', 'markdown-rendered');
+		void MarkdownRenderer.render(this.app, text, el, '', this).then(() => {
+			linkSources(
+				el,
+				(ref) =>
+					void openSource(this.app, ref, (p, l) => this.controller.findReadLine(p, l)),
+				(path) => this.app.vault.getFileByPath(path) !== null,
+			);
+		});
 	}
 
 	private renderStoredError(message: string) {
@@ -1360,46 +1625,6 @@ export class LibrarianView extends ItemView {
 		}
 	}
 
-	private renderAssistant(
-		event: Extract<SessionEvent, { type: 'assistant' }>,
-		results: Map<string, Extract<SessionEvent, { type: 'tool_result' }>>,
-	) {
-		const wrap = this.messagesEl.createDiv({ cls: 'librarian-msg librarian-msg-assistant' });
-		if (event.thinking) {
-			const details = wrap.createEl('details', { cls: 'librarian-thinking' });
-			details.createEl('summary', { text: 'Thinking' });
-			details.createEl('pre', { text: event.thinking });
-		}
-		if (event.content) {
-			const body = wrap.createDiv({ cls: 'librarian-markdown markdown-rendered' });
-			void MarkdownRenderer.render(this.app, event.content, body, '', this).then(() => {
-				linkSources(
-					body,
-					(ref) =>
-						void openSource(this.app, ref, (p, l) =>
-							this.controller.findReadLine(p, l),
-						),
-					(path) => this.app.vault.getFileByPath(path) !== null,
-				);
-			});
-		}
-		for (const call of event.toolCalls) {
-			const result = results.get(call.id);
-			const status =
-				this.controller.toolStatusOf(call.id) ??
-				(result ? (result.ok ? 'ok' : 'failed') : 'pending');
-			const data: ToolCardData = {
-				toolCallId: call.id,
-				name: call.name,
-				args: call.args,
-				status,
-				result: result?.content ?? null,
-				truncated: result?.truncated ?? false,
-			};
-			renderToolCard(wrap, data, this.expanded);
-		}
-	}
-
 	private queueStream(message: AssistantMessage | null) {
 		this.pendingStream = message;
 		if (message === null) {
@@ -1407,9 +1632,22 @@ export class LibrarianView extends ItemView {
 				window.clearTimeout(this.streamTimer);
 				this.streamTimer = null;
 			}
-			this.streamEl?.remove();
-			this.streamEl = null;
-			this.streamParts = null;
+			const live = this.live;
+			if (live) {
+				live.thinking?.remove();
+				live.tools?.remove();
+				live.text?.remove();
+				this.live = {
+					...live,
+					thinking: null,
+					thinkingText: '',
+					thinkingLive: false,
+					tools: null,
+					calls: [],
+					text: null,
+					shownText: '',
+				};
+			}
 			return;
 		}
 		if (this.streamTimer !== null) return;
@@ -1419,62 +1657,99 @@ export class LibrarianView extends ItemView {
 		}, 120);
 	}
 
+	/**
+	 * The response on its way: its thinking and its tool calls grow the running run's timeline,
+	 * and its text grows under it, only the new tail animating in.
+	 */
 	private renderStream(message: AssistantMessage) {
-		if (!this.streamEl || !this.streamParts) {
-			const el = this.messagesEl.createDiv({
-				cls: 'librarian-msg librarian-msg-assistant is-streaming',
-			});
-			this.streamEl = el;
-			const details = el.createEl('details', { cls: 'librarian-thinking is-hidden' });
-			details.open = true;
-			details.createEl('summary', { text: 'Thinking' });
-			this.streamParts = {
-				thinking: details.createEl('pre'),
-				text: el.createDiv({ cls: 'librarian-markdown librarian-stream-text is-hidden' }),
-				tools: el.createDiv(),
-				shownThinking: '',
-				shownText: '',
-			};
-		}
-		// Already shown text stays in place; only the new tail is appended so it can animate in.
-		const parts = this.streamParts;
+		const live = this.live;
+		if (!live) return;
 		const thinking = message.content
 			.filter((c) => c.type === 'thinking')
 			.map((c) => (c as { thinking: string }).thinking)
 			.join('');
-		parts.thinking.parentElement?.toggleClass('is-hidden', !thinking);
-		parts.shownThinking = appendStreamDelta(parts.thinking, parts.shownThinking, thinking);
+		if (thinking && !live.thinking) {
+			live.thinking = live.timeline.createDiv({
+				cls: 'librarian-step is-thinking librarian-step-new',
+			});
+			this.stepButton(live.thinking, 'thinking:live', 'brain', 'Thinking', () => ({
+				icon: 'brain',
+				title: 'Thinking',
+				live: this.live?.thinkingLive === true,
+				body: (el) =>
+					el.createDiv({
+						cls: 'librarian-step-pop-text',
+						text: this.live?.thinkingText ?? '',
+					}),
+			}));
+		}
+		live.thinkingText = thinking;
+		const calls = message.content.filter((c) => c.type === 'toolCall');
+		live.calls = calls.map((c) => ({ id: c.id, name: c.name, args: c.arguments }));
+		if (calls.length && !live.tools)
+			live.tools = live.timeline.createDiv({
+				cls: 'librarian-step is-tools librarian-step-new',
+			});
+		calls.forEach((block, i) => {
+			const tools = live.tools;
+			if (!tools) return;
+			const status: ToolCardStatus = this.controller.toolStatusOf(block.id) ?? 'pending';
+			const existing = tools.children[i] as HTMLElement | undefined;
+			if (existing) {
+				existing.dataset.toolCallId = block.id;
+				const name = existing.querySelector('.librarian-chip-name');
+				if (name && block.name) name.textContent = block.name;
+				return;
+			}
+			const chip = renderChip(tools, { id: block.id, name: block.name }, status);
+			this.bindPopover(
+				chip,
+				`call:${block.id || i}`,
+				this.toolContent(() => {
+					const now = this.live?.calls[i] ?? {
+						id: block.id,
+						name: block.name,
+						args: block.arguments,
+					};
+					return {
+						toolCallId: now.id,
+						name: now.name,
+						args: now.args,
+						status: this.controller.toolStatusOf(now.id) ?? status,
+						result: null,
+						truncated: false,
+					};
+				}),
+			);
+		});
 		const text = message.content
 			.filter((c) => c.type === 'text')
 			.map((c) => (c as { text: string }).text)
 			.join('');
-		parts.text.toggleClass('is-hidden', !text);
-		parts.shownText = appendStreamDelta(parts.text, parts.shownText, text);
-		parts.tools.empty();
-		for (const block of message.content) {
-			if (block.type !== 'toolCall') continue;
-			const status: ToolCardStatus = this.controller.toolStatusOf(block.id) ?? 'pending';
-			const card = parts.tools.createDiv({ cls: `librarian-tool is-${status}` });
-			const header = card.createDiv({ cls: 'librarian-tool-header' });
-			setIcon(header.createSpan({ cls: 'librarian-tool-icon' }), toolIcon(block.name));
-			header.createSpan({ cls: 'librarian-tool-name', text: block.name || '…' });
-			header.createSpan({
-				cls: 'librarian-tool-summary',
-				text: JSON.stringify(block.arguments).slice(0, 80),
-			});
-			header.createSpan({ cls: 'librarian-tool-status', text: STATUS_LABELS[status] });
-		}
+		if (text && !live.text)
+			live.text = live.answer.createDiv({ cls: 'librarian-markdown librarian-stream-text' });
+		if (live.text) live.shownText = appendStreamDelta(live.text, live.shownText, text);
+		live.thinkingLive = thinking.length > 0 && !text && calls.length === 0;
+		// An open popover on a step still streaming shows what has arrived since it opened.
+		const open = this.popover.openKey;
+		if (
+			open === 'thinking:live' ||
+			(open?.startsWith('call:') &&
+				live.tools?.querySelector(`[data-pop-key="${CSS.escape(open)}"]`))
+		)
+			this.popover.refresh();
 		this.scrollToBottom();
 	}
 
 	private updateToolStatus(toolCallId: string, status: ToolCardStatus) {
-		const card = this.messagesEl.querySelector<HTMLElement>(
-			`.librarian-tool[data-tool-call-id="${toolCallId}"]`,
-		);
-		if (!card) return;
-		card.className = `librarian-tool is-${status}`;
-		const label = card.querySelector('.librarian-tool-status');
-		if (label) label.textContent = STATUS_LABELS[status];
+		this.messagesEl
+			.querySelectorAll<HTMLElement>(
+				`.librarian-chip[data-tool-call-id="${CSS.escape(toolCallId)}"]`,
+			)
+			.forEach((chip) => {
+				setChipStatus(chip, status);
+			});
+		if (this.popover.openKey === `call:${toolCallId}`) this.popover.refresh();
 	}
 
 	private renderApproval(request: ApprovalRequest | null) {

@@ -163,6 +163,65 @@ export function summarizeCall(
 	}
 }
 
+/**
+ * A result as a person reads it, for the popover (LIB-FEAT-252): the lines read returned with
+ * their numbers, the lines grep found after their paths, the paths find and ls listed, and any
+ * other JSON indented. The model still gets the result as it was.
+ */
+export function readableResult(name: string, result: string): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(result);
+	} catch {
+		return result;
+	}
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+		return JSON.stringify(parsed, null, 2);
+	const r = parsed as Record<string, unknown>;
+	const list = (key: string) =>
+		Array.isArray(r[key]) ? (r[key] as Record<string, unknown>[]) : null;
+	const moreMatches = r.truncated === true ? '\nMore matches not shown' : '';
+	switch (shapeOf(name)) {
+		case 'read': {
+			const lines = list('lines');
+			if (!lines) break;
+			const width = str(lines[lines.length - 1]?.line).length;
+			const shown = lines.map((l) => `${str(l.line).padStart(width)}  ${str(l.text)}`);
+			if (typeof r.nextOffset === 'number') shown.push(`Continues at line ${r.nextOffset}`);
+			return shown.join('\n');
+		}
+		case 'grep': {
+			const matches = list('matches');
+			if (!matches) break;
+			if (!matches.length) return 'No matches';
+			return (
+				matches
+					.map((m) => `${str(m.path)}:${str(m.line)}  ${str(m.text).trim()}`)
+					.join('\n') + moreMatches
+			);
+		}
+		case 'find': {
+			const matches = list('matches');
+			if (!matches) break;
+			if (!matches.length) return 'No matches';
+			return matches.map((m) => str(m.path)).join('\n') + moreMatches;
+		}
+		case 'ls': {
+			const entries = list('entries');
+			if (!entries) break;
+			if (!entries.length) return 'Empty folder';
+			const shown = entries.map((e) =>
+				e.type === 'folder' ? `${str(e.path)}/` : str(e.path),
+			);
+			const listed = (typeof r.offset === 'number' ? r.offset : 0) + entries.length;
+			if (typeof r.total === 'number' && r.total > listed)
+				shown.push(`${r.total - listed} more not listed`);
+			return shown.join('\n');
+		}
+	}
+	return JSON.stringify(parsed, null, 2);
+}
+
 export interface ToolCardData {
 	toolCallId: string;
 	name: string;
@@ -212,41 +271,12 @@ export function renderChangePreview(
 	}
 }
 
-export function renderToolCard(
-	container: HTMLElement,
-	data: ToolCardData,
-	expanded: Set<string>,
-): HTMLElement {
-	const card = container.createDiv({ cls: `librarian-tool is-${data.status}` });
-	card.dataset.toolCallId = data.toolCallId;
-	const header = card.createDiv({ cls: 'librarian-tool-header' });
-	setIcon(header.createSpan({ cls: 'librarian-tool-icon' }), toolIcon(data.name));
-	header.createSpan({ cls: 'librarian-tool-name', text: data.name });
-	header.createSpan({
-		cls: 'librarian-tool-summary',
-		text: summarizeCall(data.name, data.args, data.result),
-	});
-	header.createSpan({ cls: 'librarian-tool-status', text: STATUS_LABELS[data.status] });
-	const body = card.createDiv({ cls: 'librarian-tool-body' });
-	const isOpen = expanded.has(data.toolCallId);
-	body.toggleClass('is-hidden', !isOpen);
-	header.setAttr('role', 'button');
-	header.setAttr('tabindex', '0');
-	header.setAttr('aria-expanded', String(isOpen));
-	const toggle = () => {
-		const open = body.hasClass('is-hidden');
-		body.toggleClass('is-hidden', !open);
-		header.setAttr('aria-expanded', String(open));
-		if (open) expanded.add(data.toolCallId);
-		else expanded.delete(data.toolCallId);
-	};
-	header.addEventListener('click', toggle);
-	header.addEventListener('keydown', (e) => {
-		if (e.key === 'Enter' || e.key === ' ') {
-			e.preventDefault();
-			toggle();
-		}
-	});
+/**
+ * What one tool call did, for the body of the popover its timeline chip opens (LIB-FEAT-252): the
+ * change, command or arguments, then the result. The popover's header names it and its status.
+ */
+export function renderToolDetails(body: HTMLElement, data: ToolCardData): void {
+	body.addClass('librarian-tool-details');
 	const shape = shapeOf(data.name);
 	if (isChange(shape, data.args)) {
 		renderChangePreview(body, shape, data.args, data.existingLength);
@@ -259,11 +289,10 @@ export function renderToolCard(
 	}
 	if (data.result !== null) {
 		body.createDiv({ cls: 'librarian-tool-label', text: 'Result' });
-		body.createEl('pre', { text: data.result });
+		body.createEl('pre', { text: readableResult(data.name, data.result) });
 		if (data.truncated)
 			body.createDiv({ cls: 'librarian-tool-note', text: 'The result was truncated.' });
 	}
-	return card;
 }
 
 export interface ApprovalCardHandlers {
