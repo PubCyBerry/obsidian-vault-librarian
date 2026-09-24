@@ -5,8 +5,8 @@ import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
 import { ContextManager } from './context/context-manager';
 import { desktopHttp } from './mcp/loopback';
-import { McpManager } from './mcp/mcp-manager';
-import { OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
+import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
+import { clientSecretId, OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import { SHELL_GROUP, ToolPermissionManager } from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
@@ -29,6 +29,10 @@ import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
 import { WEBDAV_SECRET_ID, WebDavClient } from './webdav/webdav-client';
 import { createWebDavTools, WEBDAV_GROUP } from './webdav/webdav-tools';
 
+/** Device-local: this device's id, and the hand-overs it already took (LIB-FEAT-234). */
+const DEVICE_ID_KEY = 'librarian-device-id';
+const TAKEN_HANDOFFS_KEY = 'librarian-taken-handoffs';
+
 export default class LibrarianPlugin extends Plugin {
 	settings!: LibrarianSettings;
 	secrets!: SecretStore;
@@ -46,7 +50,23 @@ export default class LibrarianPlugin extends Plugin {
 
 	async onload() {
 		this.settings = mergeSettings(await this.loadData());
-		this.secrets = new SecretStore(this.app);
+		// The fixed secrets also travel sealed in the settings, for every device with the same
+		// sync passphrase (LIB-FEAT-233).
+		this.secrets = new SecretStore(this.app, {
+			read: () => this.settings.sealedSecrets,
+			write: async (sealed) => {
+				this.settings.sealedSecrets = sealed;
+				await this.saveSettings();
+			},
+			ids: () => [
+				...this.settings.providers.map((p) => p.secretId),
+				...this.settings.mcpServers.flatMap((s) => [
+					apiKeySecretId(s.id),
+					clientSecretId(s.id),
+				]),
+				WEBDAV_SECRET_ID,
+			],
+		});
 		this.sessions = new SessionManager(
 			this.app,
 			`${this.app.vault.configDir}/plugins/${this.manifest.id}`,
@@ -71,6 +91,15 @@ export default class LibrarianPlugin extends Plugin {
 			open: (url) => window.open(url),
 			notice: (message) => new Notice(message),
 			loopback: desktopHttp,
+			deviceId: () => this.deviceId(),
+			taken: {
+				has: (nonce) => this.takenHandoffs().includes(nonce),
+				add: (nonce) =>
+					this.app.saveLocalStorage(
+						TAKEN_HANDOFFS_KEY,
+						[...this.takenHandoffs(), nonce].slice(-50),
+					),
+			},
 		});
 		this.skills = new SkillManager(this.app);
 		this.permissions.attachExtras(
@@ -222,7 +251,11 @@ export default class LibrarianPlugin extends Plugin {
 			if (params.code) void this.mcp.finishAuth(id, params.code);
 		});
 		this.app.workspace.onLayoutReady(() => {
-			void this.mcp.connectAll();
+			// Servers connect with the keys and sign-ins the sealed settings bring to this device.
+			void this.secrets
+				.unlock()
+				.then(() => this.mcp.claimHandoffs())
+				.then(() => this.mcp.connectAll());
 			void this.skills.scan();
 			void this.finishInterruptedTurn();
 		});
@@ -240,6 +273,13 @@ export default class LibrarianPlugin extends Plugin {
 		// tab is told here when a server's state or the skill list changes.
 		this.register(this.mcp.subscribe(() => settingTab.refresh()));
 		this.register(this.skills.subscribe(() => settingTab.refresh()));
+		// A key that arrives sealed may be the one the chat was waiting for.
+		this.register(
+			this.secrets.subscribe(() => {
+				settingTab.refresh();
+				void this.controller.refreshReadiness();
+			}),
+		);
 
 		this.addCommand({
 			id: 'open',
@@ -292,6 +332,36 @@ export default class LibrarianPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/**
+	 * The vault's sync brought settings another device wrote. Only what devices write for each
+	 * other is taken now, the sealed secrets and the sign-ins handed over; the rest waits for the
+	 * next start, as before.
+	 */
+	async onExternalSettingsChange() {
+		const fresh = mergeSettings(await this.loadData());
+		const sealedChanged = fresh.sealedSecrets !== this.settings.sealedSecrets;
+		this.settings.sealedSecrets = fresh.sealedSecrets;
+		this.settings.oauthHandoffs = fresh.oauthHandoffs;
+		if (sealedChanged) await this.secrets.unlock();
+		await this.mcp.claimHandoffs();
+	}
+
+	/** This device's id, made once and kept in its local storage, never synced. */
+	private deviceId(): string {
+		const stored: unknown = this.app.loadLocalStorage(DEVICE_ID_KEY);
+		if (typeof stored === 'string' && stored) return stored;
+		const id = crypto.randomUUID();
+		this.app.saveLocalStorage(DEVICE_ID_KEY, id);
+		return id;
+	}
+
+	private takenHandoffs(): string[] {
+		const stored: unknown = this.app.loadLocalStorage(TAKEN_HANDOFFS_KEY);
+		return Array.isArray(stored)
+			? stored.filter((n): n is string => typeof n === 'string')
+			: [];
 	}
 
 	/** The storage tools exist only while a WebDAV storage is switched on and has a URL. */

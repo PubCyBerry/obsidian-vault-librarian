@@ -78,13 +78,15 @@ const page = (pages: Page[], name: string) => pages.find((p) => p.name === name)
 const rows = (p: Page) => p.items.flatMap((s) => s.items ?? []);
 
 describe('settings pages', () => {
-	it('LIB-TEST-207: eight pages in order, each with a one-line description', () => {
+	it('LIB-TEST-207: nine pages in order, each with a one-line description', () => {
 		const pages = tab();
 		expect(pages.map((p) => p.name)).toEqual([
 			'Providers',
 			'Agent',
 			'MCP servers',
 			'WebDAV storage',
+			// Keys and sign-ins for other devices (LIB-FEAT-233).
+			'Device sync',
 			'Skills',
 			'Tool permissions',
 			'Context',

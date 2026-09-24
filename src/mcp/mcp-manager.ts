@@ -1,9 +1,13 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
-import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import {
+	auth,
+	extractWWWAuthenticateParams,
+	UnauthorizedError,
+} from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientInformationMixed } from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { LATEST_PROTOCOL_VERSION, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
 import type { SecretStore } from '../storage/secret-store';
@@ -16,6 +20,7 @@ import {
 	OAUTH_REDIRECT_URL,
 	ObsidianOAuthProvider,
 	oauthSecretId,
+	type StoredOAuth,
 } from './oauth-provider';
 
 /** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
@@ -129,6 +134,10 @@ export interface McpManagerDeps {
 	notice: (message: string) => void;
 	/** Node's http on desktop, for a loopback sign-in; null or absent on phones. */
 	loopback?: () => HttpModule | null;
+	/** This device's id, so a device never takes back the sign-in it made for another. */
+	deviceId?: () => string;
+	/** Hand-overs this device already took, by nonce: sync may bring a taken one back. */
+	taken?: { has(nonce: string): boolean; add(nonce: string): void };
 }
 
 export function apiKeySecretId(serverId: string): string {
@@ -448,8 +457,165 @@ export class McpManager {
 		settings.mcpServers = settings.mcpServers.filter((s) => s.id !== id);
 		for (const name of Object.keys(settings.toolPermissions.byTool))
 			if (name.startsWith(`${id}__`)) delete settings.toolPermissions.byTool[name];
+		delete settings.oauthHandoffs?.[id];
 		await this.deps.save();
 		this.emit();
+	}
+
+	/** A sign-in this or another device made for a phone or tablet is waiting to be taken. */
+	handoffPending(id: string): boolean {
+		return !!this.deps.settings().oauthHandoffs?.[id];
+	}
+
+	/**
+	 * Signs in once more on this desktop, for a phone or tablet. The new grant is its own: kept in
+	 * memory, never in this device's storage, then sealed with the sync passphrase into the
+	 * settings for the other device to take. Each device then refreshes only its own grant, so
+	 * neither undoes the other when the server replaces refresh tokens (LIB-ADR-031).
+	 */
+	async signInForDevice(id: string): Promise<void> {
+		const server = this.server(id);
+		const http = this.deps.loopback?.();
+		if (!server || server.auth !== 'oauth' || !http) return;
+		if (this.deps.secrets.state !== 'on') {
+			this.deps.notice(
+				'Set a sync passphrase under Device sync first. The phone or tablet needs the same one.',
+			);
+			return;
+		}
+		let grant: StoredOAuth = {};
+		let state: string | undefined;
+		let answer: (result: LoopbackResult) => void = () => {};
+		const answered = new Promise<LoopbackResult>((resolve) => {
+			answer = resolve;
+		});
+		const loopback = await listenForRedirect(http, {
+			accept: (s) => s !== null && s === state,
+			onResult: (result) => answer(result),
+			path: this.configuredClient(id) ? '/' : '/callback',
+		});
+		const provider = new ObsidianOAuthProvider({
+			serverId: id,
+			secrets: this.deps.secrets,
+			configuredClient: () => this.configuredClient(id),
+			interactive: () => true,
+			open: this.deps.open,
+			redirectUrl: () => loopback.redirectUrl,
+			onState: (s) => {
+				state = s;
+			},
+			onAuthorizationUrl: () => {},
+			storage: {
+				read: () => ({ ...grant }),
+				write: (stored) => {
+					grant = stored;
+				},
+			},
+		});
+		const fetchFn = this.fetchFor(id);
+		try {
+			const options = {
+				serverUrl: new URL(server.url),
+				fetchFn,
+				...(await this.authHints(server.url, fetchFn)),
+			};
+			if ((await auth(provider, options)) !== 'REDIRECT')
+				throw new Error('The server did not ask for a sign-in.');
+			const result = await answered;
+			if ('error' in result) throw new Error(result.error);
+			await auth(provider, { ...options, authorizationCode: result.code });
+			const sealed = grant.tokens
+				? await this.deps.secrets.seal(
+						JSON.stringify({ client: grant.client, tokens: grant.tokens }),
+					)
+				: null;
+			if (!sealed) throw new Error('No sign-in came back.');
+			const settings = this.deps.settings();
+			settings.oauthHandoffs = {
+				...settings.oauthHandoffs,
+				[id]: {
+					from: this.deps.deviceId?.() ?? '',
+					nonce: crypto.randomUUID(),
+					sealed,
+					createdAt: new Date().toISOString(),
+				},
+			};
+			await this.deps.save();
+			this.emit();
+			this.deps.notice(
+				`A sign-in to ${server.name} is ready. Open Obsidian on your phone or tablet to take it.`,
+			);
+		} catch (error) {
+			const blocked = this.signInBlocked(id, error);
+			const reason = blocked ?? (error instanceof Error ? error.message : String(error));
+			this.deps.notice(`Sign-in for a mobile device failed: ${reason}`);
+		} finally {
+			loopback.close();
+		}
+	}
+
+	/**
+	 * Takes the sign-ins another device made for this one: each goes into this device's own
+	 * storage, its slot is emptied, and the server connects. One this device cannot open yet (no
+	 * passphrase, or another one) waits; one it already took, which sync can bring back, is dropped.
+	 */
+	async claimHandoffs(): Promise<void> {
+		const settings = this.deps.settings();
+		const handoffs = { ...settings.oauthHandoffs };
+		const me = this.deps.deviceId?.() ?? '';
+		let changed = false;
+		for (const [id, handoff] of Object.entries(handoffs)) {
+			const server = this.server(id);
+			if (handoff.from === me && server) continue;
+			if (!server || this.deps.taken?.has(handoff.nonce)) {
+				delete handoffs[id];
+				changed = true;
+				continue;
+			}
+			const text = await this.deps.secrets.unseal(handoff.sealed);
+			if (text === null) continue;
+			this.deps.secrets.set(oauthSecretId(id), text);
+			this.deps.taken?.add(handoff.nonce);
+			delete handoffs[id];
+			changed = true;
+			this.deps.notice(`Signed in to ${server.name} with the sign-in from your desktop.`);
+			if (server.enabled) await this.connect(id);
+		}
+		if (!changed) return;
+		settings.oauthHandoffs = handoffs;
+		await this.deps.save();
+		this.emit();
+	}
+
+	/** What the server says about signing in to an unsigned request, as the transport learns it. */
+	private async authHints(
+		url: string,
+		fetchFn: (url: string | URL, init?: RequestInit) => Promise<Response>,
+	): Promise<{ resourceMetadataUrl?: URL; scope?: string }> {
+		try {
+			const response = await fetchFn(url, {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, text/event-stream',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 0,
+					method: 'initialize',
+					params: {
+						protocolVersion: LATEST_PROTOCOL_VERSION,
+						capabilities: {},
+						clientInfo: { name: 'Vault Librarian', version: this.deps.clientVersion },
+					},
+				}),
+			});
+			if (response.status !== 401) return {};
+			const { resourceMetadataUrl, scope } = extractWWWAuthenticateParams(response);
+			return { resourceMetadataUrl, scope };
+		} catch {
+			return {};
+		}
 	}
 
 	/** One permission group per connected server. */

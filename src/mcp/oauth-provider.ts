@@ -25,7 +25,7 @@ export function serverIdFromState(state: string | undefined): string | null {
 	return id ? id : null;
 }
 
-interface StoredOAuth {
+export interface StoredOAuth {
 	client?: OAuthClientInformationMixed;
 	tokens?: OAuthTokens;
 	verifier?: string;
@@ -47,6 +47,11 @@ export interface OAuthProviderDeps {
 	onState?: (state: string) => void;
 	/** A client made in the server's console; when set, no client is registered or stored. */
 	configuredClient?: () => OAuthClientInformationMixed | undefined;
+	/**
+	 * Where the client, tokens and verifier are kept; this device's SecretStorage by default. A
+	 * sign-in made for another device keeps them in memory, apart from this device's own.
+	 */
+	storage?: { read(): StoredOAuth; write(stored: StoredOAuth): void };
 }
 
 /**
@@ -119,7 +124,7 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 
 	invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): void {
 		if (scope === 'all') {
-			this.deps.secrets.clear(oauthSecretId(this.deps.serverId));
+			this.write({});
 			return;
 		}
 		const stored = this.read();
@@ -133,6 +138,7 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	private read(): StoredOAuth {
+		if (this.deps.storage) return this.deps.storage.read();
 		const raw = this.deps.secrets.get(oauthSecretId(this.deps.serverId));
 		if (!raw) return {};
 		try {
@@ -143,6 +149,7 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	private write(stored: StoredOAuth): void {
-		this.deps.secrets.set(oauthSecretId(this.deps.serverId), JSON.stringify(stored));
+		if (this.deps.storage) this.deps.storage.write(stored);
+		else this.deps.secrets.set(oauthSecretId(this.deps.serverId), JSON.stringify(stored));
 	}
 }

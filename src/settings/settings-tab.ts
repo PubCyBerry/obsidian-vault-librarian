@@ -26,7 +26,7 @@ import {
 import { type ServerModel, testConnection } from '../provider/transport';
 import type { SessionSummary } from '../session/session-types';
 import { SKILL_SEARCH_NAME, SKILLS_GROUP_ID, type Skill, skillKey } from '../skills/skill-manager';
-import { isValidSecretId } from '../storage/secret-store';
+import { isValidSecretId, PASSPHRASE_ID, type SecretStore } from '../storage/secret-store';
 import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
 import {
 	MCP_SERVER_ID_PATTERN,
@@ -54,6 +54,13 @@ const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blo
 
 /** Every label a server row's button can show; the button is as wide as the longest. */
 const MCP_BUTTON_LABELS = ['Sign in', 'Sign out', 'Add key', 'Reconnect'] as const;
+
+/** Where a typed secret goes: this device, and the sealed settings while Device sync is on. */
+function keptWhere(secrets: SecretStore): string {
+	return secrets.state === 'on'
+		? 'Kept on this device and sealed for your other devices.'
+		: 'Kept on this device only.';
+}
 
 /** How a server holds its credentials on this device, shown beside the button that changes it. */
 const MCP_BADGES = {
@@ -177,7 +184,7 @@ class McpServerEditorModal extends Modal {
 			!!this.existing && !!this.plugin.secrets.get(apiKeySecretId(this.existing.id));
 		const key = new Setting(el)
 			.setName('API key')
-			.setDesc('Kept on this device only.')
+			.setDesc(keptWhere(this.plugin.secrets))
 			.addText((t) => {
 				t.inputEl.type = 'password';
 				t.setPlaceholder(saved ? 'Saved on this device' : 'Paste the key');
@@ -205,7 +212,7 @@ class McpServerEditorModal extends Modal {
 			!!this.existing && !!this.plugin.secrets.get(clientSecretId(this.existing.id));
 		const clientSecret = new Setting(el)
 			.setName('Client secret')
-			.setDesc('Kept on this device only.')
+			.setDesc(keptWhere(this.plugin.secrets))
 			.addText((t) => {
 				t.inputEl.type = 'password';
 				t.setPlaceholder(secretSaved ? 'Saved on this device' : 'Paste the secret');
@@ -633,7 +640,7 @@ class ProviderEditorModal extends Modal {
 			.setName('API key')
 			.setDesc(
 				stored === null
-					? 'Kept on this device only.'
+					? keptWhere(this.plugin.secrets)
 					: 'Saved on this device. Type a new key to replace it.',
 			)
 			.addText((t) => {
@@ -895,6 +902,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			this.agentPage(),
 			this.mcpPage(),
 			this.webdavPage(),
+			this.deviceSyncPage(),
 			this.skillsPage(),
 			this.permissionsPage(),
 			this.contextPage(),
@@ -1261,6 +1269,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								? (state.message ?? label)
 								: label;
 				setting.descEl.createDiv({ cls: `librarian-mcp-status is-${state.status}`, text });
+				if (mcp.handoffPending(server.id))
+					setting.descEl.createDiv({
+						cls: 'librarian-mcp-status is-handoff',
+						text: 'A sign-in waits for your phone or tablet to take it.',
+					});
 				setting.addToggle((t) =>
 					t
 						.setTooltip('Enabled')
@@ -1334,6 +1347,23 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						});
 					});
 				}
+				// Only a desktop can sign in through 127.0.0.1, so only it makes sign-ins for the
+				// others; rows without one keep its room so the icons line up (LIB-FEAT-234).
+				if (Platform.isDesktopApp)
+					setting.addExtraButton((b) => {
+						if (server.auth !== 'oauth') {
+							b.extraSettingsEl.addClass('librarian-mcp-spacer');
+							b.extraSettingsEl.setAttr('aria-hidden', 'true');
+							b.extraSettingsEl.removeAttribute('tabindex');
+							return;
+						}
+						b.setIcon('smartphone')
+							.setTooltip('Sign in for a mobile device')
+							.onClick(async () => {
+								await mcp.signInForDevice(server.id);
+								this.refresh();
+							});
+					});
 				setting
 					.addExtraButton((b) =>
 						b
@@ -1381,6 +1411,85 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			await mcp.connect(saved.id);
 			this.refresh();
 		}).open();
+	}
+
+	// Device sync
+
+	/**
+	 * The sync passphrase. With it the fixed secrets travel sealed in the settings, and a desktop
+	 * can hand MCP sign-ins to a phone or tablet (LIB-FEAT-233, LIB-FEAT-234).
+	 */
+	private deviceSyncPage(): Page {
+		const secrets = this.plugin.secrets;
+		const state = secrets.state;
+		const waiting = state === 'off' && secrets.hasBundle();
+		const status =
+			state === 'on'
+				? `${secrets.usesSharedPassphrase ? 'On with the Google Calendar Tasks Sync passphrase of this device' : 'On'}, ${secrets.sealedCount()} sealed`
+				: state === 'locked'
+					? 'Locked: this passphrase does not open what another device sealed.'
+					: waiting
+						? 'Another device sealed keys here. Enter its passphrase to use them.'
+						: 'Off';
+		let pending = '';
+		return {
+			name: 'Device sync',
+			desc: 'Keys and sign-ins for your other devices.',
+			displayValue: state === 'on' ? 'On' : state === 'locked' ? 'Locked' : 'Off',
+			status: state === 'locked' || waiting ? 'warning' : null,
+			items: [
+				{
+					type: 'group',
+					items: [
+						{
+							name: 'Sync passphrase',
+							desc: "API keys, the WebDAV password and client secrets are sealed with it into this plugin's data file, which your vault's sync carries to your other devices. Enter the same one once on each device.",
+							aliases: ['Passphrase', 'Sync', 'Devices', 'Keychain'],
+							render: (setting) => {
+								setting.setClass('librarian-secret-input');
+								setting.descEl.createDiv({
+									cls: `librarian-sync-status is-${waiting ? 'waiting' : state}`,
+									text: status,
+								});
+								setting
+									.addText((t) => {
+										t.inputEl.type = 'password';
+										t.setPlaceholder(
+											this.app.secretStorage.getSecret(PASSPHRASE_ID)
+												? 'Saved on this device'
+												: 'Passphrase',
+										);
+										t.onChange((v) => {
+											pending = v;
+										});
+									})
+									.addButton((b) =>
+										b.setButtonText('Save').onClick(async () => {
+											if (!pending) return;
+											// Deriving the key takes a moment, longer on a phone.
+											b.setDisabled(true);
+											const result = await secrets.setPassphrase(pending);
+											new Notice(
+												result === 'locked'
+													? 'This passphrase does not open what another device sealed.'
+													: 'Keys and client secrets are sealed with this passphrase.',
+											);
+											await this.plugin.mcp.claimHandoffs();
+											this.refresh();
+										}),
+									);
+							},
+						},
+						{
+							name: 'Sign-ins',
+							desc: 'A sign-in to an MCP server stays on the device that made it. On desktop, Sign in for a mobile device on a server makes one more for a phone or tablet, which takes it when it opens with the same passphrase.',
+							aliases: ['OAuth', 'Mobile', 'Phone', 'Tablet'],
+							render: () => {},
+						},
+					],
+				},
+			],
+		};
 	}
 
 	// WebDAV storage
@@ -1444,7 +1553,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						},
 						{
 							name: 'Password',
-							desc: 'Kept on this device only.',
+							desc: keptWhere(this.plugin.secrets),
 							render: (setting) =>
 								void setting
 									.setClass('librarian-secret-input')

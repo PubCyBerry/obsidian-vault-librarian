@@ -1211,6 +1211,25 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-error);
 }
 
+/* A sign-in this desktop made for a phone or tablet, not yet taken. */
+.librarian-mcp-status.is-handoff {
+	color: var(--text-accent);
+}
+
+/* The state of Device sync under its passphrase, colored like an MCP server's state. */
+.librarian-sync-status {
+	margin-top: var(--size-2-1);
+}
+
+.librarian-sync-status.is-on {
+	color: var(--text-success);
+}
+
+.librarian-sync-status.is-locked,
+.librarian-sync-status.is-waiting {
+	color: var(--text-warning);
+}
+
 /*
  * How a server holds its sign-in or key, beside the button that changes it. A quiet pill in the
  * row's smallest type: it tells the state at a glance while the server name stays the heading and

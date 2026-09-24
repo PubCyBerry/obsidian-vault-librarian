@@ -18,8 +18,9 @@ import {
 	serverIdFromState,
 } from '../src/mcp/oauth-provider';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
-import type { SecretStore } from '../src/storage/secret-store';
+import { PASSPHRASE_ID, SecretStore } from '../src/storage/secret-store';
 import { mergeSettings } from '../src/types';
+import { FakeApp } from './fake-app';
 import { requestUrlMock } from './obsidian-stub';
 
 const search: Tool = {
@@ -634,5 +635,94 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 				'The server does not let apps register for sign-in on their own. Add a client ID made in its console under Edit.',
 			signInBlocked: true,
 		});
+	});
+
+	it('LIB-TEST-236: a desktop signs in for a phone, which takes a grant of its own', async () => {
+		globalThis.fetch = fakeServer('registers');
+		(globalThis as { window?: unknown }).window ??= globalThis;
+		// One settings object stands for the data file the vault's sync carries between devices.
+		const settings = mergeSettings({
+			mcpServers: [
+				{
+					id: 'srv',
+					name: 'Server',
+					url: MCP,
+					auth: 'oauth',
+					enabled: true,
+					toolHashes: {},
+				},
+			],
+		});
+		const device = (id: string, loopback: boolean) => {
+			const app = new FakeApp();
+			app.secretStorage.setSecret(PASSPHRASE_ID, 'same words');
+			const secrets = new SecretStore(app as unknown as App, {
+				read: () => settings.sealedSecrets,
+				write: async (sealed) => {
+					settings.sealedSecrets = sealed;
+				},
+				ids: () => [],
+			});
+			const opened: string[] = [];
+			const taken = new Set<string>();
+			const manager = new McpManager({
+				settings: () => settings,
+				save: async () => undefined,
+				secrets,
+				permissions: new ToolPermissionManager(
+					() => settings,
+					async () => undefined,
+				),
+				clientVersion: 'test',
+				open: (url) => opened.push(url),
+				notice: () => {},
+				loopback: loopback ? () => http as unknown as HttpModule : undefined,
+				deviceId: () => id,
+				taken,
+			});
+			return { app, secrets, manager, opened };
+		};
+		const desktop = device('desk', true);
+		const phone = device('phone', false);
+		await desktop.secrets.unlock();
+		await phone.secrets.unlock();
+
+		// The browser answers the loopback the way the authorization server would redirect it.
+		const signingIn = desktop.manager.signInForDevice('srv');
+		while (!desktop.opened.length) await new Promise((r) => setTimeout(r, 10));
+		const asked = new URL(desktop.opened[0]!).searchParams;
+		const back = new URL(asked.get('redirect_uri')!);
+		back.searchParams.set('code', 'the-code');
+		back.searchParams.set('state', asked.get('state')!);
+		expect((await realFetch(back)).status).toBe(200);
+		await signingIn;
+
+		const handoff = settings.oauthHandoffs?.srv;
+		expect(handoff).toMatchObject({ from: 'desk', sealed: expect.stringMatching(/^enc1\./) });
+		// The desktop's own sign-in is untouched: the grant for the phone lived in memory.
+		expect(desktop.app.secretStorage.getSecret(oauthSecretId('srv'))).toBeNull();
+		// The desktop never takes back what it made.
+		await desktop.manager.claimHandoffs();
+		expect(settings.oauthHandoffs?.srv).toBeDefined();
+
+		await phone.manager.claimHandoffs();
+		expect(settings.oauthHandoffs?.srv).toBeUndefined();
+		const grant = JSON.parse(phone.app.secretStorage.getSecret(oauthSecretId('srv'))!);
+		expect(grant).toMatchObject({
+			client: { client_id: 'c1' },
+			tokens: { refresh_token: 'r' },
+		});
+		expect(phone.manager.signedIn('srv')).toBe(true);
+		expect(phone.manager.state('srv').status).toBe('ready');
+
+		// A stale copy that sync brings back is dropped, not taken twice.
+		settings.oauthHandoffs = { srv: handoff! };
+		phone.app.secretStorage.setSecret(
+			oauthSecretId('srv'),
+			'{"tokens":{"access_token":"newer"}}',
+		);
+		await phone.manager.claimHandoffs();
+		expect(settings.oauthHandoffs).toEqual({});
+		expect(phone.app.secretStorage.getSecret(oauthSecretId('srv'))).toContain('newer');
 	});
 });

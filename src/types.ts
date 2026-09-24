@@ -174,6 +174,24 @@ export interface LibrarianSettings {
 	listLimit: number;
 	grepLimit: number;
 	readLineLimit: number;
+	/**
+	 * API keys, passwords and client secrets sealed with the sync passphrase (`enc1.…`), so the
+	 * vault's sync carries them to every device that knows the passphrase (LIB-FEAT-233).
+	 */
+	sealedSecrets?: string;
+	/** MCP sign-ins a desktop made for another device, by server id, until one takes it (LIB-FEAT-234). */
+	oauthHandoffs?: Record<string, OAuthHandoff>;
+}
+
+/** One sign-in waiting for another device: a grant of its own, sealed with the sync passphrase. */
+export interface OAuthHandoff {
+	/** The device that made it, which never takes it back. */
+	from: string;
+	/** Tells a taken hand-over from a new one, so a stale copy that sync brings back is ignored. */
+	nonce: string;
+	/** `{ client, tokens }`, sealed. */
+	sealed: string;
+	createdAt: string;
 }
 
 /**
