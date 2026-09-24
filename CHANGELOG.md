@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.9.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.8.0...2.9.0) (2026-09-24)
+
+
+### Features
+
+* show MCP sign-in state, take console OAuth clients, and open answer links in a new tab ([864f99a](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/864f99af08bf8c9de92f1f86a5f0d817dda83d43))
+
+
+### Bug Fixes
+
+* keep binary files byte for byte in the bash filesystem and curl ([#48](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/48)) ([864f99a](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/864f99af08bf8c9de92f1f86a5f0d817dda83d43))
+
 ## [2.8.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.7.0...2.8.0) (2026-09-23)
 
 
