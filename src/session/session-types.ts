@@ -72,6 +72,11 @@ export type SessionEvent =
 			type: 'compaction';
 			summary: string;
 			coveredUntil: number;
+			/**
+			 * The user's own messages from the covered part, the newest within a budget, sent before
+			 * the summary (LIB-FEAT-256). Absent on compactions written before 2.13.0.
+			 */
+			retained?: string[];
 			tokensBefore: number;
 			tokensAfter: number;
 			method: 'summary' | 'truncate';

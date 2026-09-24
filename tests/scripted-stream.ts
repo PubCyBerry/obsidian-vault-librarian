@@ -13,9 +13,11 @@ export interface ScriptedTurn {
 /** A `StreamFn` that plays back scripted assistant turns and records every request context. */
 export function scriptedStream(turns: ScriptedTurn[]) {
 	const requests: TranscriptContext[] = [];
+	const sentOptions: Parameters<StreamFn>[2][] = [];
 	let counter = 0;
 	const streamFn: StreamFn = (model, context, options) => {
 		requests.push(context);
+		sentOptions.push(options);
 		const turn = turns.shift() ?? { text: '(no more scripted turns)' };
 		const stream = createAssistantMessageEventStream();
 		const message: AssistantMessage = {
@@ -75,5 +77,5 @@ export function scriptedStream(turns: ScriptedTurn[]) {
 		});
 		return stream;
 	};
-	return { streamFn, requests };
+	return { streamFn, requests, sentOptions };
 }

@@ -454,8 +454,12 @@ export class LibrarianView extends ItemView {
 
 	private async compactNow() {
 		if (!this.controller.session) return this.showNotice('Open a session first.');
-		const done = await this.controller.compactNow();
-		this.showNotice(done ? 'Context compacted.' : 'Nothing to compact yet.');
+		const outcome = await this.controller.compactNow();
+		// A failure has already said why.
+		if (outcome !== 'failed')
+			this.showNotice(
+				outcome === 'compacted' ? 'Context compacted.' : 'Nothing to compact yet.',
+			);
 	}
 
 	/** Refreshes the model button in the composer and the pick-a-model block. */
@@ -801,8 +805,13 @@ export class LibrarianView extends ItemView {
 				description: 'Compact the context now',
 				run: async () => {
 					if (!this.controller.session) return this.showNotice('Open a session first.');
-					const done = await this.controller.compactNow();
-					this.showNotice(done ? 'Context compacted.' : 'Nothing to compact yet.');
+					const outcome = await this.controller.compactNow();
+					if (outcome !== 'failed')
+						this.showNotice(
+							outcome === 'compacted'
+								? 'Context compacted.'
+								: 'Nothing to compact yet.',
+						);
 				},
 			},
 			{
@@ -1480,7 +1489,7 @@ export class LibrarianView extends ItemView {
 				this.stepButton(row, `thinking:${step.key}`, 'brain', 'Thinking', () => ({
 					icon: 'brain',
 					title: 'Thinking',
-					body: (el) => el.createDiv({ cls: 'librarian-step-pop-text', text: step.text }),
+					text: step.text,
 				}));
 				break;
 			case 'text':
@@ -1677,11 +1686,7 @@ export class LibrarianView extends ItemView {
 				icon: 'brain',
 				title: 'Thinking',
 				live: this.live?.thinkingLive === true,
-				body: (el) =>
-					el.createDiv({
-						cls: 'librarian-step-pop-text',
-						text: this.live?.thinkingText ?? '',
-					}),
+				text: this.live?.thinkingText ?? '',
 			}));
 		}
 		live.thinkingText = thinking;

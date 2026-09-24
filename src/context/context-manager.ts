@@ -3,11 +3,13 @@ import type {
 	AssistantMessage,
 	ImageContent,
 	Message,
+	ThinkingLevel as PiThinkingLevel,
 	TextContent,
 	ToolCall,
 	ToolResultMessage,
 	UserMessage,
 } from '@earendil-works/pi-ai';
+import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow';
 import {
 	createInitialSystemMessage,
 	normalizeContext,
@@ -18,7 +20,6 @@ import { TFile } from 'obsidian';
 import type { PiModel } from '../provider/provider-manager';
 import type { IndexedEvent, SessionEvent, StoredUsage } from '../session/session-types';
 import type { ContextSettings, ModelConfig } from '../types';
-import { wasHiddenSince } from '../visibility';
 
 export interface ContextUsage {
 	usedTokens: number;
@@ -52,10 +53,39 @@ export interface PreparedContext {
 export interface CompactionResult {
 	summary: string;
 	coveredUntil: number;
+	retained: string[];
 	tokensBefore: number;
 	tokensAfter: number;
 	method: 'summary' | 'truncate';
 }
+
+export interface CompactOptions {
+	/** The prompt and tools of the next request, so the summary request starts the same way. */
+	systemPrompt: string;
+	tools: AgentTool[];
+	reasoning?: PiThinkingLevel;
+	/** Before a turn: the message that starts it stays out of the summary and follows it. */
+	keepLastUser?: boolean;
+	signal?: AbortSignal;
+}
+
+/**
+ * The last message of the summary request (LIB-FEAT-256). After the idea of Codex's handoff
+ * summary: the model writes for whoever continues the work without the messages it replaces.
+ */
+export const HANDOFF_PROMPT = `Context checkpoint: the messages above are about to be replaced by the summary you write now, and the conversation will continue from it, perhaps with another model. Write a handoff summary that lets the work go on without those messages. Cover:
+- the user's goal, what has been done so far and the decisions made
+- constraints, preferences and other context the user gave
+- what is left, as concrete next steps; for a task in progress, exactly where it stopped
+- what is needed to continue: note paths, file names, identifiers, numbers, quotes and tool results that matter
+Keep it concise and structured, in the language of the conversation. Do not call tools; answer with the summary only.`;
+
+/** Put before the summary in the request, so the model knows where it came from. */
+export const SUMMARY_PREFIX =
+	'[Context summary] The earlier part of this conversation was compacted. What follows is a handoff summary written by the model that did that work. Build on it instead of repeating finished work, and look things up with tools when you need details it leaves out.';
+
+/** Tokens of the user's own messages kept word for word, at most, whatever the window. */
+const RETAINED_MAX_TOKENS = 20_000;
 
 /** Hangul, CJK ideographs and kana are about one token per character; everything else four chars. */
 export function estimateText(s: string): number {
@@ -82,7 +112,10 @@ function estimateEvent(event: SessionEvent): number {
 		case 'tool_result':
 			return estimateText(event.content) + 4;
 		case 'compaction':
-			return estimateText(event.summary) + 4;
+			return (event.retained ?? []).reduce(
+				(n, t) => n + estimateText(t) + 4,
+				estimateText(event.summary) + 4,
+			);
 		default:
 			return 0;
 	}
@@ -156,10 +189,16 @@ export class ContextManager {
 		const messages: Message[] = [];
 		if (compaction) {
 			const c = compaction.event as Extract<SessionEvent, { type: 'compaction' }>;
+			const timestamp = Date.parse(c.t) || Date.now();
+			// The user's words, then the summary last, as Codex rebuilds its history.
+			for (const text of c.retained ?? [])
+				messages.push({ role: 'user', content: text, timestamp });
 			messages.push({
 				role: 'user',
-				content: `[Summary of the earlier part of this conversation]\n${c.summary}`,
-				timestamp: Date.parse(c.t) || Date.now(),
+				content: c.retained
+					? `${SUMMARY_PREFIX}\n\n${c.summary}`
+					: `[Summary of the earlier part of this conversation]\n${c.summary}`,
+				timestamp,
 			});
 		}
 		const pendingCalls = new Map<string, string>();
@@ -321,79 +360,169 @@ export class ContextManager {
 	}
 
 	/**
-	 * Picks the cut: keep the last `preserveRecentTurns` user turns, never split a tool call from
-	 * its result. Returns the event index that starts the kept part, or null when nothing to cut.
+	 * Whether the next request should go out compacted: the last reported usage plus an estimate
+	 * of what was added after it (tool results, the new message), against the threshold. The ring
+	 * shows only the reported part; this also sees a large result before the server does.
 	 */
-	findCut(events: IndexedEvent[]): number | null {
-		const { rest } = ContextManager.visible(events);
-		const userPositions = rest
-			.map((e, i) => (e.event.type === 'user' ? i : -1))
-			.filter((i) => i >= 0);
-		const keep = this.settings().preserveRecentTurns;
-		if (userPositions.length <= keep) return null;
-		const pos = userPositions[userPositions.length - keep]!;
-		if (pos === 0) return null;
-		return rest[pos]!.index;
+	needsCompaction(events: IndexedEvent[], model: PiModel): boolean {
+		const { compaction, rest } = ContextManager.visible(events);
+		let last = -1;
+		for (let i = rest.length - 1; i >= 0 && last < 0; i--) {
+			const e = rest[i]!.event;
+			const u = e.type === 'assistant' ? e.usage : undefined;
+			if (u && (u.totalTokens || u.input + u.cacheRead + u.output) > 0) last = i;
+		}
+		const added =
+			rest.slice(last + 1).reduce((n, e) => n + estimateEvent(e.event), 0) +
+			(last < 0 && compaction ? estimateEvent(compaction.event) : 0);
+		const used = this.reportedUsed(events) + added;
+		return used / this.budget(model).usable >= this.settings().compactAt;
 	}
 
+	/**
+	 * Replaces the history up to now with a handoff summary (LIB-FEAT-256, after Codex). The
+	 * model gets the same prompt, tools and messages as its next request, tools switched off, and
+	 * a last message asking for the summary. The request then carries the user's own recent
+	 * messages and the summary after them. Null when there is nothing to compact.
+	 */
 	async compact(
 		events: IndexedEvent[],
 		model: PiModel,
 		streamFn: StreamFn,
-		signal?: AbortSignal,
+		opts: CompactOptions,
 	): Promise<CompactionResult | null> {
-		const cut = this.findCut(events);
-		if (cut === null) return null;
 		const { compaction, rest } = ContextManager.visible(events);
-		const before = rest.filter((e) => e.index < cut);
-		const tokensBefore = this.reportedUsed(events);
-		const transcript = (
-			compaction
-				? [
-						`Earlier summary:\n${(compaction.event as Extract<SessionEvent, { type: 'compaction' }>).summary}`,
-					]
-				: []
-		)
-			.concat(before.map(({ event }) => serialize(event)).filter((s) => s.length > 0))
-			.join('\n\n');
-		let summary: string | null = null;
-		const startedAt = Date.now();
-		try {
+		const lastUser = opts.keepLastUser
+			? [...rest].reverse().find((e) => e.event.type === 'user')
+			: undefined;
+		const cut = lastUser?.index ?? (events[events.length - 1]?.index ?? -1) + 1;
+		const covered = rest.filter((e) => e.index < cut);
+		// Without a response since the last summary, a new one would not make the request smaller.
+		if (!covered.some((e) => e.event.type === 'assistant')) return null;
+		const retained = this.retainedUsers(
+			(compaction?.event as Extract<SessionEvent, { type: 'compaction' }> | undefined)
+				?.retained ?? [],
+			covered,
+			model,
+		);
+		// Throws when no summary comes back. Dropping history cannot be undone, so it then stays as
+		// it is and a later request tries again, as Codex does.
+		const summary = await this.summarize(
+			events.filter((e) => e.index < cut),
+			model,
+			streamFn,
+			opts,
+		);
+		const result: CompactionResult = {
+			summary,
+			coveredUntil: cut,
+			retained,
+			tokensBefore: this.reportedUsed(events),
+			tokensAfter: 0,
+			method: 'summary',
+		};
+		result.tokensAfter =
+			retained.reduce((n, t) => n + estimateText(t) + 4, 0) +
+			estimateText(`${SUMMARY_PREFIX}\n\n${result.summary}`) +
+			4 +
+			rest.filter((e) => e.index >= cut).reduce((n, e) => n + estimateEvent(e.event), 0);
+		return result;
+	}
+
+	/**
+	 * The user's messages kept word for word: the newest first until the budget runs out, the one
+	 * that does not fit cut in the middle, then back in their order. Earlier kept ones count too.
+	 */
+	private retainedUsers(earlier: string[], covered: IndexedEvent[], model: PiModel): string[] {
+		const texts = [
+			...earlier,
+			...covered.flatMap((e) => (e.event.type === 'user' ? [e.event.content] : [])),
+		];
+		let left = Math.min(RETAINED_MAX_TOKENS, Math.floor(this.budget(model).usable / 10));
+		const kept: string[] = [];
+		for (let i = texts.length - 1; i >= 0 && left > 0; i--) {
+			const text = texts[i]!;
+			const tokens = estimateText(text);
+			if (tokens <= left) {
+				kept.unshift(text);
+				left -= tokens;
+				continue;
+			}
+			kept.unshift(truncateMiddle(text, left));
+			break;
+		}
+		return kept;
+	}
+
+	/**
+	 * Asks for the handoff summary. When even that request is over the window, the oldest turn is
+	 * left out and it is asked again, so the newest work is what the summary keeps.
+	 */
+	private async summarize(
+		events: IndexedEvent[],
+		model: PiModel,
+		streamFn: StreamFn,
+		opts: CompactOptions,
+	): Promise<string> {
+		let history = await this.project({ events, model });
+		// The tools stay declared, switched off, so the request starts as the cached one did. A
+		// server that refuses that is asked once more without tools, as Codex asks; a busy or
+		// failing server (429, 5xx) is not.
+		let withTools = true;
+		for (;;) {
+			const leading = createInitialSystemMessage(
+				opts.systemPrompt,
+				withTools ? opts.tools.map(toToolDeclaration) : [],
+			);
+			const ask: Message = { role: 'user', content: HANDOFF_PROMPT, timestamp: Date.now() };
 			const context = normalizeContext({
-				systemPrompt:
-					'Summarize the conversation below for an AI assistant that will continue it. Keep every decision, file path, note title and pending task. Write plain prose, no more than 600 words.',
-				messages: [{ role: 'user', content: transcript, timestamp: Date.now() }],
+				messages: leading ? [leading, ...history, ask] : [...history, ask],
 			});
-			const stream = await streamFn(model, context, { signal, maxTokens: 2048 });
+			const stream = await streamFn(model, context, {
+				signal: opts.signal,
+				maxTokens: Math.min(model.maxTokens, 16_384),
+				reasoning: opts.reasoning,
+				...(withTools ? { toolChoice: 'none' as const } : {}),
+			});
 			const result = await stream.result();
+			if (result.stopReason === 'error' && isContextOverflow(result, model.contextWindow)) {
+				history = withoutOldestTurn(history);
+				if (history.length) continue;
+			} else if (
+				result.stopReason === 'error' &&
+				withTools &&
+				!opts.signal?.aborted &&
+				!/^\D{0,10}(?:429|5\d\d)\b/.test(result.errorMessage ?? '')
+			) {
+				withTools = false;
+				continue;
+			}
 			if (result.stopReason === 'error' || result.stopReason === 'aborted')
-				throw new Error(result.errorMessage);
+				throw new Error(result.errorMessage ?? 'The summary request failed.');
 			const text = result.content
 				.filter((c): c is TextContent => c.type === 'text')
 				.map((c) => c.text)
 				.join('')
 				.trim();
-			if (text) summary = text;
-		} catch {
-			summary = null;
+			if (!text) throw new Error('The model returned no summary.');
+			return text;
 		}
-		// Dropping history cannot be undone; a failure caused by being away is retried on return.
-		if (!summary && (signal?.aborted || wasHiddenSince(startedAt))) return null;
-		const result: CompactionResult = summary
-			? { summary, coveredUntil: cut, tokensBefore, tokensAfter: 0, method: 'summary' }
-			: {
-					summary: `Older messages were dropped from the request (${before.length} events).`,
-					coveredUntil: cut,
-					tokensBefore,
-					tokensAfter: 0,
-					method: 'truncate',
-				};
-		const after = rest
-			.filter((e) => e.index >= cut)
-			.reduce((n, e) => n + estimateEvent(e.event), 0);
-		result.tokensAfter = after + estimateText(result.summary) + 4;
-		return result;
 	}
+}
+
+/** Leaves out the first message and whatever belongs to it, up to the next user message. */
+function withoutOldestTurn(messages: Message[]): Message[] {
+	let i = 1;
+	while (i < messages.length && messages[i]!.role !== 'user') i++;
+	return messages.slice(i);
+}
+
+/** Keeps the head and the tail of a long message, saying how much was cut from its middle. */
+export function truncateMiddle(text: string, maxTokens: number): string {
+	const tokens = estimateText(text);
+	if (tokens <= maxTokens) return text;
+	const keep = Math.floor((text.length * maxTokens) / tokens / 2);
+	return `${text.slice(0, keep)}\n…${tokens - maxTokens} tokens truncated…\n${text.slice(text.length - keep)}`;
 }
 
 function toUsage(u: StoredUsage | undefined): AssistantMessage['usage'] {
@@ -405,21 +534,4 @@ function toUsage(u: StoredUsage | undefined): AssistantMessage['usage'] {
 		totalTokens: u?.totalTokens ?? 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
-}
-
-function serialize(event: SessionEvent): string {
-	switch (event.type) {
-		case 'user':
-			return `User: ${event.content}`;
-		case 'assistant': {
-			const calls = event.toolCalls
-				.map((c) => `[called ${c.name} ${JSON.stringify(c.args)}]`)
-				.join(' ');
-			return `Assistant: ${event.content} ${calls}`.trim();
-		}
-		case 'tool_result':
-			return `Tool ${event.name} ${event.ok ? 'returned' : 'failed'}: ${event.content.slice(0, 1500)}`;
-		default:
-			return '';
-	}
 }

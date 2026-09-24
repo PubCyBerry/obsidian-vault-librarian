@@ -137,7 +137,6 @@ export interface ProviderConfig {
 export interface ContextSettings {
 	warningAt: number;
 	compactAt: number;
-	preserveRecentTurns: number;
 	reserveOutputTokens: 'model-max' | number;
 	safetyMarginTokens: number;
 }
@@ -258,7 +257,6 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	context: {
 		warningAt: 0.7,
 		compactAt: 0.85,
-		preserveRecentTurns: 6,
 		reserveOutputTokens: 'model-max',
 		safetyMarginTokens: 4096,
 	},

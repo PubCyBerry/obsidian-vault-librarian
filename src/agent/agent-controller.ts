@@ -5,10 +5,11 @@ import {
 	type StreamFn,
 } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai';
+import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow';
 
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
-import type { ContextManager, ContextUsage } from '../context/context-manager';
+import type { CompactionResult, ContextManager, ContextUsage } from '../context/context-manager';
 import type { ToolPermissionManager } from '../permissions/tool-permission-manager';
 import {
 	type ActiveSelection,
@@ -42,6 +43,9 @@ export type AgentUiState =
 	| 'error'
 	| 'no-key'
 	| 'model-unavailable';
+
+/** What a compaction did: replaced the history, found nothing to replace, or failed and left it. */
+export type CompactOutcome = 'compacted' | 'nothing' | 'failed';
 
 export type ToolCardStatus =
 	| 'pending'
@@ -203,6 +207,10 @@ export class AgentController {
 	/** Set when a response stream was cut by the network; `send` then repeats the request once. */
 	private retryAfterCut = false;
 	private cutRetries = 0;
+	/** Set when a request did not fit the context window; it is asked again once, compacted. */
+	private retryAfterOverflow = false;
+	private overflowRetries = 0;
+	private overflowMessage = '';
 	private stopRequested = false;
 	/** Set when the request now running failed after the app had been sent to the background. */
 	private resumeWhenVisible = false;
@@ -639,8 +647,8 @@ export class AgentController {
 		const sessionId = this.session!.id;
 		const model = this.piModel()!;
 		const streamFn = this.streamFn();
-		if (this.deps.context.usage(this.events, model).state === 'critical')
-			await this.compactNow(streamFn);
+		if (this.deps.context.needsCompaction(this.events, model))
+			await this.compactNow(streamFn, { keepLastUser: opts.excludeLastUser });
 		const prepared = await this.deps.context.build({
 			events: this.events,
 			model,
@@ -656,6 +664,8 @@ export class AgentController {
 		this.stopReason = null;
 		this.cutRetries = 0;
 		this.retryAfterCut = false;
+		this.overflowRetries = 0;
+		this.retryAfterOverflow = false;
 		this.runFailed = false;
 		this.resumeWhenVisible = false;
 		this.backgroundResumes = 0;
@@ -698,12 +708,26 @@ export class AgentController {
 		try {
 			await opts.start(this.agent);
 			// The events hold every completed step, so a fresh agent continues from them.
-			while (!this.stopRequested && (this.resumeWhenVisible || this.retryAfterCut)) {
+			while (
+				!this.stopRequested &&
+				(this.resumeWhenVisible || this.retryAfterCut || this.retryAfterOverflow)
+			) {
 				if (this.resumeWhenVisible) {
 					this.resumeWhenVisible = false;
 					await whenVisible();
 					if (this.stopRequested) break;
 					this.emit({ type: 'notice', message: BACKGROUND_RESUME_NOTICE });
+				} else if (this.retryAfterOverflow) {
+					this.retryAfterOverflow = false;
+					// Over the window although the estimate said it fit: compact, then ask again.
+					const last = this.events[this.events.length - 1]?.event;
+					const compacted = await this.compactNow(streamFn, {
+						keepLastUser: last?.type === 'user',
+					});
+					if (compacted !== 'compacted' || this.stopRequested) {
+						await this.failRequest(sessionId, this.overflowMessage);
+						break;
+					}
 				} else {
 					this.retryAfterCut = false;
 					this.emit({ type: 'notice', message: STREAM_CUT_NOTICE });
@@ -748,31 +772,49 @@ export class AgentController {
 		await driving;
 	}
 
-	async compactNow(streamFn?: StreamFn): Promise<boolean> {
+	/**
+	 * Replaces the history so far with a handoff summary (LIB-FEAT-256). Before a turn the message
+	 * that starts it stays out of the summary and follows it.
+	 */
+	async compactNow(
+		streamFn?: StreamFn,
+		opts: { keepLastUser?: boolean } = {},
+	): Promise<CompactOutcome> {
 		const model = this.piModel();
-		if (!model || !this.session) return false;
+		if (!model || !this.session) return 'nothing';
 		const previous = this.state;
 		this.emit({ type: 'state', state: 'compacting' });
 		try {
-			const result = await this.deps.context.compact(
-				this.events,
-				model,
-				streamFn ?? this.streamFn(),
-				this.agent?.signal,
-			);
-			if (!result) return false;
+			let result: CompactionResult | null;
+			try {
+				result = await this.deps.context.compact(
+					this.events,
+					model,
+					streamFn ?? this.streamFn(),
+					{
+						systemPrompt: await this.systemPrompt(),
+						tools: this.exposedTools(),
+						reasoning: this.thinkingLevel === 'off' ? undefined : this.thinkingLevel,
+						keepLastUser: opts.keepLastUser,
+						signal: this.agent?.signal,
+					},
+				);
+			} catch (error) {
+				// The history stays as it was; the next request that needs it tries again.
+				if (!this.stopRequested)
+					this.emit({
+						type: 'notice',
+						message: `Could not compact the context: ${rewriteProviderError(messageOf(error))}`,
+					});
+				return 'failed';
+			}
+			if (!result) return 'nothing';
 			await this.deps.sessions.append(this.session.id, { type: 'compaction', ...result });
 			// The summary may have dropped the folders' AGENTS.md; the next visit delivers them again.
 			this.deps.nestedAgentsMd?.reset();
-			if (result.method === 'truncate') {
-				this.emit({
-					type: 'notice',
-					message: 'Summary failed. Older messages were dropped from the request.',
-				});
-			}
 			await this.reloadEvents();
 			await this.recalculateUsage();
-			return true;
+			return 'compacted';
 		} finally {
 			if (!this.agent) await this.refreshReadiness();
 			else
@@ -781,6 +823,13 @@ export class AgentController {
 					state: previous === 'compacting' ? 'requesting' : previous,
 				});
 		}
+	}
+
+	/** The request failed for good: the error goes in the log and on screen, and the run ends. */
+	private async failRequest(sessionId: string, message: string): Promise<void> {
+		this.runFailed = true;
+		await this.deps.sessions.append(sessionId, { type: 'error', stage: 'provider', message });
+		this.emit({ type: 'error', message: rewriteProviderError(message) });
 	}
 
 	// Pi hooks
@@ -1039,11 +1088,10 @@ export class AgentController {
 	) {
 		const tools = this.exposedTools();
 		const prompt = await this.systemPrompt();
-		const usage = this.deps.context.usage(this.events, model);
 		let messages = current;
-		if (usage.state === 'critical' && !signal?.aborted) {
+		if (!signal?.aborted && this.deps.context.needsCompaction(this.events, model)) {
 			const compacted = await this.compactNow(streamFn);
-			if (compacted) {
+			if (compacted === 'compacted') {
 				const prepared = await this.deps.context.build({
 					events: this.events,
 					model,
@@ -1107,7 +1155,16 @@ export class AgentController {
 							this.retryAfterCut = true;
 							break;
 						}
-					}
+						if (
+							isContextOverflow(m, this.selection?.model.contextWindow) &&
+							this.overflowRetries < 1
+						) {
+							this.overflowRetries++;
+							this.overflowMessage = m.errorMessage ?? 'Context window exceeded';
+							this.retryAfterOverflow = true;
+							break;
+						}
+					} else this.overflowRetries = 0;
 					const usage: StoredUsage | undefined =
 						m.usage.totalTokens > 0
 							? {
@@ -1153,18 +1210,8 @@ export class AgentController {
 						});
 						if (!this.toolStatus.has(call.id)) this.toolStatus.set(call.id, 'pending');
 					}
-					if (m.stopReason === 'error' || m.stopReason === 'aborted') {
-						if (m.stopReason === 'error') {
-							this.runFailed = true;
-							const message = m.errorMessage ?? 'Request failed';
-							await this.deps.sessions.append(sessionId, {
-								type: 'error',
-								stage: 'provider',
-								message,
-							});
-							this.emit({ type: 'error', message: rewriteProviderError(message) });
-						}
-					}
+					if (m.stopReason === 'error')
+						await this.failRequest(sessionId, m.errorMessage ?? 'Request failed');
 					if (m.stopReason === 'length' && toolCalls.length > 0) {
 						this.emit({
 							type: 'notice',

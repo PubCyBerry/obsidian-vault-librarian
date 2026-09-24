@@ -1,13 +1,19 @@
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { ContextManager, cacheHitRatio, estimateText } from '../src/context/context-manager';
+import {
+	ContextManager,
+	cacheHitRatio,
+	estimateText,
+	HANDOFF_PROMPT,
+	SUMMARY_PREFIX,
+	truncateMiddle,
+} from '../src/context/context-manager';
 import { toPiModel } from '../src/provider/provider-manager';
 import { replay } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
 import { createVaultTools } from '../src/tools/registry';
 import { DEFAULT_SETTINGS, mergeSettings, newModel, newProvider } from '../src/types';
 import { FakeApp } from './fake-app';
-import { Platform } from './obsidian-stub';
 import { scriptedStream } from './scripted-stream';
 
 function ev(type: string, extra: Record<string, unknown> = {}): SessionEvent {
@@ -310,50 +316,172 @@ describe('compaction (LIB-TEST-065, LIB-TEST-066)', () => {
 		return replay(list);
 	}
 
-	it('cuts at a user turn so a tool call and its result stay together', () => {
-		const { cm } = manager({ preserveRecentTurns: 2 });
-		const events = longConversation(5);
-		const cut = cm.findCut(events)!;
-		const at = events.find((e) => e.index === cut)!;
-		expect(at.event.type).toBe('user');
-		expect((at.event as { content: string }).content).toBe('question 3');
-		expect(cm.findCut(longConversation(2))).toBeNull();
-	});
+	const text = (m: unknown) => (m as { content: string }).content;
 
-	it('summarizes with the model and records the covered range', async () => {
-		const { cm } = manager({ preserveRecentTurns: 1 });
+	it('LIB-TEST-257: asks for a handoff summary with the prompt and tools of the next request, tools off', async () => {
+		const { cm, tools } = manager();
 		const events = longConversation(3);
-		const { streamFn, requests } = scriptedStream([{ text: 'Summary: decided things.' }]);
-		const result = await cm.compact(events, piModel, streamFn);
+		const { streamFn, requests, sentOptions } = scriptedStream([{ text: 'Handoff.' }]);
+		const result = await cm.compact(events, piModel, streamFn, {
+			systemPrompt: 'SYSTEM',
+			tools,
+		});
+		expect(result).toMatchObject({
+			method: 'summary',
+			summary: 'Handoff.',
+			coveredUntil: events[events.length - 1]!.index + 1,
+			retained: ['question 0', 'question 1', 'question 2'],
+		});
+		const sent = requests[0]!.messages;
+		expect(sent[0]).toMatchObject({ role: 'system', content: 'SYSTEM' });
+		expect((sent[0] as { toolsAdded?: unknown[] }).toolsAdded).toHaveLength(tools.length);
+		expect(sent.map((m) => m.role)).toContain('toolResult');
+		expect(text(sent[sent.length - 1])).toBe(HANDOFF_PROMPT);
+		expect(sentOptions[0]).toMatchObject({ toolChoice: 'none' });
+	});
+
+	it('LIB-TEST-257: sends the kept user messages, then the summary, then what came after', async () => {
+		const { cm, tools } = manager();
+		const list = longConversation(2).map((e) => e.event);
+		list.push(ev('user', { content: 'new question' }));
+		const events = replay(list);
+		const { streamFn } = scriptedStream([{ text: 'Handoff.' }]);
+		const result = await cm.compact(events, piModel, streamFn, {
+			systemPrompt: 'S',
+			tools,
+			keepLastUser: true,
+		});
+		expect(result?.retained).toEqual(['question 0', 'question 1']);
+		const after = replay([...list, ev('compaction', { ...result })]);
+		const prepared = await cm.build({
+			events: after,
+			model: piModel,
+			systemPrompt: 'S',
+			tools,
+		});
+		const sent = prepared.messages.slice(1);
+		expect(sent.map((m) => m.role)).toEqual(['user', 'user', 'user', 'user']);
+		expect(sent.map(text).slice(0, 2)).toEqual(['question 0', 'question 1']);
+		expect(text(sent[2])).toBe(`${SUMMARY_PREFIX}\n\nHandoff.`);
+		expect(text(sent[3])).toBe('new question');
+	});
+
+	it('LIB-TEST-257: keeps the newest user messages within a budget and cuts the next in the middle', async () => {
+		const { cm, tools } = manager();
+		const list = longConversation(3).map((e) => {
+			const content = (e.event as { content?: string }).content;
+			return e.event.type === 'user'
+				? ev('user', { content: `${content} ${'x'.repeat(1000)} end` })
+				: e.event;
+		});
+		const { streamFn } = scriptedStream([{ text: 'Handoff.' }]);
+		const result = await cm.compact(replay(list), piModel, streamFn, {
+			systemPrompt: 'S',
+			tools,
+		});
+		// 4096 window, 512 output, 409 margin: a tenth of the rest is 317 tokens.
+		expect(result?.retained).toHaveLength(2);
+		expect(result?.retained[0]).toMatch(/^question 1 x+\n…\d+ tokens truncated…\nx+ end$/);
+		expect(result?.retained[1]).toMatch(/^question 2 x+ end$/);
+		expect(truncateMiddle('short', 10)).toBe('short');
+	});
+
+	it('LIB-TEST-257: leaves out the oldest turn and asks again when the summary request is too long', async () => {
+		const { cm, tools } = manager();
+		const { streamFn, requests } = scriptedStream([
+			{
+				stopReason: 'error',
+				errorMessage: 'Your input exceeds the context window of this model.',
+			},
+			{ text: 'Handoff.' },
+		]);
+		const result = await cm.compact(longConversation(3), piModel, streamFn, {
+			systemPrompt: 'S',
+			tools,
+		});
 		expect(result?.method).toBe('summary');
-		expect(result?.summary).toBe('Summary: decided things.');
-		expect(result?.coveredUntil).toBe(
-			events.find((e) => (e.event as { content?: string }).content === 'question 2')!.index,
+		expect(text(requests[0]!.messages[1])).toBe('question 0');
+		expect(text(requests[1]!.messages[1])).toBe('question 1');
+	});
+
+	it('LIB-TEST-257: has nothing to do when no response came after the last summary', async () => {
+		const { cm, tools } = manager();
+		const events = replay([
+			...longConversation(1).map((e) => e.event),
+			ev('compaction', {
+				summary: 's',
+				coveredUntil: 99,
+				retained: ['question 0'],
+				tokensBefore: 1,
+				tokensAfter: 1,
+				method: 'summary',
+			}),
+			ev('user', { content: 'next' }),
+		]);
+		const { streamFn, requests } = scriptedStream([]);
+		expect(
+			await cm.compact(events, piModel, streamFn, { systemPrompt: 'S', tools }),
+		).toBeNull();
+		expect(requests).toHaveLength(0);
+	});
+
+	it('LIB-TEST-257: counts a large tool result added after the last response', () => {
+		const { cm } = manager();
+		const events = replay([
+			ev('user', { content: 'q' }),
+			ev('assistant', {
+				content: '',
+				toolCalls: [{ id: 'c', name: 'read', args: {} }],
+				usage: { input: 1000, output: 10, cacheRead: 0, totalTokens: 1010 },
+			}),
+			ev('tool_result', {
+				toolCallId: 'c',
+				name: 'read',
+				ok: true,
+				content: 'x'.repeat(8000),
+				truncated: false,
+			}),
+		]);
+		expect(cm.usage(events, piModel).state).toBe('normal');
+		expect(cm.needsCompaction(events, piModel)).toBe(true);
+	});
+
+	const down = { stopReason: 'error' as const, errorMessage: 'down' };
+
+	it('LIB-TEST-257: asks once more without tools when the server refuses the summary request', async () => {
+		const { cm, tools } = manager();
+		const { streamFn, requests, sentOptions } = scriptedStream([
+			{ stopReason: 'error', errorMessage: 'tool_choice none is not supported' },
+			{ text: 'Handoff.' },
+		]);
+		const result = await cm.compact(longConversation(2), piModel, streamFn, {
+			systemPrompt: 'S',
+			tools,
+		});
+		expect(result?.summary).toBe('Handoff.');
+		expect((requests[1]!.messages[0] as { toolsAdded?: unknown[] }).toolsAdded ?? []).toEqual(
+			[],
 		);
-		const sent = requests[0]!.messages.map((m) => m.role);
-		expect(sent).toEqual(['system', 'user']);
-		expect(JSON.stringify(requests[0])).not.toContain('"toolsAdded"');
+		expect(sentOptions[1]).not.toHaveProperty('toolChoice');
 	});
 
-	it('keeps the history when the summary failed while the app was away (LIB-TEST-148)', async () => {
-		const g = globalThis as unknown as { document?: unknown };
-		g.document = { visibilityState: 'hidden' };
-		Platform.isMobile = true;
-		try {
-			const { cm } = manager({ preserveRecentTurns: 1 });
-			const { streamFn } = scriptedStream([{ stopReason: 'error', errorMessage: 'down' }]);
-			expect(await cm.compact(longConversation(3), piModel, streamFn)).toBeNull();
-		} finally {
-			Platform.isMobile = false;
-			delete g.document;
-		}
-	});
-
-	it('falls back to dropping the older part when the summary request fails', async () => {
-		const { cm } = manager({ preserveRecentTurns: 1 });
-		const { streamFn } = scriptedStream([{ stopReason: 'error', errorMessage: 'down' }]);
-		const result = await cm.compact(longConversation(3), piModel, streamFn);
-		expect(result?.method).toBe('truncate');
-		expect(result?.summary).toMatch(/dropped .*\(\d+ events\)/);
+	it('LIB-TEST-148, LIB-TEST-257: a failed summary changes nothing and says why, away or not', async () => {
+		const { cm, tools } = manager();
+		const opts = { systemPrompt: 'S', tools };
+		// Refused with tools off, then without tools: the history is left as it is.
+		const refused = scriptedStream([down, down]);
+		await expect(
+			cm.compact(longConversation(3), piModel, refused.streamFn, opts),
+		).rejects.toThrow('down');
+		// A busy server is not asked again without tools.
+		const busy = scriptedStream([{ stopReason: 'error', errorMessage: 'Error: 503: busy' }]);
+		await expect(cm.compact(longConversation(3), piModel, busy.streamFn, opts)).rejects.toThrow(
+			'503',
+		);
+		expect(busy.requests).toHaveLength(1);
+		const empty = scriptedStream([{ text: '   ' }]);
+		await expect(
+			cm.compact(longConversation(3), piModel, empty.streamFn, opts),
+		).rejects.toThrow('no summary');
 	});
 });

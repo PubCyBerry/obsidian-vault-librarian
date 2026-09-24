@@ -9,7 +9,7 @@ import {
 } from '../src/agent/agent-controller';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { PromptManager } from '../src/agent/prompt';
-import { ContextManager } from '../src/context/context-manager';
+import { ContextManager, HANDOFF_PROMPT } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
@@ -641,7 +641,6 @@ describe('compaction during a session (LIB-TEST-064, LIB-TEST-067)', () => {
 				context: {
 					warningAt: 0.7,
 					compactAt: 0.85,
-					preserveRecentTurns: 1,
 					reserveOutputTokens: 'model-max',
 					safetyMarginTokens: 4096,
 				},
@@ -670,10 +669,49 @@ describe('compaction during a session (LIB-TEST-064, LIB-TEST-067)', () => {
 		const log = await h.sessions.load(id);
 		expect(log.length).toBe(before + 3);
 		expect(log.some((e) => e.type === 'compaction' && e.method === 'summary')).toBe(true);
-		const sent = h.requests[1]!.messages;
-		expect((sent[1] as { content: string }).content).toContain('summary of old stuff');
-		// The summary stands in for the older turns; the current turn is the one preserved turn.
-		expect(sent.filter((m) => m.role === 'user')).toHaveLength(2);
+		// The newest earlier question, cut to the budget, then the summary, then the new message.
+		const users = h.requests[1]!.messages.filter((m) => m.role === 'user').map((m) =>
+			lastText([m]),
+		);
+		expect(users).toHaveLength(3);
+		expect(users[0]).toMatch(/^q3 [\s\S]*tokens truncated/);
+		expect(users[1]).toContain('summary of old stuff');
+		expect(users[2]).toBe('new question');
+		expect(h.requests[0]!.messages[h.requests[0]!.messages.length - 1]).toMatchObject({
+			content: HANDOFF_PROMPT,
+		});
+	});
+
+	it('LIB-TEST-257: compacts and asks again once when a request does not fit the window', async () => {
+		const h = harness([
+			{
+				stopReason: 'error',
+				errorMessage: 'Your input exceeds the context window of this model.',
+			},
+			{ text: 'summary of old stuff' },
+			{ text: 'reply' },
+		]);
+		await h.controller.newSession();
+		const id = h.controller.session!.id;
+		await h.sessions.append(id, { type: 'user', content: 'q0' });
+		await h.sessions.append(id, { type: 'assistant', content: 'a0', toolCalls: [] });
+		await h.controller.reloadEvents();
+		await h.controller.send('new question');
+		const log = await h.sessions.load(id);
+		expect(log.map((e) => e.type)).toEqual([
+			'meta',
+			'user',
+			'assistant',
+			'user',
+			'compaction',
+			'assistant',
+		]);
+		expect(log[log.length - 1]).toMatchObject({ content: 'reply' });
+		const last = h.requests[2]!.messages;
+		expect((last[last.length - 2] as { content: string }).content).toContain(
+			'summary of old stuff',
+		);
+		expect(last[last.length - 1]).toMatchObject({ role: 'user', content: 'new question' });
 	});
 });
 
@@ -819,7 +857,9 @@ describe('finishing a turn the app was killed during (LIB-TEST-146)', () => {
 		const events = await sessionEvents(h);
 		expect(events.at(-1)).toMatchObject({ type: 'assistant', content: 'Here is the answer' });
 		expect(h.requests).toHaveLength(1);
-		expect(h.requests[0]!.messages.at(-1)).toMatchObject({ role: 'user' });
+		expect(h.requests[0]!.messages[h.requests[0]!.messages.length - 1]).toMatchObject({
+			role: 'user',
+		});
 		expect(await h.controller.resumeTurn()).toBe(false);
 	});
 });

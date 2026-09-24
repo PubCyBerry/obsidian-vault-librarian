@@ -2041,7 +2041,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						},
 						{
 							name: 'Compact at (%)',
-							desc: 'Older turns are summarized at this share of the usable input.',
+							desc: 'The conversation so far is replaced by a summary at this share of the usable input, keeping your recent messages word for word.',
 							render: (setting) =>
 								numberInput(
 									setting,
@@ -2051,20 +2051,6 @@ export class LibrarianSettingTab extends PluginSettingTab {
 										await this.save();
 									},
 									'85',
-								),
-						},
-						{
-							name: 'Preserve recent turns',
-							desc: 'The latest turns stay word for word when older ones are summarized.',
-							render: (setting) =>
-								numberInput(
-									setting,
-									c.preserveRecentTurns,
-									async (v) => {
-										c.preserveRecentTurns = Math.max(1, v ?? 6);
-										await this.save();
-									},
-									'6',
 								),
 						},
 						{

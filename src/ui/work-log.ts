@@ -2,6 +2,7 @@ import { setIcon } from 'obsidian';
 import type { ToolCardStatus } from '../agent/agent-controller';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
 import { STATUS_LABELS, toolIcon } from './cards';
+import { appendStreamDelta } from './stream-text';
 
 /**
  * One request and the work it took: the user's message and everything after it until the next
@@ -163,7 +164,13 @@ export interface PopoverContent {
 	status?: { text: string; cls: string };
 	/** Still arriving: a spinner beside the title. The popover grows with it up to the room. */
 	live?: boolean;
-	body: (el: HTMLElement) => void;
+	/**
+	 * Plain text such as thinking, drawn instead of `body`. What arrives while the popover is open
+	 * is added to the end and fades in the way the answer does; what was there when it opened
+	 * shows at once.
+	 */
+	text?: string;
+	body?: (el: HTMLElement) => void;
 }
 
 /**
@@ -185,6 +192,8 @@ export class StepPopover {
 		subtitle: HTMLElement;
 		status: HTMLElement;
 		body: HTMLElement;
+		/** The body's text block while the content is `text`, kept so new text is only added. */
+		text: HTMLElement | null;
 	} | null = null;
 	/** The step whose popover is open, to find it again after a redraw. */
 	openKey: string | null = null;
@@ -226,7 +235,7 @@ export class StepPopover {
 		this.el = el;
 		this.anchor = anchor;
 		this.content = content;
-		this.parts = { icon, title, spinner, subtitle, status, body };
+		this.parts = { icon, title, spinner, subtitle, status, body, text: null };
 		this.openKey = anchor.dataset.popKey ?? null;
 		anchor.addClass('is-open');
 		anchor.setAttr('aria-expanded', 'true');
@@ -289,8 +298,19 @@ export class StepPopover {
 		const body = parts.body;
 		const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
 		const scroll = body.scrollTop;
-		body.empty();
-		c.body(body);
+		if (c.text !== undefined) {
+			if (!parts.text) {
+				body.empty();
+				parts.text = body.createDiv({ cls: 'librarian-step-pop-text' });
+			}
+			// What was there when it opened shows at once; only what arrives after fades in.
+			if (first) parts.text.setText(c.text);
+			else appendStreamDelta(parts.text, parts.text.textContent ?? '', c.text);
+		} else {
+			parts.text = null;
+			body.empty();
+			c.body?.(body);
+		}
 		body.scrollTop = !first && atEnd ? body.scrollHeight : scroll;
 		this.reposition();
 	}

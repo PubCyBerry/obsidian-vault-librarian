@@ -313,8 +313,14 @@ export default class LibrarianPlugin extends Plugin {
 					new Notice('Open a session first.');
 					return;
 				}
-				const done = await this.controller.compactNow();
-				new Notice(done ? 'Context compacted.' : 'Nothing to compact yet.');
+				const outcome = await this.controller.compactNow();
+				new Notice(
+					outcome === 'compacted'
+						? 'Context compacted.'
+						: outcome === 'failed'
+							? 'Could not compact the context.'
+							: 'Nothing to compact yet.',
+				);
 			},
 		});
 		this.addCommand({
