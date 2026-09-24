@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.12.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.11.0...2.12.0) (2026-09-24)
+
+
+### Features
+
+* show each request's work as a folding timeline with live step popovers ([080cefc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/080cefcf3f0fa0b5410a0d6a926407a84a339ff9))
+
 ## [2.11.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.10.0...2.11.0) (2026-09-24)
 
 
