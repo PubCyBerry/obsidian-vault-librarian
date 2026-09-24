@@ -1,0 +1,30 @@
+name: Feature Request
+description: Suggest a new feature or improvement for Vault Librarian.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement!
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem to solve
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: upload
+    id: attachments
+    attributes:
+      label: Mockups or screenshots
