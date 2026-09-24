@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.12.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.12.0...2.12.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* drop the bash popover's summary line, which repeated its Command section ([fcb68be](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/fcb68be2ecc41fb00b61405b2a94cb34d33e9975))
+* keep the step popover's spinner turning while thinking streams ([fcb68be](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/fcb68be2ecc41fb00b61405b2a94cb34d33e9975))
+* take every setting another device syncs instead of writing old ones back over them ([fcb68be](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/fcb68be2ecc41fb00b61405b2a94cb34d33e9975))
+
 ## [2.12.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.11.0...2.12.0) (2026-09-24)
 
 
