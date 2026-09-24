@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.13.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.12.1...2.13.0) (2026-09-24)
+
+
+### Features
+
+* compact the conversation into a handoff summary, as Codex does ([a1797f4](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a1797f4f08da3c8127e1a1d8d4ecf26104023da1))
+
+
+### Bug Fixes
+
+* stream thinking in the step popover with the same fade-in as the answer ([a1797f4](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a1797f4f08da3c8127e1a1d8d4ecf26104023da1))
+
 ## [2.12.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.12.0...2.12.1) (2026-09-24)
 
 
