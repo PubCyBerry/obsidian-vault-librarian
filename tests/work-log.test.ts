@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IndexedEvent, SessionEvent } from '../src/session/session-types';
 import { readableResult } from '../src/ui/cards';
-import { firstLine, formatDuration, groupRuns, viewOf } from '../src/ui/work-log';
+import { firstLine, formatDuration, groupRuns, looksLikeAnswer, viewOf } from '../src/ui/work-log';
 
 const at = (s: number) => new Date(Date.UTC(2026, 8, 25, 1, 0, s)).toISOString();
 
@@ -148,5 +148,24 @@ describe('work log (LIB-TEST-253)', () => {
 		// Output that reaches the popover as one JSON string shows as the text, not escaped.
 		const jq = '{\n  "tag_name": "v1.13.8"\n}\n';
 		expect(readableResult('bash', JSON.stringify(jq))).toBe(jq);
+	});
+});
+
+describe('text on its way (LIB-TEST-271)', () => {
+	it('stays a note while it is a sentence or two, and reads as the answer once it is more', () => {
+		expect(looksLikeAnswer('Let me list the vault first.')).toBe(false);
+		expect(looksLikeAnswer('먼저 Vault에 관련 맥락이 있는지 확인하겠습니다. ')).toBe(false);
+		expect(looksLikeAnswer('2026년 계획을 확인하겠습니다.')).toBe(false);
+		for (const answer of [
+			'## What the vault holds',
+			'- Projects',
+			'1. First',
+			'> quoted',
+			'| a | b |',
+			'```ts',
+			'The projects are:\n\n1. Pricing',
+			'x'.repeat(401),
+		])
+			expect(looksLikeAnswer(answer)).toBe(true);
 	});
 });

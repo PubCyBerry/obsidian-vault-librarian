@@ -1,5 +1,6 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import {
+	Component,
 	FuzzySuggestModal,
 	ItemView,
 	MarkdownRenderer,
@@ -64,14 +65,16 @@ import { segment, setChecked, steadyLabel } from './segmented';
 import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session-list';
 import { fillTemplate, matchCommands, parseSlash, type SlashCommand } from './slash-commands';
 import { linkSources, openSource } from './sources';
-import { appendStreamDelta } from './stream-text';
+import { StreamingMarkdown } from './stream-text';
 import {
-	firstLine,
 	formatDuration,
 	groupRuns,
+	grow,
+	looksLikeAnswer,
 	type PopoverContent,
 	type Run,
 	renderChip,
+	renderMessage,
 	renderSpinner,
 	type Step,
 	StepPopover,
@@ -122,6 +125,28 @@ interface Stage {
 	rewind?: (index: number) => void;
 	/** The answer of the running run is still arriving: plain text until it is whole. */
 	plainAnswer?: boolean;
+}
+
+/**
+ * Where the response being streamed goes: its steps at the end of the running run's timeline, in
+ * the order it writes them, thinking, then a note, then calls. Its text is a message chip from its
+ * first words, or the answer under the block once it reads as one (LIB-ADR-041).
+ */
+interface Live {
+	/** The run's work block, which the answer follows. */
+	block: HTMLElement;
+	timeline: HTMLElement;
+	/** The response the steps below show, by when it began: another one starts them afresh. */
+	response: number | null;
+	thinking: HTMLElement | null;
+	thinkingText: string;
+	/** Thinking is still the part growing: no text and no call has come after it yet. */
+	thinkingLive: boolean;
+	/** Its text: `el` is the note's step on the timeline, or the answer under the block. */
+	text: { el: HTMLElement; answer: boolean; markdown: StreamingMarkdown } | null;
+	tools: HTMLElement | null;
+	/** The calls as streamed so far, for their popovers. */
+	calls: { id: string; name: string; args: Record<string, unknown> }[];
 }
 
 /** One row of the list above the input: a slash command, a skill name or an @mention target. */
@@ -284,20 +309,7 @@ export class LibrarianView extends ItemView {
 	private sessionsEl!: HTMLElement;
 	/** Auto-scroll follows new content only while the user is reading at the bottom. */
 	private followBottom = true;
-	/** Where the response being streamed goes: its steps on the timeline, its text under it. */
-	private live: {
-		timeline: HTMLElement;
-		answer: HTMLElement;
-		thinking: HTMLElement | null;
-		thinkingText: string;
-		/** Thinking is still the part growing: no text and no call has come after it yet. */
-		thinkingLive: boolean;
-		tools: HTMLElement | null;
-		/** The calls as streamed so far, for their popovers. */
-		calls: { id: string; name: string; args: Record<string, unknown> }[];
-		text: HTMLElement | null;
-		shownText: string;
-	} | null = null;
+	private live: Live | null = null;
 	/** What the agent is doing, in the running run's header. */
 	private runActivityEl: HTMLElement | null = null;
 	/** Compacting asked for outside a run has no block, so it gets a line of its own. */
@@ -1527,27 +1539,28 @@ export class LibrarianView extends ItemView {
 				block.addClass('is-collapsed');
 				header.setAttr('aria-expanded', 'false');
 			});
-		if (view.answer !== null || running) {
+		if (view.answer !== null) {
 			const answer = stage.el.createDiv({
 				cls: 'librarian-msg librarian-msg-assistant',
 			});
 			// An answer still arriving in the agent pane is text until it is whole: drawn as
 			// Markdown each time, it would blink while the renderer catches up.
-			if (view.answer && running && stage.plainAnswer)
+			if (running && stage.plainAnswer)
 				answer.createDiv({ cls: 'librarian-stream-text', text: view.answer });
-			else if (view.answer) this.renderMarkdown(answer.createDiv(), view.answer);
-			if (running && main)
-				this.live = {
-					timeline,
-					answer,
-					thinking: null,
-					thinkingText: '',
-					thinkingLive: false,
-					tools: null,
-					calls: [],
-					text: null,
-					shownText: '',
-				};
+			else void this.renderMarkdown(answer.createDiv(), view.answer);
+		}
+		if (running && main) {
+			this.live = {
+				block,
+				timeline,
+				response: null,
+				thinking: null,
+				thinkingText: '',
+				thinkingLive: false,
+				text: null,
+				tools: null,
+				calls: [],
+			};
 		}
 		for (const message of view.errors) this.renderStoredError(message, stage.el);
 	}
@@ -1571,17 +1584,7 @@ export class LibrarianView extends ItemView {
 				}));
 				break;
 			case 'text':
-				this.stepButton(
-					row,
-					`text:${step.key}`,
-					'message-square',
-					firstLine(step.text),
-					() => ({
-						icon: 'message-square',
-						title: 'Message',
-						body: (el) => this.renderMarkdown(el.createDiv(), step.text),
-					}),
-				);
+				void this.renderMarkdown(renderMessage(row).text, step.text);
 				break;
 			case 'tools': {
 				for (const call of step.calls) {
@@ -1667,10 +1670,14 @@ export class LibrarianView extends ItemView {
 		};
 	}
 
-	/** Markdown with [[links]] and `path:line` sources that open their notes. */
-	private renderMarkdown(el: HTMLElement, text: string) {
+	/**
+	 * Markdown with [[links]] and `path:line` sources that open their notes. A streaming drawing
+	 * passes a component of its own that is never loaded: the renderer adds a child to it each
+	 * time, which would otherwise pile up on the view for as long as it is open.
+	 */
+	private renderMarkdown(el: HTMLElement, text: string, component: Component = this) {
 		el.addClass('librarian-markdown', 'markdown-rendered');
-		void MarkdownRenderer.render(this.app, text, el, '', this).then(() => {
+		return MarkdownRenderer.render(this.app, text, el, '', component).then(() => {
 			linkSources(
 				el,
 				(ref) =>
@@ -1739,30 +1746,19 @@ export class LibrarianView extends ItemView {
 	}
 
 	private queueStream(message: AssistantMessage | null) {
-		this.pendingStream = message;
 		if (message === null) {
+			// The response ended. What it showed stays until the conversation is drawn again with
+			// it saved, so nothing blinks out while it is written to the session; one asked again
+			// clears it when it starts (renderStream).
 			if (this.streamTimer !== null) {
 				window.clearTimeout(this.streamTimer);
 				this.streamTimer = null;
+				if (this.pendingStream) this.renderStream(this.pendingStream);
 			}
-			const live = this.live;
-			if (live) {
-				live.thinking?.remove();
-				live.tools?.remove();
-				live.text?.remove();
-				this.live = {
-					...live,
-					thinking: null,
-					thinkingText: '',
-					thinkingLive: false,
-					tools: null,
-					calls: [],
-					text: null,
-					shownText: '',
-				};
-			}
+			this.pendingStream = null;
 			return;
 		}
+		this.pendingStream = message;
 		if (this.streamTimer !== null) return;
 		this.streamTimer = window.setTimeout(() => {
 			this.streamTimer = null;
@@ -1771,12 +1767,65 @@ export class LibrarianView extends ItemView {
 	}
 
 	/**
-	 * The response on its way: its thinking and its tool calls grow the running run's timeline,
-	 * and its text grows under it, only the new tail animating in.
+	 * Where text on its way goes, drawn as Markdown all along with only the new words fading in: a
+	 * message chip at the end of the timeline that eases to each new size, or the answer's place
+	 * under the block, where it stays once saved.
+	 */
+	private streamText(live: Live, answer: boolean, follow: () => void): NonNullable<Live['text']> {
+		const draw = (markdown: string, into: HTMLElement) =>
+			this.renderMarkdown(into, markdown, new Component());
+		if (answer) {
+			const el = createDiv({ cls: 'librarian-msg librarian-msg-assistant' });
+			live.block.after(el);
+			const text = el.createDiv({ cls: 'librarian-markdown markdown-rendered' });
+			return {
+				el,
+				answer,
+				markdown: new StreamingMarkdown(text, draw, (swap) => {
+					swap();
+					follow();
+				}),
+			};
+		}
+		const el = live.timeline.createDiv({ cls: 'librarian-step is-text librarian-step-new' });
+		live.timeline.insertBefore(el, live.tools);
+		const { box, text } = renderMessage(el);
+		return {
+			el,
+			answer,
+			markdown: new StreamingMarkdown(text, draw, (swap) => {
+				grow(box, text, swap, follow);
+				follow();
+			}),
+		};
+	}
+
+	/**
+	 * The response on its way: its thinking, its note and its tool calls grow the running run's
+	 * timeline in the order it writes them. Its text is a note until it reads as the answer
+	 * (streamText).
 	 */
 	private renderStream(message: AssistantMessage) {
 		const live = this.live;
 		if (!live) return;
+		// Read again when a popover draws: the run may have been drawn anew since.
+		const current = () => this.live;
+		const statusOf = (id: string) => this.controller.toolStatusOf(id);
+		// Another response, such as one asked again after it failed: what the last one left goes.
+		if (live.response !== null && live.response !== message.timestamp) {
+			live.thinking?.remove();
+			live.text?.el.remove();
+			live.tools?.remove();
+			Object.assign(live, {
+				thinking: null,
+				thinkingText: '',
+				thinkingLive: false,
+				text: null,
+				tools: null,
+				calls: [],
+			});
+		}
+		live.response = message.timestamp;
 		const thinking = message.content
 			.filter((c) => c.type === 'thinking')
 			.map((c) => (c as { thinking: string }).thinking)
@@ -1785,6 +1834,8 @@ export class LibrarianView extends ItemView {
 			live.thinking = live.timeline.createDiv({
 				cls: 'librarian-step is-thinking librarian-step-new',
 			});
+			const note = live.text && !live.text.answer ? live.text.el : null;
+			live.timeline.insertBefore(live.thinking, note ?? live.tools);
 			const chip = this.stepButton(
 				live.thinking,
 				'thinking:live',
@@ -1793,14 +1844,25 @@ export class LibrarianView extends ItemView {
 				() => ({
 					icon: 'brain',
 					title: 'Thinking',
-					live: this.live?.thinkingLive === true,
-					text: this.live?.thinkingText ?? '',
+					live: current()?.thinkingLive === true,
+					text: current()?.thinkingText ?? '',
 				}),
 			);
 			// Turns while the thinking grows, as a running call's chip does, and goes when it stops.
 			renderSpinner(chip.createSpan({ cls: 'librarian-chip-mark' }));
 		}
 		live.thinkingText = thinking;
+		const text = message.content
+			.filter((c) => c.type === 'text')
+			.map((c) => (c as { text: string }).text)
+			.join('');
+		// A few characters first, so an opening mark such as ## has shown what the text is.
+		const answer = looksLikeAnswer(text);
+		if (text.trim().length >= 4 && (!live.text || (answer && !live.text.answer))) {
+			live.text?.el.remove();
+			live.text = this.streamText(live, answer, () => this.scrollToBottom());
+		}
+		live.text?.markdown.set(text);
 		const calls = message.content.filter((c) => c.type === 'toolCall');
 		live.calls = calls.map((c) => ({ id: c.id, name: c.name, args: c.arguments }));
 		if (calls.length && !live.tools)
@@ -1810,7 +1872,7 @@ export class LibrarianView extends ItemView {
 		calls.forEach((block, i) => {
 			const tools = live.tools;
 			if (!tools) return;
-			const status: ToolCardStatus = this.controller.toolStatusOf(block.id) ?? 'pending';
+			const status: ToolCardStatus = statusOf(block.id) ?? 'pending';
 			// Keyed by the call's place in the response: its id and name may still be arriving.
 			const existing = tools.querySelector<HTMLElement>(`[data-stream-index="${i}"]`);
 			const isAgent = block.name === SPAWN_AGENT_NAME;
@@ -1859,7 +1921,7 @@ export class LibrarianView extends ItemView {
 				chip,
 				`call:${block.id || i}`,
 				this.toolContent(() => {
-					const now = this.live?.calls[i] ?? {
+					const now = current()?.calls[i] ?? {
 						id: block.id,
 						name: block.name,
 						args: block.arguments,
@@ -1868,20 +1930,13 @@ export class LibrarianView extends ItemView {
 						toolCallId: now.id,
 						name: now.name,
 						args: now.args,
-						status: this.controller.toolStatusOf(now.id) ?? status,
+						status: statusOf(now.id) ?? status,
 						result: null,
 						truncated: false,
 					};
 				}),
 			);
 		});
-		const text = message.content
-			.filter((c) => c.type === 'text')
-			.map((c) => (c as { text: string }).text)
-			.join('');
-		if (text && !live.text)
-			live.text = live.answer.createDiv({ cls: 'librarian-markdown librarian-stream-text' });
-		if (live.text) live.shownText = appendStreamDelta(live.text, live.shownText, text);
 		live.thinkingLive = thinking.length > 0 && !text && calls.length === 0;
 		live.thinking
 			?.querySelector('.librarian-chip-mark')

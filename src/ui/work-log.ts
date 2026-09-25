@@ -124,6 +124,69 @@ export function renderSpinner(parent: HTMLElement): HTMLElement {
 	return spinner;
 }
 
+/**
+ * A note the model wrote between its calls, whole (LIB-FEAT-252): a chip that holds its icon and
+ * its Markdown, which goes in `text`.
+ */
+export function renderMessage(parent: HTMLElement): { box: HTMLElement; text: HTMLElement } {
+	const box = parent.createDiv({ cls: 'librarian-message' });
+	setIcon(box.createSpan({ cls: 'librarian-message-icon' }), 'message-square');
+	const text = box.createDiv({
+		cls: 'librarian-message-text librarian-markdown markdown-rendered',
+	});
+	return { box, text };
+}
+
+/**
+ * Whether text still arriving reads as the answer rather than a note before calls. A note is a
+ * sentence or two; an answer opens with a heading, a list, a quote, a table or code, runs past one
+ * line, or grows long. Which one it is is certain only once the response ends (LIB-ADR-041).
+ */
+export function looksLikeAnswer(text: string): boolean {
+	const t = text.trim();
+	return (
+		/^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~)/.test(t) || t.includes('\n') || t.length > 400
+	);
+}
+
+/**
+ * Runs `change`, then eases `box` from the size it had to the size it takes now, so a message chip
+ * swells as its text arrives. `text` keeps the width it ends at meanwhile, so it does not wrap
+ * again while the chip widens. `settled` runs once the chip has its size.
+ */
+export function grow(
+	box: HTMLElement,
+	text: HTMLElement,
+	change: () => void,
+	settled: () => void,
+): void {
+	const from = box.getBoundingClientRect();
+	box.removeClass('is-growing');
+	change();
+	const to = box.getBoundingClientRect();
+	if (!from.width || (from.width === to.width && from.height === to.height)) {
+		settled();
+		return;
+	}
+	box.setCssProps({
+		'--librarian-grow-width': `${from.width}px`,
+		'--librarian-grow-height': `${from.height}px`,
+		'--librarian-grow-text': `${text.getBoundingClientRect().width}px`,
+	});
+	box.addClass('is-growing');
+	// Pinned to where it was before it is let go to where it goes.
+	box.getBoundingClientRect();
+	box.setCssProps({
+		'--librarian-grow-width': `${to.width}px`,
+		'--librarian-grow-height': `${to.height}px`,
+	});
+	box.ontransitionend = (e) => {
+		if (e.target !== box) return;
+		box.removeClass('is-growing');
+		settled();
+	};
+}
+
 const STATUS_ICONS: Partial<Record<ToolCardStatus, string>> = {
 	ok: 'check',
 	failed: 'x',

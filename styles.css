@@ -833,10 +833,12 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	margin: var(--size-4-3) 0 var(--size-2-2);
 }
 
-/* Streamed text: only the newly appended piece fades in (LIB-FEAT-099). */
+/* Streamed text: only the newly appended piece fades in (LIB-FEAT-099). A piece whose Markdown is
+   drawn again mid-fade comes back with a negative delay and goes on from where it was. */
 
 .librarian-reveal {
 	animation: librarian-reveal 280ms ease-out both;
+	animation-delay: var(--librarian-reveal-delay, 0s);
 }
 
 @keyframes librarian-reveal {
@@ -1498,7 +1500,7 @@ body.is-mobile
 .librarian .librarian-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: var(--size-2-2);
+	gap: var(--size-4-2);
 	max-width: 100%;
 	min-width: 0;
 	height: var(--librarian-chip-height);
@@ -1540,6 +1542,76 @@ body.is-mobile
 
 .librarian-step-button .librarian-chip-name {
 	font-family: inherit;
+}
+
+/* A note the model wrote between its calls (LIB-FEAT-252), read whole: a chip with the calls'
+   border, radius and muted text, grown to hold its Markdown. Its padding on every side, the room
+   between its icon and its text and the room between its blocks are one size, as the calls' chips
+   keep theirs. While it streams it eases to each new size (grow in work-log.ts), its text laid out
+   at the width it ends at so it does not wrap again meanwhile. The easing stays under reduced
+   motion, as the fade does: only the chip itself grows. */
+.librarian-message {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-2);
+	box-sizing: border-box;
+	max-width: 100%;
+	min-width: 0;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: calc(var(--librarian-chip-height) / 2);
+	background: var(--background-primary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+}
+
+/* Its dot stands level with the first line of the note, as a chip's stands level with the chip. */
+.librarian-step.is-text::before {
+	top: calc(1px + var(--size-4-2) + var(--font-ui-smaller) * 0.75 - 5px);
+}
+
+.librarian-message.is-growing {
+	width: var(--librarian-grow-width);
+	height: var(--librarian-grow-height);
+	overflow: hidden;
+	transition:
+		width 180ms ease-out,
+		height 180ms ease-out;
+}
+
+.librarian-message-icon {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+	height: 1lh;
+}
+
+.librarian-message-icon svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* Obsidian's own spacing, set to the chip's one size: its paragraphs, lists and code are a rem
+   apart and its lists sit far in, which a chip's small text makes look loose and uneven. */
+.librarian-message-text {
+	--p-spacing: var(--size-4-2);
+	--heading-spacing: var(--size-4-2);
+	--list-indent: 1.5em;
+	min-width: 0;
+}
+
+.librarian-message.is-growing .librarian-message-text {
+	flex: none;
+	width: var(--librarian-grow-text);
+}
+
+.librarian-message-text > :first-child {
+	margin-top: 0;
+}
+
+.librarian-message-text > :last-child {
+	margin-bottom: 0;
 }
 
 .librarian-step-pop-title .librarian-spinner {
