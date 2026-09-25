@@ -4,12 +4,7 @@ import {
 	type AgentTool,
 	type StreamFn,
 } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai';
-import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow';
-import {
-	createInitialSystemMessage,
-	toToolDeclaration,
-} from '@earendil-works/pi-ai/utils/transcript';
+import type { AssistantMessage, ImageContent } from '@earendil-works/pi-ai';
 
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
@@ -20,43 +15,40 @@ import {
 	effectiveRequestOptions,
 	type PiModel,
 	type ProviderManager,
-	selectableThinkingLevels,
 	toPiModel,
 } from '../provider/provider-manager';
 import type { TransportRouter } from '../provider/transport';
 import { contentHash, replay, type SessionManager } from '../session/session-manager';
 import type {
 	IndexedEvent,
-	ResponsesReplay,
 	SessionEvent,
 	SessionEventInput,
 	SessionMetadata,
-	StoredToolCall,
-	StoredUsage,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
 import { isAgentsPath, isBinaryPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
-import { type LibrarianSettings, RESPONSES_API, type ThinkingLevel } from '../types';
-import {
-	appIsHidden,
-	noteVisibility,
-	releaseVisibilityWaiters,
-	wasHiddenSince,
-	whenVisible,
-} from '../visibility';
-import { type AgentDefinition, GENERAL_AGENT, toolsFor } from './agent-definitions';
+import type { LibrarianSettings, ThinkingLevel } from '../types';
+import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
+import type { AgentDefinition } from './agent-definitions';
+import { ApprovalQueue, type ApprovalRequest, type CallOrigin } from './approval-queue';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { type PromptManager, systemPromptOf } from './prompt';
+import type { SpawnArgs, SubagentState } from './subagent';
+import { SubagentRunner } from './subagent-runner';
 import {
-	forkMessages,
-	runTitle,
-	Slots,
-	SPAWN_AGENT_NAME,
-	type SpawnArgs,
-	type SubagentState,
-	subagentSection,
-} from './subagent';
+	assistantEvent,
+	freshLimits,
+	messageOf,
+	RETRY_DELAY_MS,
+	rewriteProviderError,
+	TurnRecovery,
+	textOf,
+	withErrorPrefix,
+} from './turn';
+
+export type { ApprovalDecision, ApprovalRequest } from './approval-queue';
+export { assistantEvent, findModel, responsesReplay, rewriteProviderError } from './turn';
 
 export type AgentUiState =
 	| 'idle'
@@ -83,9 +75,6 @@ export type ToolCardStatus =
 	| 'expired'
 	| 'skipped';
 
-/** `skip` withdraws the card because the user sent a message that goes before this call. */
-export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'expired' | 'skip';
-
 /** A message sent while a turn runs. `now` puts it before the next tool call (LIB-FEAT-185). */
 export interface QueuedMessage {
 	id: number;
@@ -97,65 +86,6 @@ export interface QueuedMessage {
 /** The result a call gets when a Send now message goes first. */
 export const SKIPPED_RESULT =
 	'Skipped: the user sent a new message before this call ran. Read it, then call the tool again only if it still applies.';
-
-export interface ApprovalRequest {
-	toolCallId: string;
-	name: string;
-	args: Record<string, unknown>;
-	/** False when settings never let this tool skip approval (destructive MCP tools). */
-	canAlways: boolean;
-	/** What "Always allow" stores: the tool name, or a skill's key for a read inside a skill folder. */
-	permissionKey: string;
-	/** For write on an existing note: its current length. */
-	existingLength?: number;
-	/** The tool this call came from, such as `bash` for something a shell command is about to do. */
-	calledFrom?: string;
-	/** The sub-agent run asking: its title, its agent and its spawn_agent call. Absent for the main agent. */
-	agentTitle?: string;
-	agentType?: string;
-	agentCallId?: string;
-	/** Other approvals queued behind this one. */
-	waiting: number;
-	resolve: (decision: ApprovalDecision) => void;
-}
-
-/** Where a call comes from, for the approval it may need. */
-interface CallOrigin {
-	calledFrom?: string;
-	agent?: SubagentState;
-}
-
-/** What ends an agent's loop early: failures by call, turns that called tools, and why it ended. */
-interface LoopLimits {
-	failures: Map<string, number>;
-	iterations: number;
-	stopReason: string | null;
-	/** Turns with tool calls allowed, when not the setting's: a sub-agent's maxTurns. */
-	max?: number;
-}
-
-/**
- * A tool-calling model by `<provider id>/<model id>`, or by model ID or name alone. Model IDs may
- * hold a slash themselves, so the provider is only split off when one has that ID.
- */
-export function findModel<
-	T extends { provider: { id: string }; model: { id: string; name: string } },
->(options: readonly T[], ref: string): T | undefined {
-	const slash = ref.indexOf('/');
-	if (slash > 0) {
-		const [provider, model] = [ref.slice(0, slash), ref.slice(slash + 1)];
-		const exact = options.find((o) => o.provider.id === provider && o.model.id === model);
-		if (exact) return exact;
-	}
-	const lower = ref.toLowerCase();
-	return options.find(
-		(o) => o.model.id.toLowerCase() === lower || o.model.name.toLowerCase() === lower,
-	);
-}
-
-function freshLimits(): LoopLimits {
-	return { failures: new Map(), iterations: 0, stopReason: null };
-}
 
 /** The outcome of the permission gate for one call. */
 export type Gate = { ok: true } | { ok: false; reason: string; status: ToolCardStatus };
@@ -218,16 +148,8 @@ export interface ControllerDeps {
 	agentDefinitionsChanged?: () => Promise<unknown>;
 }
 
-const RETRY_DELAY_MS = 1500;
-
 /** A snapshot's afterHash when the change removed the note; no content hash looks like it. */
 const REMOVED = 'removed';
-
-/**
- * Backstop for a request that keeps failing while the app is sent away and brought back. Each
- * resume needs the app to become visible again, so reaching this means the user retried by hand.
- */
-const MAX_BACKGROUND_RESUMES = 10;
 
 /** Device-local: the session whose turn was running, so a killed app can finish it on the next start. */
 export const ACTIVE_TURN_KEY = 'librarian-active-turn';
@@ -236,11 +158,6 @@ export const BACKGROUND_RESUME_NOTICE =
 	'The app was in the background. Continuing where it stopped.';
 export const INTERRUPTED_RESUME_NOTICE = 'Continuing the request that was interrupted.';
 export const STREAM_CUT_NOTICE = 'The connection dropped mid-response. Retrying once.';
-
-/** The transport's parenthetical for a response the network cut after HTTP 200. */
-function isStreamCut(message: string | undefined): boolean {
-	return /HTTP 200 received, body cut after/.test(message ?? '');
-}
 
 /**
  * An unfinished turn: the last thing in the log is something the model still owes an answer for.
@@ -257,34 +174,14 @@ export function hasUnfinishedTurn(events: IndexedEvent[]): boolean {
 	return false;
 }
 
-function textOf(content: readonly { type: string }[]): string {
-	return content
-		.filter((c): c is TextContent => c.type === 'text')
-		.map((c) => c.text)
-		.join('');
-}
-
-function messageOf(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 export class AgentController {
 	state: AgentUiState = 'idle';
 	session: SessionMetadata | null = null;
 	events: IndexedEvent[] = [];
 	usage: ContextUsage | null = null;
-	pendingApproval: ApprovalRequest | null = null;
-	/**
-	 * One approval card at a time: sub-agents running side by side and the stages of a shell
-	 * pipeline can all ask at once, and the rest wait here in order.
-	 */
-	private approvals: Promise<unknown> = Promise.resolve();
-	private approvalsWaiting = 0;
-	/** Sub-agents of the latest run, by the spawn_agent call that started each. */
-	readonly agents = new Map<string, SubagentState>();
-	private readonly agentSlots = new Slots(() => this.deps.settings().maxSubagents);
-	/** Which sub-agent made a call, for the approvals its shell commands ask for. */
-	private readonly callOwner = new Map<string, SubagentState>();
+	/** One approval card at a time, for the main agent, the sub-agents and the shell alike. */
+	private readonly approvals: ApprovalQueue;
+	private readonly subagents = new SubagentRunner(this);
 	/** Provider and model the current session runs on; may differ from the settings default. */
 	selection: ActiveSelection | undefined;
 	thinkingLevel: ThinkingLevel = 'off';
@@ -292,22 +189,13 @@ export class AgentController {
 	private agent: Agent | null = null;
 	private readonly listeners = new Set<(event: ControllerEvent) => void>();
 	private readonly toolStatus = new Map<string, ToolCardStatus>();
-	private readonly truncatedResults = new Set<string>();
+	readonly truncatedResults = new Set<string>();
 	private readonly pendingSnapshots = new Map<string, { path: string; content: string | null }>();
 	/** The main agent's limits for the turn now running; each sub-agent keeps its own. */
 	private loop = freshLimits();
-	/** Set when a response stream was cut by the network; `send` then repeats the request once. */
-	private retryAfterCut = false;
-	private cutRetries = 0;
-	/** Set when a request did not fit the context window; it is asked again once, compacted. */
-	private retryAfterOverflow = false;
-	private overflowRetries = 0;
-	private overflowMessage = '';
+	/** Whether and how a failed request is asked again (turn.ts). */
+	private readonly recovery = new TurnRecovery();
 	private stopRequested = false;
-	/** Set when the request now running failed after the app had been sent to the background. */
-	private resumeWhenVisible = false;
-	private hiddenDuringRequest = false;
-	private backgroundResumes = 0;
 	private wakeLock: WakeLockSentinel | null = null;
 	/** Messages sent while a turn runs, oldest first. Memory only: they do not survive a restart. */
 	queue: QueuedMessage[] = [];
@@ -319,7 +207,13 @@ export class AgentController {
 	/** The last request of the turn failed for good, so the queue goes back to the composer. */
 	private runFailed = false;
 
-	constructor(readonly deps: ControllerDeps) {}
+	constructor(readonly deps: ControllerDeps) {
+		this.approvals = new ApprovalQueue({
+			app: deps.app,
+			permissions: deps.permissions,
+			emit: (event) => this.emit(event),
+		});
+	}
 
 	// Running while the app is away
 
@@ -327,7 +221,7 @@ export class AgentController {
 	onVisibilityChange(): void {
 		noteVisibility();
 		if (appIsHidden()) {
-			this.hiddenDuringRequest = true;
+			this.recovery.hiddenDuringRequest = true;
 			// The screen lock is dropped by the browser whenever the page hides; forget ours.
 			this.wakeLock = null;
 			return;
@@ -360,7 +254,7 @@ export class AgentController {
 		return () => this.listeners.delete(listener);
 	}
 
-	private emit(event: ControllerEvent) {
+	emit(event: ControllerEvent): void {
 		if (event.type === 'state') this.state = event.state;
 		for (const l of this.listeners) l(event);
 	}
@@ -400,7 +294,7 @@ export class AgentController {
 			thinkingLevel: this.thinkingLevel,
 		});
 		this.toolStatus.clear();
-		this.forgetAgents();
+		this.subagents.forget();
 		this.deps.nestedAgentsMd?.reset();
 		await this.reloadEvents();
 		this.emit({ type: 'session', session: this.session });
@@ -417,7 +311,7 @@ export class AgentController {
 		this.selection = this.deps.providers.getModel(summary.providerId, summary.modelId);
 		if (this.selection && !this.selection.model.toolCalling) this.selection = undefined;
 		this.thinkingLevel = summary.thinkingLevel ?? 'off';
-		this.forgetAgents();
+		this.subagents.forget();
 		// A resumed conversation gets each folder's AGENTS.md again, as it now reads.
 		this.deps.nestedAgentsMd?.reset();
 		// The card states come from the log before the view draws it; drawn first, every card
@@ -449,7 +343,7 @@ export class AgentController {
 		this.session = null;
 		this.events = [];
 		this.usage = null;
-		this.forgetAgents();
+		this.subagents.forget();
 		this.deps.nestedAgentsMd?.reset();
 		this.emit({ type: 'session', session: null });
 		this.emit({ type: 'events', events: [] });
@@ -535,7 +429,7 @@ export class AgentController {
 			: undefined;
 	}
 
-	private exposedTools(): AgentTool[] {
+	exposedTools(): AgentTool[] {
 		return this.deps.permissions.getExposedTools(this.deps.tools());
 	}
 
@@ -571,10 +465,7 @@ export class AgentController {
 		return this.streamFor(this.selection!, () => this.thinkingLevel);
 	}
 
-	private streamFor(
-		sel: ActiveSelection,
-		level: ThinkingLevel | (() => ThinkingLevel),
-	): StreamFn {
+	streamFor(sel: ActiveSelection, level: ThinkingLevel | (() => ThinkingLevel)): StreamFn {
 		return this.deps.transport.createStreamFn(sel.provider, () => ({
 			apiKey: this.deps.secrets.get(sel.provider.secretId),
 			authHeader: sel.provider.authHeader,
@@ -621,10 +512,7 @@ export class AgentController {
 		if (!item || item.now) return;
 		item.now = true;
 		this.emitQueue();
-		// A shell command or a sub-agent asking from inside its call has started already, so it
-		// keeps its card.
-		const card = this.pendingApproval;
-		if (card && !card.calledFrom && !card.agentCallId) card.resolve('skip');
+		this.approvals.skipMain();
 	}
 
 	private emitQueue(): void {
@@ -652,7 +540,7 @@ export class AgentController {
 		});
 		this.stopRequested = false;
 		// The agents of the run before are in the log now; the chat reads them from there.
-		this.forgetAgents();
+		this.subagents.forget();
 		try {
 			let clean = await first();
 			while (clean && this.queue.length) clean = await this.sendTurn(this.takeNext());
@@ -767,13 +655,8 @@ export class AgentController {
 		this.emit({ type: 'usage', usage: this.usage });
 
 		this.loop = freshLimits();
-		this.cutRetries = 0;
-		this.retryAfterCut = false;
-		this.overflowRetries = 0;
-		this.retryAfterOverflow = false;
+		this.recovery.reset();
 		this.runFailed = false;
-		this.resumeWhenVisible = false;
-		this.backgroundResumes = 0;
 		const createAgent = (messages: AgentMessage[], tools: AgentTool[]) => {
 			const agent = new Agent({
 				initialState: {
@@ -813,28 +696,23 @@ export class AgentController {
 		try {
 			await opts.start(this.agent);
 			// The events hold every completed step, so a fresh agent continues from them.
-			while (
-				!this.stopRequested &&
-				(this.resumeWhenVisible || this.retryAfterCut || this.retryAfterOverflow)
-			) {
-				if (this.resumeWhenVisible) {
-					this.resumeWhenVisible = false;
+			while (!this.stopRequested && this.recovery.next) {
+				const recovery = this.recovery.take();
+				if (recovery === 'visible') {
 					await whenVisible();
 					if (this.stopRequested) break;
 					this.emit({ type: 'notice', message: BACKGROUND_RESUME_NOTICE });
-				} else if (this.retryAfterOverflow) {
-					this.retryAfterOverflow = false;
+				} else if (recovery === 'overflow') {
 					// Over the window although the estimate said it fit: compact, then ask again.
 					const last = this.events[this.events.length - 1]?.event;
 					const compacted = await this.compactNow(streamFn, {
 						keepLastUser: last?.type === 'user',
 					});
 					if (compacted !== 'compacted' || this.stopRequested) {
-						await this.failRequest(sessionId, this.overflowMessage);
+						await this.failRequest(sessionId, this.recovery.overflowMessage);
 						break;
 					}
 				} else {
-					this.retryAfterCut = false;
 					this.emit({ type: 'notice', message: STREAM_CUT_NOTICE });
 					await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
 					if (this.stopRequested) break;
@@ -866,7 +744,7 @@ export class AgentController {
 		this.agent?.abort();
 		// A turn parked until the app comes back has nothing to abort; wake it so it can end.
 		releaseVisibilityWaiters();
-		this.pendingApproval?.resolve('expired');
+		this.approvals.expire();
 	}
 
 	/** Stops the run and waits until it has handed its queue back. */
@@ -941,7 +819,7 @@ export class AgentController {
 	 * The provider's name when its key on this device is empty. The key banner saves an empty key
 	 * for a server that needs none, and clearing a key leaves it empty too.
 	 */
-	private keyless(selection = this.selection): string | undefined {
+	keyless(selection = this.selection): string | undefined {
 		return selection && this.deps.secrets.get(selection.provider.secretId) === ''
 			? selection.provider.name
 			: undefined;
@@ -1001,7 +879,7 @@ export class AgentController {
 				},
 				{
 					calledFrom: 'bash',
-					agent: bashCallId ? this.callOwner.get(bashCallId) : undefined,
+					agent: bashCallId ? this.subagents.ownerOf(bashCallId) : undefined,
 				},
 			);
 		} finally {
@@ -1013,7 +891,7 @@ export class AgentController {
 	}
 
 	/** Permission, approval and the executable check for one call, from the model or the shell. */
-	private async authorize(
+	async authorize(
 		toolCallId: string,
 		name: string,
 		args: unknown,
@@ -1028,7 +906,7 @@ export class AgentController {
 		const record = (args ?? {}) as Record<string, unknown>;
 		if (permission === 'approval_required') {
 			onStatus('awaiting-approval');
-			const decision = await this.askApproval(toolCallId, name, record, signal, origin);
+			const decision = await this.approvals.ask(toolCallId, name, record, signal, origin);
 			// Not an answer to the card: the call yields to a Send now message, so nothing is logged.
 			if (decision === 'skip')
 				return { ok: false, reason: SKIPPED_RESULT, status: 'skipped' };
@@ -1046,7 +924,7 @@ export class AgentController {
 								? 'expired'
 								: 'approved',
 				};
-				if (origin.agent) await this.logAgent(origin.agent, approval);
+				if (origin.agent) await this.subagents.log(origin.agent, approval);
 				else if (this.session) await this.deps.sessions.append(this.session.id, approval);
 			}
 			if (decision === 'reject')
@@ -1072,86 +950,7 @@ export class AgentController {
 		return { ok: true };
 	}
 
-	/**
-	 * Waits for its turn, then shows the card. By then the call may have been stopped, or an
-	 * earlier card may have made its key Always allow; either way no card is shown.
-	 */
-	private askApproval(
-		toolCallId: string,
-		name: string,
-		args: Record<string, unknown>,
-		signal: AbortSignal | undefined,
-		origin: CallOrigin,
-	): Promise<ApprovalDecision | 'allowed'> {
-		this.approvalsWaiting++;
-		const card = this.pendingApproval;
-		if (card) {
-			card.waiting = this.approvalsWaiting;
-			this.emit({ type: 'approval', request: card });
-		}
-		const perms = this.deps.permissions;
-		const turn = this.approvals.then(async () => {
-			this.approvalsWaiting--;
-			if (signal?.aborted) return 'expired' as const;
-			if (perms.resolve(name, args) !== 'approval_required') return 'allowed' as const;
-			const decision = await this.showApproval(toolCallId, name, args, signal, origin);
-			// Stored before the line moves on, so a card behind it for the same key is not shown.
-			if (decision === 'always')
-				await perms.setTool(perms.permissionKey(name, args), 'always_allow');
-			return decision;
-		});
-		this.approvals = turn.catch(() => undefined);
-		return turn;
-	}
-
-	private showApproval(
-		toolCallId: string,
-		name: string,
-		args: Record<string, unknown>,
-		signal: AbortSignal | undefined,
-		{ calledFrom, agent }: CallOrigin,
-	) {
-		return new Promise<ApprovalDecision>((resolve) => {
-			const finish = (decision: ApprovalDecision) => {
-				if (this.pendingApproval?.toolCallId !== toolCallId) return;
-				this.pendingApproval = null;
-				signal?.removeEventListener('abort', onAbort);
-				this.emit({ type: 'approval', request: null });
-				resolve(decision);
-			};
-			const onAbort = () => finish('expired');
-			if (signal?.aborted) {
-				resolve('expired');
-				return;
-			}
-			signal?.addEventListener('abort', onAbort);
-			const existing =
-				name === 'write' && typeof args.path === 'string'
-					? this.deps.app.vault.getFileByPath(args.path)
-					: null;
-			const key = this.deps.permissions.permissionKey(name, args);
-			this.pendingApproval = {
-				toolCallId,
-				name,
-				args,
-				canAlways:
-					this.deps.permissions.canAlwaysAllow(name) &&
-					this.deps.permissions.canAlwaysAllow(key),
-				permissionKey: key,
-				existingLength: existing?.stat.size,
-				...(calledFrom ? { calledFrom } : {}),
-				...(agent
-					? { agentTitle: agent.title, agentType: agent.agent, agentCallId: agent.callId }
-					: {}),
-				waiting: this.approvalsWaiting,
-				resolve: finish,
-			};
-			this.emit({ type: 'state', state: 'awaiting-approval' });
-			this.emit({ type: 'approval', request: this.pendingApproval });
-		});
-	}
-
-	private async afterToolCall(
+	async afterToolCall(
 		toolCallId: string,
 		name: string,
 		args: unknown,
@@ -1277,7 +1076,7 @@ export class AgentController {
 	}
 
 	/** `forUser` says how to go on, which only the main agent's user can do. */
-	private shouldStopAfterTurn(toolResultCount: number, limits = this.loop, forUser = true) {
+	shouldStopAfterTurn(toolResultCount: number, limits = this.loop, forUser = true): boolean {
 		if (toolResultCount === 0) return false;
 		limits.iterations++;
 		const limit = this.deps.settings().repeatedFailureLimit;
@@ -1296,396 +1095,40 @@ export class AgentController {
 		return false;
 	}
 
-	// Sub-agents (LIB-FEAT-139)
+	// Sub-agents (LIB-FEAT-139), run by SubagentRunner
 
-	private forgetAgents(): void {
-		this.agents.clear();
-		this.callOwner.clear();
+	/** The card on screen, if any. */
+	get pendingApproval(): ApprovalRequest | null {
+		return this.approvals.pending;
 	}
 
-	private emitAgent(state: SubagentState): void {
-		this.emit({ type: 'agent', agent: state });
+	/** Sub-agents of the latest run, by the spawn_agent call that started each. */
+	get agents(): Map<string, SubagentState> {
+		return this.subagents.agents;
 	}
 
-	/** One event of a sub-agent: into its session file, and into what the chat draws it from. */
-	private async logAgent(state: SubagentState, event: SessionEventInput): Promise<void> {
-		if (state.sessionId) await this.deps.sessions.append(state.sessionId, event);
-		const stored: SessionEvent = { t: new Date().toISOString(), ...event };
-		// After the log a resume starts from, whose indexes count its meta event too.
-		const last = state.events[state.events.length - 1];
-		state.events.push({ index: last ? last.index + 1 : 0, event: stored });
-		this.emitAgent(state);
-	}
-
-	/**
-	 * The agent a spawn_agent call starts, which its permission is judged by: the one it names, or
-	 * the one of the run it resumes, as this conversation's log recorded it.
-	 */
+	/** The agent a spawn_agent call starts, which its permission is judged by. */
 	agentOfCall(args: unknown): string {
-		const a = (args ?? {}) as { agent?: unknown; resume?: unknown };
-		const resume = typeof a.resume === 'string' ? a.resume.trim() : '';
-		if (!resume)
-			return typeof a.agent === 'string' && a.agent.trim() ? a.agent.trim() : GENERAL_AGENT;
-		for (const run of this.agents.values()) if (run.sessionId === resume) return run.agent;
-		const result = this.events.find(
-			(e) => e.event.type === 'tool_result' && e.event.agentSession === resume,
-		)?.event as { toolCallId: string } | undefined;
-		const call = this.events.find(
-			(e) => e.event.type === 'tool_call' && e.event.toolCallId === result?.toolCallId,
-		)?.event as { args?: { agent?: unknown } } | undefined;
-		const agent = call?.args?.agent;
-		return typeof agent === 'string' && agent.trim() ? agent.trim() : GENERAL_AGENT;
+		return this.subagents.agentOfCall(args);
 	}
 
-	/**
-	 * spawn_agent: runs one sub-agent to its end and returns its last message (LIB-FEAT-139). It
-	 * runs as its definition says (LIB-FEAT-268), under the user's permissions, with its own loop
-	 * limits, AGENTS.md deliveries and session; `resume` goes on in the session of an earlier run
-	 * of this conversation. Past `maxSubagents` it waits for a place.
-	 */
-	async runSubagent(
+	/** spawn_agent: runs one sub-agent to its end and returns its last message. */
+	runSubagent(
 		callId: string,
 		args: SpawnArgs,
 		signal?: AbortSignal,
 	): Promise<{ text: string; sessionId: string | null }> {
-		if (!this.selection || !this.session) throw new Error('No model is selected.');
-		const task = typeof args.task === 'string' ? args.task.trim() : '';
-		if (!task) throw new Error('task must not be empty');
-		const type = this.agentOfCall(args);
-		const def = this.deps.agentDefinition?.(type);
-		if (!def)
-			throw new Error(
-				`No agent named ${type}. Start one that the spawn_agent description lists.`,
-			);
-		const resume =
-			typeof args.resume === 'string' && args.resume.trim() ? args.resume.trim() : null;
-		if (resume) await this.checkResume(resume);
-		const state: SubagentState = {
-			callId,
-			title: runTitle(args.title, def.name),
-			agent: def.name,
-			...(def.color ? { color: def.color } : {}),
-			task,
-			status: 'waiting',
-			events: [],
-			stream: null,
-			toolStatus: new Map(),
-			sessionId: resume,
-		};
-		this.agents.set(callId, state);
-		this.emitAgent(state);
-		try {
-			await this.agentSlots.take(signal);
-		} catch (error) {
-			state.status = 'failed';
-			this.emitAgent(state);
-			throw error;
-		}
-		try {
-			return await this.driveSubagent(state, def, args.fork_context === true, signal);
-		} catch (error) {
-			state.status = 'failed';
-			const message = signal?.aborted
-				? 'Operation aborted'
-				: rewriteProviderError(messageOf(error));
-			await this.logAgent(state, { type: 'error', stage: 'provider', message });
-			throw new Error(message);
-		} finally {
-			state.stream = null;
-			this.agentSlots.release();
-			this.emitAgent(state);
-		}
+		return this.subagents.run(callId, args, signal);
 	}
 
-	/** Only an agent this conversation started, and not while that agent is still at work. */
-	private async checkResume(id: string): Promise<void> {
-		const summary = await this.deps.sessions.summary(id);
-		if (!summary?.parentId || summary.parentId !== this.session?.id)
-			throw new Error(`No agent with agent_id ${id} in this conversation.`);
-		for (const run of this.agents.values())
-			if (run.sessionId === id && (run.status === 'waiting' || run.status === 'running'))
-				throw new Error(`The agent ${id} is still working. Wait for its answer first.`);
+	/** The main agent's conversation so far, for a sub-agent that forks it. */
+	mainMessages(): AgentMessage[] {
+		return this.agent?.state.messages ?? [];
 	}
 
-	/** The model an agent runs on and its thinking level: its definition's, else the main ones. */
-	private agentModel(def: AgentDefinition): { selection: ActiveSelection; level: ThinkingLevel } {
-		// A model Settings lacks falls back to the main one, as the definition's scan warned.
-		const selection =
-			(def.model && findModel(this.deps.providers.listSelectable(), def.model)) ||
-			this.selection!;
-		if (this.deps.secrets.get(selection.provider.secretId) === null)
-			throw new Error(`No API key for ${selection.provider.name} on this device.`);
-		const levels = selectableThinkingLevels(selection.model);
-		const level =
-			[def.effort, this.thinkingLevel].find((l) => l && levels.includes(l)) ?? 'off';
-		return { selection, level };
-	}
-
-	/**
-	 * An agent's instructions: its own or the Custom system prompt, the vault root AGENTS.md, the
-	 * skills when it can read them, the skills it preloads, and what a sub-agent is.
-	 */
-	private async agentPrompt(
-		def: AgentDefinition,
-		title: string,
-		tools: AgentTool[],
-	): Promise<string> {
-		const s = this.deps.settings();
-		const parts = [
-			this.deps.prompt.buildSystemPrompt({
-				systemPrompt: def.prompt ?? systemPromptOf(s),
-				vaultAgentsMd: await this.deps.prompt.loadVaultAgentsMd(s.useVaultAgentsMd),
-				skillCatalog: tools.some((t) => t.name === 'read') ? this.deps.skillCatalog() : '',
-			}),
-		];
-		const preloaded: string[] = [];
-		for (const name of def.skills ?? []) {
-			const text = await this.deps.skillActivation?.(name);
-			if (text) preloaded.push(text);
-		}
-		if (preloaded.length) parts.push(`# Preloaded skills\n\n${preloaded.join('\n\n')}`);
-		parts.push(subagentSection(title, def.name));
-		return parts.join('\n\n');
-	}
-
-	private async driveSubagent(
-		state: SubagentState,
-		def: AgentDefinition,
-		fork: boolean,
-		signal?: AbortSignal,
-	): Promise<{ text: string; sessionId: string | null }> {
-		const { selection, level } = this.agentModel(def);
-		const model = toPiModel(selection.provider, selection.model);
-		// A resumed agent goes on from its own log, which the chat shows whole.
-		const prior = state.sessionId
-			? replay(await this.deps.sessions.load(state.sessionId)).filter(
-					(e) => e.event.type !== 'meta',
-				)
-			: [];
-		state.events = [...prior];
-		if (!state.sessionId) {
-			const session = await this.deps.sessions.create({
-				providerId: selection.provider.id,
-				modelId: selection.model.id,
-				thinkingLevel: level,
-				parentId: this.session!.id,
-				parentCallId: state.callId,
-				agentType: def.name,
-				agentTitle: state.title,
-			});
-			state.sessionId = session.id;
-		}
-		const sessionId = state.sessionId;
-		state.status = 'running';
-		await this.logAgent(state, { type: 'user', content: state.task });
-		// Its definition's tools, bar spawn_agent: one level of agents only. A tool it may not
-		// have is not in its list, so the model never sees it.
-		const tools = () =>
-			toolsFor(
-				def,
-				this.exposedTools(),
-				this.deps.permissions.getExposedTools(
-					this.deps.registeredTools?.() ?? this.deps.tools(),
-				),
-				this.deps.readsOnly ?? (() => false),
-			).filter((t) => t.name !== SPAWN_AGENT_NAME);
-		const prompt = await this.agentPrompt(def, state.title, tools());
-		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
-		const history = prior.length
-			? await this.deps.context.project({ events: prior, model })
-			: fork
-				? forkMessages(this.agent?.state.messages ?? [])
-				: [];
-		const limits: LoopLimits = { ...freshLimits(), max: def.maxTurns };
-		const nested = this.deps.nestedAgentsMd?.fork(fork);
-		let requestStart = Date.now();
-		const agent = new Agent({
-			initialState: {
-				model,
-				thinkingLevel: level,
-				tools: tools(),
-				messages: leading ? [leading, ...history] : history,
-			},
-			streamFn: this.streamFor(selection, level),
-			toolExecution: this.deps.settings().toolExecution,
-			beforeToolCall: (ctx, sig) =>
-				this.beforeAgentToolCall(
-					state,
-					def,
-					ctx.toolCall.id,
-					ctx.toolCall.name,
-					ctx.args,
-					sig,
-				),
-			afterToolCall: (ctx, sig) =>
-				this.afterToolCall(
-					ctx.toolCall.id,
-					ctx.toolCall.name,
-					ctx.args,
-					ctx.result.content,
-					ctx.isError,
-					sig,
-					limits,
-					nested,
-				),
-			// No compaction here: an agent whose context fills up stops and answers with the rest.
-			finishTurn: (ctx, sig) =>
-				sig?.aborted === true ||
-				this.shouldStopAfterTurn(ctx.toolResults.length, limits, false) ||
-				(ctx.toolResults.length > 0 && this.agentContextFull(ctx.message, model, limits))
-					? { action: 'end' }
-					: undefined,
-			prepareNextTurnWithContext: (ctx) => ({
-				context: { messages: ctx.context.messages, tools: tools() },
-			}),
-		});
-		agent.subscribe(async (event) => {
-			if (event.type === 'turn_start') requestStart = Date.now();
-			else if (
-				(event.type === 'message_start' || event.type === 'message_update') &&
-				event.message.role === 'assistant'
-			) {
-				state.stream = event.message;
-				this.emitAgent(state);
-			} else if (event.type === 'message_end')
-				await this.logAgentMessage(state, event.message);
-		});
-		const onAbort = () => agent.abort();
-		signal?.addEventListener('abort', onAbort);
-		try {
-			// Stop may have come while the agent was being set up, before anyone listened.
-			if (signal?.aborted) throw new Error('Operation aborted');
-			await agent.prompt(state.task);
-			// A request that died while the app was away, or whose stream the network cut, is asked
-			// again as the main agent's would be.
-			let resumes = 0;
-			let cutRetries = 0;
-			for (;;) {
-				const last = agent.state.messages[agent.state.messages.length - 1];
-				if (signal?.aborted || last?.role !== 'assistant' || last.stopReason !== 'error')
-					break;
-				if (wasHiddenSince(requestStart) && resumes < MAX_BACKGROUND_RESUMES) {
-					resumes++;
-					await whenVisible(signal);
-				} else if (isStreamCut(last.errorMessage) && cutRetries < 1) {
-					cutRetries++;
-					await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
-				} else break;
-				if (signal?.aborted) break;
-				agent.state.messages = agent.state.messages.slice(0, -1);
-				await agent.continue();
-			}
-		} finally {
-			signal?.removeEventListener('abort', onAbort);
-		}
-		if (signal?.aborted) throw new Error('Operation aborted');
-		const last = [...agent.state.messages]
-			.reverse()
-			.find((m): m is AssistantMessage => m.role === 'assistant');
-		if (last?.stopReason === 'error')
-			throw new Error(
-				rewriteProviderError(
-					last.errorMessage ?? 'Request failed',
-					this.keyless(selection),
-				),
-			);
-		const text = textOf(last?.content ?? []).trim();
-		if (limits.stopReason) {
-			state.status = 'stopped';
-			await this.logAgent(state, {
-				type: 'error',
-				stage: 'tool',
-				message: limits.stopReason,
-			});
-			return {
-				text: `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`,
-				sessionId,
-			};
-		}
-		state.status = 'done';
-		return { text: text || 'The agent finished without an answer.', sessionId };
-	}
-
-	/**
-	 * A sub-agent's call: the user's permission for it, and an approval card that says who asks.
-	 * An agent defined with permissionMode dontAsk is refused instead of asking.
-	 */
-	private async beforeAgentToolCall(
-		state: SubagentState,
-		def: AgentDefinition,
-		toolCallId: string,
-		name: string,
-		args: unknown,
-		signal?: AbortSignal,
-	) {
-		this.callOwner.set(toolCallId, state);
-		const set = (status: ToolCardStatus) => {
-			state.toolStatus.set(toolCallId, status);
-			this.emitAgent(state);
-		};
-		if (
-			def.permissionMode === 'dontAsk' &&
-			this.deps.permissions.resolve(name, args) === 'approval_required'
-		) {
-			set('rejected');
-			return {
-				block: true,
-				reason: `The ${def.name} agent may not ask for approval, and this call needs it. Do the task without it.`,
-			};
-		}
-		const gate = await this.authorize(toolCallId, name, args, signal, set, { agent: state });
-		// The main agent is still running its tools, whatever the card that came and went.
-		if (this.agent && !this.pendingApproval)
-			this.emit({ type: 'state', state: 'tool-running' });
-		if (!gate.ok) {
-			set(gate.status);
-			return { block: true, reason: gate.reason };
-		}
-		set('running');
-		return undefined;
-	}
-
-	/** The context is as full as the main agent's would be before it compacted. */
-	private agentContextFull(message: AssistantMessage, model: PiModel, limits: LoopLimits) {
-		const u = message.usage;
-		const used = u.totalTokens || u.input + u.cacheRead + u.output;
-		if (this.deps.context.usageFor(used, model).state !== 'critical') return false;
-		limits.stopReason = 'Stopped: the context of this agent is full';
-		return true;
-	}
-
-	private async logAgentMessage(state: SubagentState, m: AgentMessage): Promise<void> {
-		if (m.role === 'assistant') {
-			state.stream = null;
-			// A failed response is asked again or ends the agent; runSubagent logs why.
-			if (m.stopReason === 'error') {
-				this.emitAgent(state);
-				return;
-			}
-			const entry = assistantEvent(m);
-			await this.logAgent(state, entry);
-			for (const call of entry.toolCalls) {
-				if (!state.toolStatus.has(call.id)) state.toolStatus.set(call.id, 'pending');
-				await this.logAgent(state, {
-					type: 'tool_call',
-					toolCallId: call.id,
-					name: call.name,
-					args: call.args,
-				});
-			}
-		} else if (m.role === 'toolResult') {
-			const current = state.toolStatus.get(m.toolCallId);
-			if (!current || ['pending', 'running', 'awaiting-approval'].includes(current))
-				state.toolStatus.set(m.toolCallId, m.isError ? 'failed' : 'ok');
-			await this.logAgent(state, {
-				type: 'tool_result',
-				toolCallId: m.toolCallId,
-				name: m.toolName,
-				ok: !m.isError,
-				content: withErrorPrefix(textOf(m.content), m.isError),
-				truncated: this.truncatedResults.delete(m.toolCallId),
-			});
-		}
+	/** A Pi Agent of the main turn is running. */
+	get turnRunning(): boolean {
+		return this.agent !== null;
 	}
 
 	private async prepareNextTurn(
@@ -1730,8 +1173,7 @@ export class AgentController {
 				this.emit({ type: 'state', state: 'requesting' });
 				break;
 			case 'turn_start':
-				// Each request tracks its own backgrounding, so only the one that was away resumes.
-				this.hiddenDuringRequest = appIsHidden();
+				this.recovery.requestStarted();
 				this.emit({ type: 'state', state: 'requesting' });
 				break;
 			case 'message_start':
@@ -1746,33 +1188,10 @@ export class AgentController {
 				const m = event.message;
 				if (m.role === 'assistant') {
 					this.emit({ type: 'stream', message: null });
-					// A response that did not arrive is not kept: runTurn asks the model again.
-					// Being sent to the background takes priority, because a phone freezes the
-					// connection there and the request would fail again right away.
+					// A response that did not arrive is not kept when runTurn asks the model again.
 					if (m.stopReason === 'error') {
-						if (
-							this.hiddenDuringRequest &&
-							this.backgroundResumes < MAX_BACKGROUND_RESUMES
-						) {
-							this.backgroundResumes++;
-							this.resumeWhenVisible = true;
-							break;
-						}
-						if (isStreamCut(m.errorMessage) && this.cutRetries < 1) {
-							this.cutRetries++;
-							this.retryAfterCut = true;
-							break;
-						}
-						if (
-							isContextOverflow(m, this.selection?.model.contextWindow) &&
-							this.overflowRetries < 1
-						) {
-							this.overflowRetries++;
-							this.overflowMessage = m.errorMessage ?? 'Context window exceeded';
-							this.retryAfterOverflow = true;
-							break;
-						}
-					} else this.overflowRetries = 0;
+						if (this.recovery.plan(m, this.selection?.model.contextWindow)) break;
+					} else this.recovery.arrived();
 					const entry = assistantEvent(m);
 					const toolCalls = entry.toolCalls;
 					await this.deps.sessions.append(sessionId, entry);
@@ -1982,91 +1401,4 @@ export class AgentController {
 		}
 		return null;
 	}
-}
-
-function withErrorPrefix(text: string, isError: boolean): string {
-	return isError && !text.startsWith('Error:') ? `Error: ${text}` : text;
-}
-
-/**
- * The items of a Responses API reply, in order, when it came with reasoning the server let us
- * keep: a reasoning item without its encrypted content cannot be sent back, so none of it is.
- */
-export function responsesReplay(m: AssistantMessage): ResponsesReplay | undefined {
-	if (m.api !== RESPONSES_API) return undefined;
-	const items: ResponsesReplay['items'] = [];
-	for (const c of m.content) {
-		if (c.type === 'thinking') {
-			if (!c.thinkingSignature) continue;
-			try {
-				if (
-					!(JSON.parse(c.thinkingSignature) as { encrypted_content?: unknown })
-						.encrypted_content
-				)
-					return undefined;
-			} catch {
-				return undefined;
-			}
-			items.push({ reasoning: c.thinkingSignature });
-		} else if (c.type === 'text')
-			items.push({
-				text: c.text.length,
-				...(c.textSignature ? { signature: c.textSignature } : {}),
-			});
-		else if (c.type === 'toolCall') items.push({ call: c.id });
-	}
-	if (!items.some((i) => 'reasoning' in i)) return undefined;
-	return { model: `${m.provider}/${m.model}`, items };
-}
-
-/** A response as the session log keeps it. */
-export function assistantEvent(m: AssistantMessage) {
-	const usage: StoredUsage | undefined =
-		m.usage.totalTokens > 0
-			? {
-					input: m.usage.input,
-					output: m.usage.output,
-					cacheRead: m.usage.cacheRead,
-					cacheWrite: m.usage.cacheWrite,
-					totalTokens: m.usage.totalTokens,
-				}
-			: undefined;
-	const thinking = m.content
-		.filter((c): c is Extract<typeof c, { type: 'thinking' }> => c.type === 'thinking')
-		.map((c) => c.thinking)
-		.join('');
-	const toolCalls: StoredToolCall[] = m.content
-		.filter((c): c is Extract<typeof c, { type: 'toolCall' }> => c.type === 'toolCall')
-		.map((c) => ({
-			id: c.id,
-			name: c.name,
-			args: c.arguments,
-			...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
-		}));
-	const responses = responsesReplay(m);
-	return {
-		type: 'assistant' as const,
-		content: textOf(m.content),
-		thinking: thinking || undefined,
-		toolCalls,
-		usage,
-		stopReason: m.stopReason,
-		...(responses ? { responses } : {}),
-	};
-}
-
-/**
- * A provider error as the chat shows it. `keyless` names the provider when its key on this device
- * is empty, which sends no key at all: a 401 then says why, after the server's own words.
- */
-export function rewriteProviderError(message: string, keyless?: string): string {
-	if (
-		/tool(s|_choice)?\b.*(not supported|unsupported|does not support|invalid)/i.test(message) ||
-		/does not support tools/i.test(message)
-	) {
-		return 'This endpoint rejected tool calling. Check the provider settings.';
-	}
-	if (keyless && /\b401\b/.test(message))
-		return `${message}\n\nNo API key is saved for ${keyless} on this device, so the request went without one. Add the key under Providers in Settings.`;
-	return message;
 }
