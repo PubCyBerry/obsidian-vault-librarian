@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.15.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.14.1...2.15.0) (2026-09-25)
+
+
+### Features
+
+* define sub-agents in .agents/agents in Claude Code's format ([a615cbb](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/a615cbb8c673f61ce91a856c93548e1ee34ab60e))
+* hand a Responses API model its earlier reasoning back ([f2f6868](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f2f68682686eb9cf9b585fe9be932878270694e6))
+* run sub-agents with spawn_agent, start the custom prompt from the default, fit tool results ([c73afab](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/c73afabeb2adcdbb15600bcc732eb329d865b749))
+* show sub-agents as rows on the timeline and their conversation in an agent pane ([2590cdc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/2590cdc62c4bcc07ad82ab4f4b1d794560633319))
+
+
+### Bug Fixes
+
+* replay a Responses API conversation without the reasoning its log lacks ([bddd18c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/bddd18c2b93b25e1848e6efc73e98893d9ffb99b))
+* rewind a note the shell removed, keep a long sub-agent answer's agent_id ([f3e54da](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f3e54da740355c4bc06c57c86ba61e0c510dcf2c))
+* run an agent whose model Settings lacks on the main model ([bc11c3b](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/bc11c3b915bcf4a8a56e9dc150b4a602d57b32ff))
+* say a 401 went without a key, and link a citation written with %20 ([bd9658d](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/bd9658d6f02eaee7af3ab4694107150c47d64f37))
+* show a sub-agent waiting for its start approval, and a resume under its own agent ([855d551](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/855d551885fe769ef364e9c04298a278922fe337))
+
 ## [2.14.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.14.0...2.14.1) (2026-09-25)
 
 
