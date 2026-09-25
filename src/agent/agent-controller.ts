@@ -219,6 +219,9 @@ export interface ControllerDeps {
 
 const RETRY_DELAY_MS = 1500;
 
+/** A snapshot's afterHash when the change removed the note; no content hash looks like it. */
+const REMOVED = 'removed';
+
 /**
  * Backstop for a request that keeps failing while the app is sent away and brought back. Each
  * resume needs the app to become visible again, so reaching this means the user retried by hand.
@@ -1225,9 +1228,11 @@ export class AgentController {
 	async afterMutation(toolCallId: string, path: string): Promise<void> {
 		const snapshot = this.pendingSnapshots.get(toolCallId);
 		this.pendingSnapshots.delete(toolCallId);
+		if (!snapshot || !this.session) return;
 		const file = await this.noteAt(path);
-		if (!snapshot || !file || !this.session) return;
-		const after = await file.read();
+		// Gone without having been there: nothing to take back. A note the shell's rm removed is
+		// kept, since rm skips the trash and the snapshot is then its only copy.
+		if (!file && snapshot.content === null) return;
 		const index = this.events.length ? this.events[this.events.length - 1]!.index + 1 : 0;
 		const ref =
 			snapshot.content === null
@@ -1241,10 +1246,23 @@ export class AgentController {
 		await this.deps.sessions.append(this.session.id, {
 			type: 'snapshot',
 			toolCallId,
-			path: file.path,
+			path: file?.path ?? snapshot.path,
 			ref,
-			afterHash: contentHash(after),
+			afterHash: file ? contentHash(await file.read()) : REMOVED,
 		});
+	}
+
+	/** Makes a removed note again: a definition through the adapter, any other through the vault. */
+	private async restoreRemoved(path: string, text: string): Promise<void> {
+		const { vault } = this.deps.app;
+		const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+		if (isAgentsPath(path)) {
+			if (folder && !(await vault.adapter.exists(folder))) await vault.adapter.mkdir(folder);
+			await vault.adapter.write(path, text);
+			return;
+		}
+		if (folder && !vault.getFolderByPath(folder)) await vault.createFolder(folder);
+		await vault.create(path, text);
 	}
 
 	/** `forUser` says how to go on, which only the main agent's user can do. */
@@ -1282,7 +1300,9 @@ export class AgentController {
 	private async logAgent(state: SubagentState, event: SessionEventInput): Promise<void> {
 		if (state.sessionId) await this.deps.sessions.append(state.sessionId, event);
 		const stored: SessionEvent = { t: new Date().toISOString(), ...event };
-		state.events.push({ index: state.events.length, event: stored });
+		// After the log a resume starts from, whose indexes count its meta event too.
+		const last = state.events[state.events.length - 1];
+		state.events.push({ index: last ? last.index + 1 : 0, event: stored });
 		this.emitAgent(state);
 	}
 
@@ -1849,6 +1869,34 @@ export class AgentController {
 		const unchanged: { path: string; reason: string }[] = [];
 		for (const { event } of snapshots) {
 			const file = await this.noteAt(event.path);
+			if (event.afterHash === REMOVED) {
+				if (file) {
+					unchanged.push({
+						path: event.path,
+						reason: 'A note was made at this path after the agent removed it.',
+					});
+					continue;
+				}
+				if (isBinaryPath(event.path)) {
+					unchanged.push({
+						path: event.path,
+						reason: 'Rewind does not restore binary files.',
+					});
+					continue;
+				}
+				const previous =
+					event.ref === null
+						? null
+						: await this.deps.sessions.readSnapshot(sessionId, event.ref);
+				if (previous === null) {
+					unchanged.push({ path: event.path, reason: 'The snapshot is missing.' });
+					continue;
+				}
+				await this.restoreRemoved(event.path, previous);
+				reverted.push(event.path);
+				await this.deps.sessions.deleteSnapshot(sessionId, event.ref!);
+				continue;
+			}
 			if (!file) {
 				if (event.ref !== null)
 					unchanged.push({ path: event.path, reason: 'The note no longer exists.' });

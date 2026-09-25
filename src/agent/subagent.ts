@@ -10,7 +10,7 @@ import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import type { IndexedEvent } from '../session/session-types';
-import { tool } from '../tools/registry';
+import { cutAt, tool } from '../tools/registry';
 import type { ToolCardStatus } from './agent-controller';
 import type { AgentColor, AgentDefinition } from './agent-definitions';
 import { GENERAL_AGENT } from './agent-definitions';
@@ -71,8 +71,22 @@ function catalog(agents: readonly AgentDefinition[]): string {
 }
 
 /**
+ * An answer within `budget` characters. The body gives way, so the line saying why the agent
+ * stopped and the agent_id after it stay: the controller cuts a longer result from the end, which
+ * would take the id and with it the way to resume the agent.
+ */
+export function fitAnswer(text: string, tail: string, budget: number): string {
+	if (text.length + tail.length <= budget) return text + tail;
+	const stopped = /\n\n\[[^\]\n]*\]$/.exec(text)?.[0] ?? '';
+	const note = '\n[The rest of the answer did not fit in one result.]';
+	const room = Math.max(0, budget - stopped.length - tail.length - note.length);
+	return `${cutAt(text.slice(0, text.length - stopped.length), room)}${note}${stopped}${tail}`;
+}
+
+/**
  * The tool, listing `agents`, the definitions the main agent may start. `run` does the work; it
- * returns the agent's answer and its session, or throws with why it could not answer.
+ * returns the agent's answer and its session, or throws with why it could not answer. `budget`
+ * is how long one result may be (`resultBudget`).
  */
 export function createSpawnAgentTool(
 	agents: readonly AgentDefinition[],
@@ -81,6 +95,7 @@ export function createSpawnAgentTool(
 		args: SpawnArgs,
 		signal?: AbortSignal,
 	) => Promise<{ text: string; sessionId: string | null }>,
+	budget = Number.POSITIVE_INFINITY,
 ): AgentTool {
 	return tool({
 		name: SPAWN_AGENT_NAME,
@@ -119,13 +134,9 @@ export function createSpawnAgentTool(
 			const { text, sessionId } = await run(callId, params, signal);
 			// The id closes the answer so the model can resume the agent, and goes in the log so the
 			// chat can open its conversation later.
+			const id = sessionId ? `\n\n[agent_id: ${sessionId}]` : '';
 			return {
-				content: [
-					{
-						type: 'text',
-						text: sessionId ? `${text}\n\n[agent_id: ${sessionId}]` : text,
-					},
-				],
+				content: [{ type: 'text', text: fitAnswer(text, id, budget) }],
 				details: { agentSession: sessionId },
 			};
 		},

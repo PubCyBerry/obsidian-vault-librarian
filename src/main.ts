@@ -240,8 +240,11 @@ export default class LibrarianPlugin extends Plugin {
 					// With the agents it can start listed in its description.
 					...(agents.length
 						? [
-								createSpawnAgentTool(agents, (id, args, signal) =>
-									this.controller.runSubagent(id, args, signal),
+								createSpawnAgentTool(
+									agents,
+									(id, args, signal) =>
+										this.controller.runSubagent(id, args, signal),
+									resultBudget(this.settings),
 								),
 							]
 						: []),

@@ -13,7 +13,13 @@ import {
 } from '../src/agent/agent-definitions';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { PromptManager } from '../src/agent/prompt';
-import { createSpawnAgentTool, forkMessages, Slots, SPAWN_AGENT_NAME } from '../src/agent/subagent';
+import {
+	createSpawnAgentTool,
+	fitAnswer,
+	forkMessages,
+	Slots,
+	SPAWN_AGENT_NAME,
+} from '../src/agent/subagent';
 import { ContextManager } from '../src/context/context-manager';
 import {
 	READ_ONLY_TOOL_NAMES,
@@ -628,6 +634,9 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		expect(texts(followUp)).toEqual(['How many notes?', 'There are 2 notes.', 'Name them.']);
 		const log = await h.sessions.load(id);
 		expect(log.filter((e) => e.type === 'user').length).toBe(2);
+		// The resumed run goes on after its log: no two events share an index.
+		const indexes = [...h.controller.agents.values()].at(-1)!.events.map((e) => e.index);
+		expect(new Set(indexes).size).toBe(indexes.length);
 	});
 
 	it('resume refuses an agent of another conversation or one still at work', async () => {
@@ -731,6 +740,38 @@ describe('sub-agent parts', () => {
 		expect(findModel(options, 'nvidia/big:free')).toBe(options[0]);
 		expect(findModel(options, 'small one')).toBe(options[1]);
 		expect(findModel(options, 'missing')).toBeUndefined();
+	});
+
+	it('fitAnswer cuts the body of a long answer and keeps why it stopped and its agent_id', () => {
+		const id = '\n\n[agent_id: s1]';
+		expect(fitAnswer('short', id, 100)).toBe(`short${id}`);
+		const long = `${'x'.repeat(500)}\n\n[Stopped after 3 tool iterations]`;
+		const fitted = fitAnswer(long, id, 200);
+		expect(fitted.length).toBeLessThanOrEqual(200);
+		expect(fitted.endsWith(`\n\n[Stopped after 3 tool iterations]${id}`)).toBe(true);
+		expect(fitted).toContain('[The rest of the answer did not fit in one result.]');
+	});
+
+	it('rewind puts back a note and a definition that a change removed', async () => {
+		const def = '---\nname: x\ndescription: X.\n---\n';
+		const h = harness({ main: [{ text: 'ok' }] }, {}, {}, { '.agents/agents/x.md': def });
+		await h.controller.send('go');
+		const user = h.controller.events.find((e) => e.event.type === 'user')!;
+		// What the shell's rm does: the gate's snapshot, the removal, the snapshot closed.
+		for (const [id, path] of [
+			['rm1', 'notes/b.md'],
+			['rm2', '.agents/agents/x.md'],
+		] as const) {
+			await h.controller.beforeMutation(id, path);
+			await h.app.vault.adapter.remove(path);
+			await h.controller.afterMutation(id, path);
+		}
+		await h.controller.reloadEvents();
+		expect(h.controller.previewRewind(user.index)!.changes).toHaveLength(2);
+		const rewound = await h.controller.rewind(user.index);
+		expect(rewound!.reverted.sort()).toEqual(['.agents/agents/x.md', 'notes/b.md']);
+		expect(h.app.vault.text('notes/b.md')).toBe('gamma');
+		expect(h.app.vault.text('.agents/agents/x.md')).toBe(def);
 	});
 
 	it('a row from the log: waiting for approval, a resume under its own agent, the answer plain', () => {
