@@ -21,6 +21,13 @@ leaves the `# Skills` section, the `skill_search` description and the calls in `
 and `skill_search` on its own, and leaves the calls of each in `window.__batch`. Set `window.__batchCfg` first
 (the script's header lists the fields); `deferBash: true` hides `bash` behind `tool_search`.
 
+`scripted-provider.mjs` is an OpenAI-compatible server that streams scripted responses slowly, so the chat's
+streaming can be watched without a model or a key: `node tests/e2e/scripted-provider.mjs` listens on
+`http://127.0.0.1:18765/v1`. `streaming.js` adds it as the `Scripted` provider (the OpenAI key slot, left empty),
+then `__streaming.start('note')` measures the note chip and the answer drawn as Markdown while they stream, and
+`__streaming.start('agents')` measures the agent pane's spinner while a sub-agent streams. Results land in
+`window.__streaming.results`; put the plugin's settings file back afterwards.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:
