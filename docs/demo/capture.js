@@ -526,7 +526,10 @@
 		async mobile({ record = false } = {}) {
 			win.setAlwaysOnTop(true, 'screen-saver');
 			win.show();
-			await plugin().activateView();
+			// On a phone the chat fills the main area, the way it opens from the ribbon there.
+			app.workspace.leftSplit.collapse();
+			app.workspace.rightSplit.collapse();
+			await plugin().activateView('tab');
 			await sleep(800);
 			await plugin().controller.newSession();
 			$('.librarian-input', chat()).value = '';

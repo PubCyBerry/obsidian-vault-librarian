@@ -20,9 +20,9 @@ An agent that lives in your Obsidian vault. Ask in plain language: it searches y
 
 ### Answers from the notes it read
 
-There is no index to build or keep in sync. The agent looks around your vault the way a coding agent looks around a repository: `find` and `grep` to locate notes, `read` to open them, as many times as it needs. It answers from what it actually read and says which notes and lines it used. A citation written as a path and lines, such as `Meetings/2026-09-15 Design review.md:11-15`, opens the note at those lines, and a `[[wikilink]]` in an answer opens in a new tab.
+There is no index to build or keep in sync. The agent looks around your vault the way a coding agent looks around a repository: `find` and `grep` to locate notes, `read` to open them, as many times as it needs. It answers from what it actually read and cites the lines as links, such as `Meetings/2026-09-15 Design review.md:11-18`. Select one to open the note at those lines. A `[[wikilink]]` in an answer opens in a new tab.
 
-<img src="docs/media/answer.png" width="470" alt="An answer in the chat that sums up a design decision and the open items, citing the notes and lines it read">
+<img src="docs/media/answer.png" width="470" alt="An answer in the chat that sums up a design decision and the open items, with links to the lines of the meeting and project notes it read">
 
 ### Every step in view
 
@@ -52,7 +52,7 @@ The same plugin runs on iPhone, iPad and Android, and the phone talks to your mo
 
 `bash` runs a shell inside Obsidian, not on your computer. The vault is its working folder, so `grep`, `sed`, `awk`, `jq` and the rest work on your notes. `curl` fetches any URL through Obsidian, with no CORS setup and the same on phones, and `obsidian` runs any Obsidian CLI command. Every `bash` call asks first by default, and the card shows the whole command.
 
-<img src="docs/media/approve-bash.png" width="470" alt="An approval card for a bash command that asks the GitHub API for the latest Obsidian release with curl and picks fields with jq">
+<img src="docs/media/shell.png" width="470" alt="A bash step that asked the GitHub API for the latest Obsidian release with curl, picked fields with jq, and shows the command and its output">
 
 ### Your rules
 
