@@ -103,7 +103,7 @@ body {
 .librarian-messages {
 	flex: 1 1 auto;
 	overflow-y: auto;
-	padding: 0 var(--size-4-3);
+	padding: var(--size-4-3) var(--size-4-3) 0;
 	font-size: var(--font-text-size);
 	line-height: var(--line-height-normal);
 	display: flex;
@@ -848,9 +848,21 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	}
 }
 
+/* Nothing moves in the reveal, so reduced motion keeps it as a plain fade without the blur. */
 @media (prefers-reduced-motion: reduce) {
 	.librarian-reveal {
-		animation: none;
+		animation-name: librarian-fade;
+		animation-duration: 200ms;
+	}
+}
+
+@keyframes librarian-fade {
+	from {
+		opacity: 0;
+	}
+
+	to {
+		opacity: 1;
 	}
 }
 
@@ -1320,7 +1332,7 @@ body.is-mobile
    body's grid row between 0fr and 1fr, so no height has to be measured. */
 
 .librarian-work {
-	--librarian-chip-height: 24px;
+	--librarian-chip-height: 26px;
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
@@ -1391,7 +1403,7 @@ body.is-mobile
 .librarian-work-body {
 	display: grid;
 	grid-template-rows: 1fr;
-	padding: var(--size-2-2) 0;
+	padding: var(--size-4-2) 0;
 	opacity: 1;
 	transition:
 		grid-template-rows 240ms ease,
@@ -1415,10 +1427,10 @@ body.is-mobile
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-2-2);
+	gap: var(--size-4-2);
 	min-height: 0;
 	overflow: hidden;
-	padding-left: 18px;
+	padding-left: 22px;
 }
 
 .librarian-timeline::before {
@@ -1435,7 +1447,7 @@ body.is-mobile
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--size-2-2);
+	gap: var(--size-4-2);
 	min-width: 0;
 	min-height: var(--librarian-chip-height);
 }
@@ -1443,7 +1455,7 @@ body.is-mobile
 .librarian-step::before {
 	content: "";
 	position: absolute;
-	left: -16px;
+	left: -20px;
 	top: calc(var(--librarian-chip-height) / 2 - 5px);
 	width: 10px;
 	height: 10px;
@@ -1483,11 +1495,11 @@ body.is-mobile
 .librarian .librarian-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: var(--size-2-1);
+	gap: var(--size-2-2);
 	max-width: 100%;
 	min-width: 0;
 	height: var(--librarian-chip-height);
-	padding: 0 var(--size-2-3);
+	padding: 0 var(--size-4-2);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: calc(var(--librarian-chip-height) / 2);
 	background: var(--background-primary);

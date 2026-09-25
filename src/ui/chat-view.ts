@@ -1682,12 +1682,22 @@ export class LibrarianView extends ItemView {
 			live.thinking = live.timeline.createDiv({
 				cls: 'librarian-step is-thinking librarian-step-new',
 			});
-			this.stepButton(live.thinking, 'thinking:live', 'brain', 'Thinking', () => ({
-				icon: 'brain',
-				title: 'Thinking',
-				live: this.live?.thinkingLive === true,
-				text: this.live?.thinkingText ?? '',
-			}));
+			const chip = this.stepButton(
+				live.thinking,
+				'thinking:live',
+				'brain',
+				'Thinking',
+				() => ({
+					icon: 'brain',
+					title: 'Thinking',
+					live: this.live?.thinkingLive === true,
+					text: this.live?.thinkingText ?? '',
+				}),
+			);
+			// Turns while the thinking grows, as a running call's chip does, and goes when it stops.
+			chip.createSpan({ cls: 'librarian-chip-mark' }).createSpan({
+				cls: 'librarian-spinner',
+			});
 		}
 		live.thinkingText = thinking;
 		const calls = message.content.filter((c) => c.type === 'toolCall');
@@ -1736,6 +1746,9 @@ export class LibrarianView extends ItemView {
 			live.text = live.answer.createDiv({ cls: 'librarian-markdown librarian-stream-text' });
 		if (live.text) live.shownText = appendStreamDelta(live.text, live.shownText, text);
 		live.thinkingLive = thinking.length > 0 && !text && calls.length === 0;
+		live.thinking
+			?.querySelector('.librarian-chip-mark')
+			?.toggleClass('is-hidden', !live.thinkingLive);
 		// An open popover on a step still streaming shows what has arrived since it opened.
 		const open = this.popover.openKey;
 		if (

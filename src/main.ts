@@ -269,6 +269,11 @@ export default class LibrarianPlugin extends Plugin {
 			name: 'Open chat in main area',
 			callback: () => void this.activateView('tab'),
 		});
+		this.addCommand({
+			id: 'open-in-sidebar',
+			name: 'Open chat in right sidebar',
+			callback: () => void this.activateView('sidebar'),
+		});
 		const settingTab = new LibrarianSettingTab(this.app, this);
 		this.settingTab = settingTab;
 		this.addSettingTab(settingTab);
