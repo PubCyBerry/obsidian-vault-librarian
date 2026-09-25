@@ -123,8 +123,6 @@ interface Stage {
 	asker?: string;
 	/** The chat's own conversation offers rewinding to each of its messages. */
 	rewind?: (index: number) => void;
-	/** The answer of the running run is still arriving: plain text until it is whole. */
-	plainAnswer?: boolean;
 }
 
 /**
@@ -289,6 +287,10 @@ export class LibrarianView extends ItemView {
 	private agentFolds = newFolds();
 	/** A finished run read back from its session file, for a pane opened after the run. */
 	private agentStored: { data: AgentRowData; events: IndexedEvent[] } | null = null;
+	/** Where the run's response on its way goes, as the chat's `live`. */
+	private agentLive: Live | null = null;
+	/** What the pane was last drawn from: it is drawn again only when that moved. */
+	private agentDrawn: string | null = null;
 	private agentTimer: number | null = null;
 	/** The chat's own conversation changed while the pane covered it: drawn again on the way back. */
 	private mainDirty = false;
@@ -1543,14 +1545,10 @@ export class LibrarianView extends ItemView {
 			const answer = stage.el.createDiv({
 				cls: 'librarian-msg librarian-msg-assistant',
 			});
-			// An answer still arriving in the agent pane is text until it is whole: drawn as
-			// Markdown each time, it would blink while the renderer catches up.
-			if (running && stage.plainAnswer)
-				answer.createDiv({ cls: 'librarian-stream-text', text: view.answer });
-			else void this.renderMarkdown(answer.createDiv(), view.answer);
+			void this.renderMarkdown(answer.createDiv(), view.answer);
 		}
-		if (running && main) {
-			this.live = {
+		if (running) {
+			const live: Live = {
 				block,
 				timeline,
 				response: null,
@@ -1561,6 +1559,8 @@ export class LibrarianView extends ItemView {
 				tools: null,
 				calls: [],
 			};
+			if (main) this.live = live;
+			else this.agentLive = live;
 		}
 		for (const message of view.errors) this.renderStoredError(message, stage.el);
 	}
@@ -1803,14 +1803,16 @@ export class LibrarianView extends ItemView {
 	/**
 	 * The response on its way: its thinking, its note and its tool calls grow the running run's
 	 * timeline in the order it writes them. Its text is a note until it reads as the answer
-	 * (streamText).
+	 * (streamText). `agent` is a sub-agent's response in the agent pane, whose calls its own state
+	 * knows.
 	 */
-	private renderStream(message: AssistantMessage) {
-		const live = this.live;
+	private renderStream(message: AssistantMessage, agent?: SubagentState) {
+		const live = agent ? this.agentLive : this.live;
 		if (!live) return;
 		// Read again when a popover draws: the run may have been drawn anew since.
-		const current = () => this.live;
-		const statusOf = (id: string) => this.controller.toolStatusOf(id);
+		const current = () => (agent ? this.agentLive : this.live);
+		const statusOf = (id: string) =>
+			agent ? agent.toolStatus.get(id) : this.controller.toolStatusOf(id);
 		// Another response, such as one asked again after it failed: what the last one left goes.
 		if (live.response !== null && live.response !== message.timestamp) {
 			live.thinking?.remove();
@@ -1860,7 +1862,10 @@ export class LibrarianView extends ItemView {
 		const answer = looksLikeAnswer(text);
 		if (text.trim().length >= 4 && (!live.text || (answer && !live.text.answer))) {
 			live.text?.el.remove();
-			live.text = this.streamText(live, answer, () => this.scrollToBottom());
+			live.text = this.streamText(live, answer, () => {
+				if (!agent) this.scrollToBottom();
+				else if (this.followAgentBottom) this.scrollAgentToBottom();
+			});
 		}
 		live.text?.markdown.set(text);
 		const calls = message.content.filter((c) => c.type === 'toolCall');
@@ -1949,7 +1954,8 @@ export class LibrarianView extends ItemView {
 				live.tools?.querySelector(`[data-pop-key="${CSS.escape(open)}"]`))
 		)
 			this.popover.refresh();
-		this.scrollToBottom();
+		// The agent pane follows its own end once it has drawn (renderAgentPane).
+		if (!agent) this.scrollToBottom();
 	}
 
 	private updateToolStatus(toolCallId: string, status: ToolCardStatus) {
@@ -2253,6 +2259,8 @@ export class LibrarianView extends ItemView {
 		this.agentEl.removeClass('is-hidden');
 		this.inputEl.setAttr('placeholder', 'Ask the main agent');
 		this.followAgentBottom = true;
+		// Drawn whole: a redraw while the file was read may have drawn the pane it left.
+		this.agentDrawn = null;
 		this.renderAgentPane();
 		this.agentHeadEl.querySelector<HTMLElement>('.librarian-agent-back')?.focus();
 	}
@@ -2262,6 +2270,8 @@ export class LibrarianView extends ItemView {
 		if (!this.agentCall) return;
 		this.agentCall = null;
 		this.agentStored = null;
+		this.agentLive = null;
+		this.agentDrawn = null;
 		if (this.agentTimer !== null) window.clearTimeout(this.agentTimer);
 		this.agentTimer = null;
 		this.popover.close();
@@ -2324,59 +2334,43 @@ export class LibrarianView extends ItemView {
 			state.setText(AGENT_STATUS_LABELS[data.status]);
 		}
 		const running = live ? live.status === 'waiting' || live.status === 'running' : false;
-		let events = live ? live.events : (this.agentStored?.events ?? []);
-		// The response on its way is drawn as if it were in the log, its answer as plain text.
-		const stream = live?.stream;
-		if (stream) {
-			const last = events[events.length - 1]?.index ?? 0;
-			const text = stream.content
-				.filter((c) => c.type === 'text')
-				.map((c) => (c as { text: string }).text)
-				.join('');
-			const thinking = stream.content
-				.filter((c) => c.type === 'thinking')
-				.map((c) => (c as { thinking: string }).thinking)
-				.join('');
-			const toolCalls = stream.content
-				.filter((c) => c.type === 'toolCall')
-				.map((c) => ({ id: c.id, name: c.name, args: c.arguments }));
-			events = [
-				...events,
-				{
-					index: last + 1,
-					event: {
-						t: new Date().toISOString(),
-						type: 'assistant',
-						content: text,
-						...(thinking ? { thinking } : {}),
-						toolCalls,
-					},
-				},
-			];
-		}
+		const events = live ? live.events : (this.agentStored?.events ?? []);
 		const body = this.agentBodyEl;
 		const scroll = body.scrollTop;
-		body.empty();
-		this.approvalEl = null;
-		this.popFills = new Map();
-		if (!events.length)
-			body.createDiv({
-				cls: 'librarian-sessions-empty',
-				text: running ? 'Waiting for a slot.' : 'Its conversation was not saved.',
-			});
-		this.drawRuns(
-			{
-				el: body,
-				running,
-				status: (id) => live?.toolStatus.get(id),
-				folds: this.agentFolds,
-				asker: 'Main agent',
-				plainAnswer: Boolean(stream),
-			},
-			events,
-		);
-		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
-		this.popover.reopen((key) => this.popFills.get(key) ?? null);
+		// Drawn again only when its log, its state or a call's state moved. The response on its way
+		// grows in place, as the chat's does: drawn anew each time it would restart the spinner's
+		// turn and the open popover's entrance, and lose a selection (LIB-TEST-142).
+		const drawn = `${events.length}:${running}:${[...(live?.toolStatus.values() ?? [])].join()}`;
+		if (drawn !== this.agentDrawn) {
+			this.agentDrawn = drawn;
+			body.empty();
+			this.agentLive = null;
+			this.approvalEl = null;
+			this.popFills = new Map();
+			if (!events.length)
+				body.createDiv({
+					cls: 'librarian-sessions-empty',
+					text: running ? 'Waiting for a slot.' : 'Its conversation was not saved.',
+				});
+			this.drawRuns(
+				{
+					el: body,
+					running,
+					status: (id) => live?.toolStatus.get(id),
+					folds: this.agentFolds,
+					asker: 'Main agent',
+				},
+				events,
+			);
+			if (live?.stream) this.renderStream(live.stream, live);
+			if (this.controller.pendingApproval)
+				this.renderApproval(this.controller.pendingApproval);
+			this.popover.reopen(
+				(key) =>
+					this.popFills.get(key) ??
+					(key === 'thinking:live' ? this.lastThinking() : null),
+			);
+		} else if (live?.stream) this.renderStream(live.stream, live);
 		if (this.followAgentBottom) this.scrollAgentToBottom();
 		else body.scrollTop = scroll;
 	}

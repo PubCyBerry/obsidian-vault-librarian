@@ -270,10 +270,6 @@ body {
 	margin-top: 0;
 }
 
-.librarian-stream-text {
-	white-space: pre-wrap;
-}
-
 .librarian-source {
 	cursor: pointer;
 	color: var(--link-color);
