@@ -1,6 +1,8 @@
+import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
+import { assistantEvent } from '../src/agent/agent-controller';
 import {
 	ContextManager,
 	cacheHitRatio,
@@ -335,6 +337,118 @@ describe('earlier thinking on the Responses API (LIB-TEST-249)', () => {
 		expect(call).toMatchObject({ call_id: 'call_1', id: undefined });
 		expect(output).toMatchObject({ call_id: 'call_1' });
 		expect(items.some((i) => i.type === 'reasoning')).toBe(false);
+	});
+
+	describe('the reasoning of the model that wrote it', () => {
+		const responses = toPiModel(provider, { ...model, api: RESPONSES_API });
+		const item = (id: string, encrypted: string | null = 'enc') =>
+			JSON.stringify({
+				type: 'reasoning',
+				id,
+				summary: [],
+				...(encrypted ? { encrypted_content: encrypted } : {}),
+			});
+		/** A reply as Pi hands it over: reasoning, then a call, as the Responses API sent them. */
+		const reply = (content: AssistantMessage['content']): AssistantMessage => ({
+			role: 'assistant',
+			content,
+			api: responses.api,
+			provider: responses.provider,
+			model: responses.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: 'stop',
+			timestamp: 0,
+		});
+		const first = assistantEvent(
+			reply([
+				{ type: 'thinking', thinking: 'Search first.', thinkingSignature: item('rs_1') },
+				{
+					type: 'toolCall',
+					id: 'call_1|fc_1',
+					name: 'grep',
+					arguments: { query: 'x' },
+				},
+			]),
+		);
+		const second = assistantEvent(
+			reply([
+				{ type: 'thinking', thinking: 'Now answer.', thinkingSignature: item('rs_2') },
+				{
+					type: 'text',
+					text: 'Found it.',
+					textSignature: JSON.stringify({ v: 1, id: 'msg_2', phase: 'final_answer' }),
+				},
+			]),
+		);
+		const log = [
+			ev('user', { content: 'find x' }),
+			ev('assistant', first),
+			ev('tool_result', {
+				toolCallId: 'call_1|fc_1',
+				name: 'grep',
+				ok: true,
+				content: 'a.md:1: x',
+				truncated: false,
+			}),
+			ev('assistant', second),
+			ev('user', { content: 'and then?' }),
+		].map((event, index) => ({ event, index }));
+
+		it('is kept in the log with the order of the items', () => {
+			expect(first.responses).toEqual({
+				model: `${responses.provider}/${responses.id}`,
+				items: [{ reasoning: item('rs_1') }, { call: 'call_1|fc_1' }],
+			});
+			expect(second.responses!.items).toEqual([
+				{ reasoning: item('rs_2') },
+				{
+					text: 9,
+					signature: JSON.stringify({ v: 1, id: 'msg_2', phase: 'final_answer' }),
+				},
+			]);
+		});
+
+		it('goes back to that model in order, its calls paired with it', async () => {
+			const { cm } = manager();
+			const messages = await cm.project({ model: responses, events: log });
+			const items = convertResponsesMessages(responses, { messages }, new Set(['openai']));
+			expect(items.map((i) => ('type' in i ? i.type : i.role))).toEqual([
+				'user',
+				'reasoning',
+				'function_call',
+				'function_call_output',
+				'reasoning',
+				'message',
+				'user',
+			]);
+			expect(items[1]).toMatchObject({ id: 'rs_1', encrypted_content: 'enc' });
+			expect(items[2]).toMatchObject({ id: 'fc_1', call_id: 'call_1' });
+			expect(items[3]).toMatchObject({ call_id: 'call_1' });
+			expect(items[5]).toMatchObject({ id: 'msg_2', phase: 'final_answer' });
+		});
+
+		it('stays out for another model, and a reasoning item without its content is not kept', async () => {
+			const { cm } = manager();
+			const other = toPiModel(provider, { ...model, id: 'other', api: RESPONSES_API });
+			const messages = await cm.project({ model: other, events: log });
+			const items = convertResponsesMessages(other, { messages }, new Set(['openai']));
+			expect(items.some((i) => 'type' in i && i.type === 'reasoning')).toBe(false);
+			expect(items.find((i) => 'type' in i && i.type === 'function_call')).toMatchObject({
+				id: undefined,
+				call_id: 'call_1',
+			});
+			const bare = assistantEvent(
+				reply([{ type: 'thinking', thinking: 'x', thinkingSignature: item('rs_3', null) }]),
+			);
+			expect(bare.responses).toBeUndefined();
+		});
 	});
 });
 

@@ -27,6 +27,7 @@ import type { TransportRouter } from '../provider/transport';
 import { contentHash, replay, type SessionManager } from '../session/session-manager';
 import type {
 	IndexedEvent,
+	ResponsesReplay,
 	SessionEvent,
 	SessionEventInput,
 	SessionMetadata,
@@ -36,7 +37,7 @@ import type {
 import type { SecretStore } from '../storage/secret-store';
 import { isAgentsPath, isBinaryPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
-import type { LibrarianSettings, ThinkingLevel } from '../types';
+import { type LibrarianSettings, RESPONSES_API, type ThinkingLevel } from '../types';
 import {
 	appIsHidden,
 	noteVisibility,
@@ -1971,8 +1972,39 @@ function withErrorPrefix(text: string, isError: boolean): string {
 	return isError && !text.startsWith('Error:') ? `Error: ${text}` : text;
 }
 
+/**
+ * The items of a Responses API reply, in order, when it came with reasoning the server let us
+ * keep: a reasoning item without its encrypted content cannot be sent back, so none of it is.
+ */
+export function responsesReplay(m: AssistantMessage): ResponsesReplay | undefined {
+	if (m.api !== RESPONSES_API) return undefined;
+	const items: ResponsesReplay['items'] = [];
+	for (const c of m.content) {
+		if (c.type === 'thinking') {
+			if (!c.thinkingSignature) continue;
+			try {
+				if (
+					!(JSON.parse(c.thinkingSignature) as { encrypted_content?: unknown })
+						.encrypted_content
+				)
+					return undefined;
+			} catch {
+				return undefined;
+			}
+			items.push({ reasoning: c.thinkingSignature });
+		} else if (c.type === 'text')
+			items.push({
+				text: c.text.length,
+				...(c.textSignature ? { signature: c.textSignature } : {}),
+			});
+		else if (c.type === 'toolCall') items.push({ call: c.id });
+	}
+	if (!items.some((i) => 'reasoning' in i)) return undefined;
+	return { model: `${m.provider}/${m.model}`, items };
+}
+
 /** A response as the session log keeps it. */
-function assistantEvent(m: AssistantMessage) {
+export function assistantEvent(m: AssistantMessage) {
 	const usage: StoredUsage | undefined =
 		m.usage.totalTokens > 0
 			? {
@@ -1995,6 +2027,7 @@ function assistantEvent(m: AssistantMessage) {
 			args: c.arguments,
 			...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
 		}));
+	const responses = responsesReplay(m);
 	return {
 		type: 'assistant' as const,
 		content: textOf(m.content),
@@ -2002,6 +2035,7 @@ function assistantEvent(m: AssistantMessage) {
 		toolCalls,
 		usage,
 		stopReason: m.stopReason,
+		...(responses ? { responses } : {}),
 	};
 }
 

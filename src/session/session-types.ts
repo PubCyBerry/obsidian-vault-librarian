@@ -31,6 +31,26 @@ export interface StoredToolCall {
 	thoughtSignature?: string;
 }
 
+/**
+ * A Responses API reply as the server gave it (LIB-FEAT-247): its reasoning items and where its
+ * text and calls stood among them, so the model that wrote it can be handed its reasoning back.
+ * The server keeps nothing between requests, and GPT-5.6 models go on from earlier reasoning.
+ */
+export interface ResponsesReplay {
+	/** `<provider id>/<model id>`; another model gets the reply without the reasoning. */
+	model: string;
+	items: ResponsesItem[];
+}
+
+/**
+ * One item of such a reply: a reasoning item as JSON, its encrypted content included; a text part
+ * by its length within `content`, with its message id and phase; or a tool call by its id.
+ */
+export type ResponsesItem =
+	| { reasoning: string }
+	| { text: number; signature?: string }
+	| { call: string };
+
 export interface StoredUsage {
 	input: number;
 	output: number;
@@ -51,6 +71,7 @@ export type SessionEvent =
 			toolCalls: StoredToolCall[];
 			usage?: StoredUsage;
 			stopReason?: string;
+			responses?: ResponsesReplay;
 	  }
 	| {
 			t: string;

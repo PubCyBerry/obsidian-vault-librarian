@@ -18,7 +18,12 @@ import {
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type { PiModel } from '../provider/provider-manager';
-import type { IndexedEvent, SessionEvent, StoredUsage } from '../session/session-types';
+import type {
+	IndexedEvent,
+	SessionEvent,
+	StoredToolCall,
+	StoredUsage,
+} from '../session/session-types';
 import { type ContextSettings, type ModelConfig, RESPONSES_API } from '../types';
 
 export interface ContextUsage {
@@ -154,11 +159,59 @@ export interface ProjectionInput {
 }
 
 /**
- * A call's id as the log replays it. Pi names a Responses API call `call_id|fc_id`, and OpenAI
- * refuses an fc_ item that comes without the reasoning item it was paired with, which the log
- * does not keep. Without the item id the call goes back as one from another model does.
+ * A call's id as the log replays it without its reasoning. Pi names a Responses API call
+ * `call_id|fc_id`, and OpenAI refuses an fc_ item that comes without the reasoning item it was
+ * paired with. Without the item id the call goes back as one from another model does.
  */
 const replayedCallId = (id: string): string => id.split('|')[0]!;
+
+function callBlock(call: StoredToolCall, id: string): ToolCall {
+	return {
+		type: 'toolCall',
+		id,
+		name: call.name,
+		arguments: call.args as ToolCall['arguments'],
+		...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
+	};
+}
+
+/**
+ * A reply the same Responses API model wrote, as it came: reasoning items, text parts and calls
+ * in their order, with the call ids the reasoning is paired with (LIB-FEAT-247). Null for any
+ * other reply or model, which gets the reply without the reasoning.
+ */
+function asWritten(
+	event: Extract<SessionEvent, { type: 'assistant' }>,
+	model: PiModel,
+): AssistantMessage['content'] | null {
+	const r = event.responses;
+	if (!r || model.api !== RESPONSES_API || r.model !== `${model.provider}/${model.id}`)
+		return null;
+	const content: AssistantMessage['content'] = [];
+	const calls = new Map(event.toolCalls.map((c) => [c.id, c]));
+	let at = 0;
+	for (const item of r.items) {
+		if ('reasoning' in item)
+			content.push({ type: 'thinking', thinking: '', thinkingSignature: item.reasoning });
+		else if ('text' in item) {
+			content.push({
+				type: 'text',
+				text: event.content.slice(at, at + item.text),
+				...(item.signature ? { textSignature: item.signature } : {}),
+			});
+			at += item.text;
+		} else {
+			const call = calls.get(item.call);
+			if (!call) continue;
+			calls.delete(item.call);
+			content.push(callBlock(call, call.id));
+		}
+	}
+	// What the items do not place goes last, so no text is lost and no call its result.
+	if (at < event.content.length) content.push({ type: 'text', text: event.content.slice(at) });
+	for (const call of calls.values()) content.push(callBlock(call, call.id));
+	return content;
+}
 
 export class ContextManager {
 	constructor(
@@ -209,6 +262,9 @@ export class ContextManager {
 			});
 		}
 		const pendingCalls = new Map<string, string>();
+		// Calls replayed with their full id, whose results must name them the same way.
+		const kept = new Set<string>();
+		const resultId = (id: string) => (kept.has(id) ? id : replayedCallId(id));
 		for (const { event } of events) {
 			const ts = Date.parse(event.t) || Date.now();
 			if (event.type === 'user') {
@@ -227,30 +283,26 @@ export class ContextManager {
 				};
 				messages.push(msg);
 			} else if (event.type === 'assistant') {
-				const content: AssistantMessage['content'] = [];
-				// Chat Completions takes the text back under reasoning_content. The Responses API
-				// wants its own reasoning item as the signature, which the log does not keep, and
-				// Pi parses whatever is there as JSON: a turn with thinking broke every request
-				// after it. It does without the earlier reasoning instead (see replayedCallId).
-				if (event.thinking && input.model.api !== RESPONSES_API)
-					content.push({
-						type: 'thinking',
-						thinking: event.thinking,
-						thinkingSignature: 'reasoning_content',
-					});
-				if (event.content) content.push({ type: 'text', text: event.content });
+				const written = asWritten(event, input.model);
+				const content: AssistantMessage['content'] = written ?? [];
+				if (!written) {
+					// Chat Completions takes the text back under reasoning_content. The Responses
+					// API wants its own reasoning item as the signature, which only the model that
+					// wrote it gets (asWritten); Pi parses whatever is there as JSON, so anything
+					// else broke every request after a turn with thinking.
+					if (event.thinking && input.model.api !== RESPONSES_API)
+						content.push({
+							type: 'thinking',
+							thinking: event.thinking,
+							thinkingSignature: 'reasoning_content',
+						});
+					if (event.content) content.push({ type: 'text', text: event.content });
+					for (const call of event.toolCalls)
+						content.push(callBlock(call, replayedCallId(call.id)));
+				}
 				for (const call of event.toolCalls) {
-					const tc: ToolCall = {
-						type: 'toolCall',
-						id: replayedCallId(call.id),
-						name: call.name,
-						arguments: call.args as ToolCall['arguments'],
-						...(call.thoughtSignature
-							? { thoughtSignature: call.thoughtSignature }
-							: {}),
-					};
-					content.push(tc);
 					pendingCalls.set(call.id, call.name);
+					if (written) kept.add(call.id);
 				}
 				messages.push({
 					role: 'assistant',
@@ -267,7 +319,7 @@ export class ContextManager {
 				pendingCalls.delete(event.toolCallId);
 				const msg: ToolResultMessage = {
 					role: 'toolResult',
-					toolCallId: replayedCallId(event.toolCallId),
+					toolCallId: resultId(event.toolCallId),
 					toolName: event.name,
 					content: [{ type: 'text', text: event.content }],
 					isError: !event.ok,
@@ -280,7 +332,7 @@ export class ContextManager {
 		for (const [id, name] of pendingCalls) {
 			messages.push({
 				role: 'toolResult',
-				toolCallId: replayedCallId(id),
+				toolCallId: resultId(id),
 				toolName: name,
 				content: [{ type: 'text', text: 'Approval expired' }],
 				isError: true,
