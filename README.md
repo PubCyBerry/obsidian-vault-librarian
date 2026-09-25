@@ -3,7 +3,7 @@
 An agent that lives in your Obsidian vault. Ask in plain language: it searches your notes with small tools, reads what it finds, answers with the lines it used, and changes a note only after you approve. It works the same on desktop and on your phone, with any model that speaks the OpenAI API: a local server, a company gateway or a commercial API.
 
 <p align="center">
-  <img src="docs/media/tour.gif" width="900" alt="Asking what was decided about a project: the agent searches the meeting notes, reads three of them and answers with links to the lines it used">
+  <img src="docs/media/tour.gif" width="900" alt="Asking what was decided about a project: the agent searches the vault, reads the notes it found and answers with links to the lines it used">
 </p>
 
 <p align="center">

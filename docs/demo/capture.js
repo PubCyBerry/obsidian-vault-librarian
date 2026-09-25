@@ -526,7 +526,8 @@
 		async mobile({ record = false } = {}) {
 			win.setAlwaysOnTop(true, 'screen-saver');
 			win.show();
-			// On a phone the chat fills the main area, the way it opens from the ribbon there.
+			// In the main area the chat fills a phone's screen, as on a real phone; in the right drawer
+			// it would sit beside a dimmed strip.
 			app.workspace.leftSplit.collapse();
 			app.workspace.rightSplit.collapse();
 			await plugin().activateView('tab');
