@@ -1,54 +1,117 @@
 # Vault Librarian
 
-Vault Librarian is an agent that lives inside Obsidian. You ask in plain language, it searches your vault with small tools (`ls`, `find`, `grep`, `read`), reads what it finds, and, with your approval, creates or edits notes. It works the same on desktop and on the phone, and it talks to any OpenAI-compatible endpoint you point it at: a local server, a company gateway, or a commercial API.
+An agent that lives in your Obsidian vault. Ask in plain language: it searches your notes with small tools, reads what it finds, answers with the lines it used, and changes a note only after you approve. It works the same on desktop and on your phone, with any model that speaks the OpenAI API: a local server, a company gateway or a commercial API.
 
-There is no index to build. The agent explores the vault the way a coding agent explores a repository, so nothing has to be synced or rebuilt when notes change.
+<p align="center">
+  <img src="docs/media/tour.gif" width="900" alt="Asking what was decided about a project: the agent searches the meeting notes, reads three of them and answers with links to the lines it used">
+</p>
 
-## What it does
+<p align="center">
+  <a href="docs/media/tour.mp4"><b>Watch the full tour</b></a> · <a href="#get-started"><b>Get started</b></a>
+</p>
 
-- **Agentic search.** The model calls `find`, `grep`, `ls` and `read` as many times as it needs, then answers from what it actually read. Sources are shown as `path/to/note.md:12-20` and clicking one opens the note at those lines. A `[[wikilink]]` in an answer opens its note in a new tab.
-- **Create and edit notes.** `write` creates a note (or replaces one only when told to). `edit` replaces exact text and refuses when the text is ambiguous or has changed since it was read.
-- **Permissions per tool.** On a new install the tools that only read run without asking, and in parallel: `ls`, `find`, `grep`, `read`, the tool and skill searches, listing and reading the WebDAV storage, and the MCP tools that only read. An MCP tool counts as reading when its server marks it read-only, or, with no mark, when its name starts with a verb such as `search`, `get`, `list` or `fetch` and names no change. Everything that changes notes or files, runs a command or calls another MCP tool asks first. You can set each tool, or a whole group, to **Always allow**, **Ask first** or **Blocked**. Blocked tools are removed from the model's tool list and refused again at execution time. Changing the vault root `AGENTS.md` always asks.
-- **A short tool list.** The model sees `ls`, `find`, `grep`, `read`, `write`, `edit` and `bash` upfront. Other tools (the active note, WebDAV and MCP tools) are named in the `tool_search` description and loaded when a task needs them, so their schemas stay out of every request. **Execution and listing** under Tool permissions shows how each tool runs and whether it is listed.
-- **Approval cards.** A write shows the full content it will create, an edit shows before and after. Approve, reject, or allow that tool from now on.
-- **Rewind.** Go back to any earlier message. The conversation after it collapses and the notes the agent created or changed in that span are restored. Notes you edited yourself since then are left alone and listed.
-- **Sessions.** Every conversation is an append-only JSONL file in the plugin folder, so it syncs with the vault and survives conflicts as a separate copy. Reopen, rename, and delete from the history view.
-- **Context management.** Usage is estimated with a Hangul-aware token count, corrected from provider usage, and shown as a ring next to the send button. Older turns are summarized automatically before the window fills.
-- **Vault-local instructions.** If `AGENTS.md` exists at the vault root it is included as instructions, above your own custom system prompt and below the built-in rules.
-- **Skills.** Each `.agents/skills/<name>/SKILL.md` ([Agent Skills](https://agentskills.io) format) at the vault root or inside a folder is a skill. By default the model knows skills by name only: when a task calls for one it finds it with `skill_search` and reads its `SKILL.md`, so descriptions stay out of every request. **Settings → Skills** lists the skills found and sets what each may do; to show a skill's description upfront instead, turn on **Listing** there and set the skill to **Listed**. `/skill <name>` runs one directly.
-- **Images.** Paste a screenshot or attach a vault image when the model accepts images. Only the path is stored in the session.
-- **Streaming.** Answers stream through `fetch`. If the server does not allow Obsidian's origin, the plugin falls back to Obsidian's `requestUrl` and tells you that streaming is unavailable.
-- **Send while it works.** A message you send while the agent is working waits above the composer and goes, one at a time, once the agent finishes. **Send now** on a waiting message puts it in before the next tool call: calls that have not started yet are skipped and the model reads your message first. Stop, or a failed request, puts the waiting messages back in the composer.
-- **WebDAV storage.** Connect one WebDAV server, such as a NAS, under **Settings → WebDAV storage**. The agent can list, read, write, edit, move and delete files there, and copy files and folders between the storage and the vault byte for byte without passing their contents through the conversation. Requests go through Obsidian's `requestUrl`, so the server needs no CORS setup and phones work the same. The password is kept in `SecretStorage` on each device, and sealed for your other devices when Device sync is on. Changes on the storage are not undone by rewind.
-- **MCP servers.** Add remote servers under **Settings → MCP servers** and sign in with OAuth or an API key. Each row shows whether this device is signed in or holds a key, and you can drag rows to reorder them. Servers that do not let apps register on their own, such as Google's, take a client ID and secret you make in their console (a desktop app client); signing in that way works on desktop.
-- **Set up once, use on every device.** Under **Settings → Device sync**, a sync passphrase seals your API keys, the WebDAV password and client secrets into this plugin's data file, which your vault's sync carries to your other devices; each device enters the same passphrase once. If Google Calendar Tasks Sync already keeps its passphrase on a device, that one is used. MCP sign-ins are not shared, because servers such as Atlassian and Outline replace the refresh token on every use: on desktop, the phone icon on a server's row signs in once more for a phone or tablet, which takes that sign-in when it opens. This is also how a phone reaches servers that refuse sign-in from a phone.
-- **A shell, the web and Obsidian commands.** `bash` runs a shell command inside Obsidian, not your operating system. The vault is the working directory, so `grep`, `sed`, `awk`, `find`, `rg`, `jq` and the rest work on your notes, and `/tmp` holds scratch files for the conversation. Two commands are specific to Obsidian: `curl` sends a request to any URL through `requestUrl` (no CORS setup, same on phones) and writes the response **exactly as the server sent it**, so a web page arrives as its own HTML and you pipe it through `grep` or `jq` to keep what you need; `obsidian` runs any Obsidian CLI command, such as `obsidian search query=... limit=5` or `obsidian command id=<id>` (`obsidian help` lists them). Of the developer commands, only the ones that look are open: `dev:errors`, `dev:console`, `dev:dom`, `dev:css` and `dev:screenshot`, which saves the PNG in the shell (`/tmp`, or a vault path that asks like any write). `eval` and `dev:cdp` stay closed. The shell has one permission row, `bash`. `curl` and `obsidian` have no rows of their own: the approval card shows the whole command, URLs included, so one approval covers it. Writes the shell makes to your notes still go through the `write` permission and its approval card, and rewind undoes them, except that a binary file the shell overwrote is left as it is. Obsidian commands are not undone by rewind.
+- [What you get](#what-you-get)
+- [Get started](#get-started)
+- [Commands](#commands)
+- [Privacy](#privacy)
+- [Development](#development)
 
-## Setup
+## What you get
 
-1. Install the plugin and enable it.
-2. **Settings → Vault Librarian → Providers → Add provider.** Enter the base URL of an OpenAI-compatible server (the part before `/chat/completions`) and your API key, then add at least one model with tool calling enabled: **Add from server** lists the models the `/models` endpoint reports (with the context window when the server gives one), or **Add model** takes one by hand. **Test** next to Connection checks the endpoint before you save.
-3. Open the chat from the ribbon icon or the **Open chat** command and ask something.
+### Answers from the notes it read
 
-API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key; nothing is sent until it is set. With a sync passphrase under **Device sync**, keys also enter `data.json`, but only sealed (PBKDF2-SHA256 with 600,000 iterations and AES-256-GCM, the same format Google Calendar Tasks Sync uses), so a device without the passphrase cannot read them. Keys never enter the session files.
+There is no index to build or keep in sync. The agent looks around your vault the way a coding agent looks around a repository: `find` and `grep` to locate notes, `read` to open them, as many times as it needs. It answers from what it actually read and says which notes and lines it used. A citation written as a path and lines, such as `Meetings/2026-09-15 Design review.md:11-15`, opens the note at those lines, and a `[[wikilink]]` in an answer opens in a new tab.
+
+<img src="docs/media/answer.png" width="470" alt="An answer in the chat that sums up a design decision and the open items, citing the notes and lines it read">
+
+### Every step in view
+
+Each request gets one work block. It reads **Working** while the agent works and folds into **Worked for** and the time it took. Unfold it for a timeline: the model's thinking, then each tool call as a chip, with calls that ran in parallel side by side. Select a chip to see its arguments and its result.
+
+<img src="docs/media/timeline.png" width="470" alt="The unfolded timeline with thinking steps and tool chips, and a popover showing the lines a grep call found">
+
+### Changes wait for your approval
+
+Tools that only read run on their own, several at once. Anything that changes a note or a file, or runs a command, shows a card first: a new note with its full content, an edit as before and after. Approve it, reject it, or allow that tool from now on.
+
+<img src="docs/media/approve-edit.png" width="470" alt="An approval card for an edit, showing the task line before and after it was ticked off">
+
+### Rewind a wrong turn
+
+Go back to any earlier message. The turns after it collapse, and the notes the agent created or changed in that span go back to how they were. Notes you edited yourself in the meantime are left alone and listed. The message returns to the composer so you can word it differently.
+
+<img src="docs/media/rewind.png" width="700" alt="The rewind dialog listing the turns that will collapse and the note changes that will be reverted">
+
+### On your phone too
+
+The same plugin runs on iPhone, iPad and Android, and the phone talks to your model provider directly, with nothing to run on a computer. Sessions and settings are files in the plugin folder, so your vault's sync carries them to your other devices. While the agent works, the screen stays on; a request the phone cut off in the background carries on when you come back.
+
+<img src="docs/media/mobile.gif" width="300" alt="On a phone, the agent answers what is still open in a project and who owns it">
+
+### A shell, the web and Obsidian commands
+
+`bash` runs a shell inside Obsidian, not on your computer. The vault is its working folder, so `grep`, `sed`, `awk`, `jq` and the rest work on your notes. `curl` fetches any URL through Obsidian, with no CORS setup and the same on phones, and `obsidian` runs any Obsidian CLI command. Every `bash` call asks first by default, and the card shows the whole command.
+
+<img src="docs/media/approve-bash.png" width="470" alt="An approval card for a bash command that asks the GitHub API for the latest Obsidian release with curl and picks fields with jq">
+
+### Your rules
+
+Each tool can be **Always allow**, **Ask first** or **Blocked**, one at a time or a whole group at once. A blocked tool is taken out of the model's tool list and refused again if it is called anyway. An `AGENTS.md` at the vault root is part of the agent's instructions, and so is the `AGENTS.md` of any folder it works in.
+
+<img src="docs/media/permissions.png" width="700" alt="The Tool permissions settings page with read-only tools allowed and write tools set to ask first">
+
+### And more
+
+- **Skills.** Each `.agents/skills/<name>/SKILL.md` ([Agent Skills](https://agentskills.io) format), at the vault root or in any folder, is a skill. The model finds one with `skill_search` when a task calls for it, or you run it with `/skill <name>`.
+- **MCP servers.** Add remote MCP servers and sign in with OAuth or an API key. Tools that only read run on their own; every other tool asks first, and results are marked untrusted.
+- **WebDAV storage.** Connect a NAS or any WebDAV server. The agent lists, reads, writes, moves and deletes files there, and copies files between the storage and the vault byte for byte.
+- **Send while it works.** Messages you send during a run wait above the composer and go one at a time. **Send now** puts one in before the next tool call.
+- **Sessions.** Every conversation is an append-only JSONL file, so it syncs with the vault and survives sync conflicts as a separate copy. Reopen, rename and delete them from the history.
+- **Context you can see.** The ring next to the send button shows how full the context window is, as the server reported it for the last response; hover or tap it for the numbers and the cache hit rate. Before the window fills, the conversation is compacted into a handoff summary that keeps your recent messages word for word, and the session file keeps the full record.
+- **Images.** Paste a screenshot or attach a vault image when the model accepts images.
+- **Set up once for every device.** A sync passphrase seals API keys, the WebDAV password and client secrets into the plugin's data file, so each device enters only the passphrase. **Export** and **Import** move all settings as one JSON file.
+- **A short tool list.** The model sees `ls`, `find`, `grep`, `read`, `write`, `edit` and `bash` upfront. Other tools, such as the active note, WebDAV and MCP tools, load through `tool_search` when a task needs them, so their schemas stay out of every request.
+
+The screens above come from a demo vault ([`docs/demo`](docs/demo)) with GPT-6 Luna; the phone is Obsidian's mobile layout.
+
+## Get started
+
+1. **Install.** In Obsidian, open **Settings → Community plugins → Browse**, search for **Vault Librarian**, then select **Install** and **Enable**.
+2. **Add a provider.** Open **Settings → Vault Librarian → Providers** and select **Add provider**. Enter a name, the base URL of an OpenAI-compatible API (the part before `/chat/completions`) and your API key. For OpenAI's reasoning models, set **API** to **Responses**: they call tools while they reason only through `/responses`.
+
+   <img src="docs/media/add-provider.png" width="560" alt="The Add provider dialog with a name, a base URL and an empty API key field">
+
+3. **Add a model.** Under **Models**, **Add from server** lists the models the server offers and fills in the context window, image input and reasoning where the server or Pi's model list knows them. **Add model** takes one by hand. The model needs tool calling. **Test** next to Connection checks the endpoint before you save.
+
+   <img src="docs/media/add-from-server.png" width="560" alt="The model picker listing the models the server offers, filtered by name">
+
+4. **Ask.** Open the chat from the ribbon icon or the **Open chat** command, and ask about your notes.
+
+   <img src="docs/media/window.png" width="900" alt="Obsidian with a project note open and the chat in the right sidebar, showing an answer with citations">
+
+API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key, and nothing is sent until it is set. With a sync passphrase under **Device sync**, keys also enter `data.json`, but only sealed (PBKDF2-SHA256 with 600,000 iterations and AES-256-GCM, the same format Google Calendar Tasks Sync uses), so a device without the passphrase cannot read them. Keys never enter the session files.
 
 ### Streaming and CORS
 
-`fetch` streaming needs the server to allow the origins Obsidian uses: `app://obsidian.md` on desktop, `capacitor://localhost` on iOS, `http://localhost` on Android. If it does not, keep the transport on **Auto**: the first failed request switches the provider to `requestUrl` for the rest of the session, or set the transport to **requestUrl** permanently.
+`fetch` streaming needs the server to allow the origins Obsidian uses: `app://obsidian.md` on desktop, `capacitor://localhost` on iOS, `http://localhost` on Android. If it does not, keep the transport on **Auto**: the first failed request switches the provider to Obsidian's `requestUrl` for the rest of the session. Or set the transport to **Non-streaming (Obsidian)** for good.
 
 ### Compatibility settings
 
-OpenAI-compatible servers differ in the details. The provider and model editors expose the same compatibility flags as Pi's `models.json` (`supportsReasoningEffort`, `maxTokensField`, `thinkingFormat`, and so on). Model-level values override provider-level ones.
+OpenAI-compatible servers differ in the details. The provider and model editors expose the same compatibility flags as Pi's `models.json` (`supportsReasoningEffort`, `maxTokensField`, `thinkingFormat` and so on), and a model can use another API than its provider. Model-level values override provider-level ones.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| Open chat | Opens the chat in the right sidebar (full screen on phones) |
+| Open chat | Opens the chat, in the right sidebar unless **Open chat in** says otherwise (full screen on phones) |
+| Open chat in right sidebar | Opens the chat in the right sidebar |
+| Open chat in main area | Opens the chat as a tab |
 | New session | Starts a new conversation |
 | Open session history | Lists past conversations |
-| Compact context | Summarizes the older part of the current conversation now |
+| Compact context | Compacts the current conversation into a summary now |
 | Add active note to prompt | Attaches the note you are viewing to your next message |
+
+In the composer, `/` lists the slash commands: `/new`, `/history`, `/compact`, `/note`, `/model`, `/thinking`, `/skill`, `/settings` and `/help`. `@` attaches a note or a folder.
 
 ## Privacy
 
@@ -69,6 +132,10 @@ npm test         # vitest
 ```
 
 The agent loop is `@earendil-works/pi-agent-core`; the OpenAI-compatible adapter is `@earendil-works/pi-ai`. Both are pinned. Commits follow Conventional Commits (enforced by commitlint through prek) and releases are cut by release-please.
+
+The media in this README are recorded from the demo vault in [`docs/demo`](docs/demo). After a UI change, `npm run build && node docs/demo/record.mjs` records them again; the script's header lists what it needs.
+
+Found a bug or want something? [Open an issue](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/new/choose).
 
 ## License
 

@@ -16,6 +16,8 @@ export default defineConfig(
 		'commitlint.config.mjs',
 		'vitest.config.mts',
 		'tests',
+		// The README media scripts run in Node and in the Obsidian window, not in the plugin.
+		'docs',
 	]),
 	{
 		languageOptions: {

@@ -25,3 +25,13 @@ data.json
 tests/.out
 sessions/
 snapshots/
+
+# The demo vault's app state, apart from the settings the README recordings rely on, and what
+# docs/demo/record.mjs writes before it makes the media.
+docs/demo/Work/.obsidian/*
+!docs/demo/Work/.obsidian/app.json
+!docs/demo/Work/.obsidian/appearance.json
+!docs/demo/Work/.obsidian/community-plugins.json
+!docs/demo/Work/.obsidian/core-plugins.json
+docs/demo/Work/.trash/
+docs/demo/out/
