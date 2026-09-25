@@ -1,0 +1,124 @@
+name: Model or provider problem
+description: A model or server fails with Vault Librarian, such as an HTTP error, broken tool calls or no streaming.
+title: "[Provider]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Servers that speak the OpenAI API differ in the details, so a model that works in another app can still fail here. The server, the model and the provider settings usually show why.
+
+        **Never paste an API key.** A base URL is fine when it holds no key or token.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched the [open and closed issues](https://github.com/PubCyBerry/obsidian-vault-librarian/issues?q=is%3Aissue) for this server and model.
+          required: true
+        - label: I use the latest version of the plugin.
+          required: true
+        - label: I removed API keys, tokens and private note contents from everything I paste or attach below.
+          required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options:
+        - OpenAI
+        - OpenRouter
+        - Google Gemini (OpenAI-compatible endpoint)
+        - Ollama
+        - LM Studio
+        - llama.cpp server
+        - vLLM
+        - Open WebUI
+        - LiteLLM or another gateway
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: base-url
+    attributes:
+      label: Base URL
+      description: The provider's base URL, without any key or token in it.
+      placeholder: "https://openrouter.ai/api/v1"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model ID
+      placeholder: "qwen/qwen3.6-27b"
+    validations:
+      required: true
+  - type: dropdown
+    id: api
+    attributes:
+      label: API
+      description: "**API** in the provider editor, or **API override** in the model editor when it is set."
+      options:
+        - Chat Completions
+        - Responses
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      description: "**Transport** in the provider editor."
+      options:
+        - Auto
+        - Streaming (browser)
+        - Non-streaming (Obsidian)
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What goes wrong
+      multiple: true
+      options:
+        - The request fails with an HTTP error (400, 401, 404, 422, 500 ...)
+        - The model answers but never calls a tool
+        - Tool calls arrive broken or with wrong arguments
+        - Thinking does not show, or the server refuses the effort level
+        - The answer does not stream, or the stream stops midway
+        - Context usage looks wrong
+        - Add from server lists no models or wrong details
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text
+      description: The error block in the chat, copied as it is, with the part in parentheses at its end.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: changed-settings
+    attributes:
+      label: Settings you changed
+      description: Anything set away from its default in the provider and model editors, such as the compatibility flags, the thinking format, the max tokens field, the effort, or the extra request body.
+      render: text
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Does the same model work elsewhere?
+      description: For example with curl, the server's own chat, or another app. Say what differs if you know.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "2.14.0"
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version and platform
+      placeholder: "1.13.7 on Windows"
+    validations:
+      required: true

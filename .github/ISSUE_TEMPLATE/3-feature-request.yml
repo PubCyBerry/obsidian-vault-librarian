@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest something new, or a change to how Vault Librarian works.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Start with the problem: a clear problem often has a smaller fix than the first solution that comes to mind.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched the [open and closed issues](https://github.com/PubCyBerry/obsidian-vault-librarian/issues?q=is%3Aissue) and found no request like this.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what gets in the way. A real example from your vault helps.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How you would like it to work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you tried or considered, and why they fall short.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat and composer
+        - Work timeline and step popovers
+        - Approval cards and tool permissions
+        - Rewind
+        - Sessions and history
+        - Context usage and compaction
+        - Vault tools (ls, find, grep, read, write, edit)
+        - Shell (bash, curl, obsidian)
+        - Skills
+        - MCP servers
+        - WebDAV storage
+        - Models and providers
+        - Settings, device sync and backup
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where you need it
+      options:
+        - Desktop and mobile
+        - Desktop only
+        - Mobile only
+    validations:
+      required: true
+  - type: upload
+    id: attachments
+    attributes:
+      label: Mockups or screenshots
+      description: A sketch, or a screenshot of another app that does it well.

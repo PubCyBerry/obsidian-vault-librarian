@@ -1,0 +1,121 @@
+name: Bug report
+description: Something in Vault Librarian does not work the way it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A bug I can reproduce gets fixed first, so the steps and the error text matter most.
+
+        If one model or server fails (an HTTP 400, tool calls that break, no streaming), use **Model or provider problem** instead.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched the [open and closed issues](https://github.com/PubCyBerry/obsidian-vault-librarian/issues?q=is%3Aissue) and found no report of this.
+          required: true
+        - label: I use the latest version of the plugin (**Settings → Community plugins → Check for updates**).
+          required: true
+        - label: I removed API keys, passwords, tokens and private note contents from everything I paste or attach below.
+          required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "**Settings → Community plugins**, under Vault Librarian."
+      placeholder: "2.14.0"
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version
+      description: "**Settings → General**, the current version and the installer version."
+      placeholder: "1.13.7 (installer 1.13.7)"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Every device where it happens.
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - iPhone
+        - iPad
+        - Android phone
+        - Android tablet
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where the problem shows up. Pick the closest one.
+      options:
+        - Chat and composer
+        - Work timeline and step popovers
+        - Approval cards and tool permissions
+        - Rewind
+        - Sessions and history
+        - Context usage and compaction
+        - Vault tools (ls, find, grep, read, write, edit)
+        - Shell (bash, curl, obsidian)
+        - Skills
+        - MCP servers
+        - WebDAV storage
+        - Settings, device sync and backup
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Start from a new session if you can, and include the message you sent.
+      placeholder: |
+        1. Start a new session.
+        2. Send "Summarize the notes in Projects".
+        3. Select Approve on the write card.
+        4. The chat shows ...
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and server
+      description: If it happens in a chat. The server kind and the model ID are enough.
+      placeholder: "OpenRouter, qwen/qwen3.6-27b"
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text
+      description: |
+        The error block in the chat or the Notice, copied as it is. An error block ends with how the request stopped, such as `(fetch, after 12 s, HTTP 400 received ...)`; keep that part.
+      render: text
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: |
+        Desktop: open the developer tools with Ctrl+Shift+I (Cmd+Option+I on macOS), select **Console**, and copy the lines that appear when the bug happens.
+        Phone or tablet: skip this. For a layout problem, send `/layout` in the chat and paste what it shows.
+      render: shell
+  - type: upload
+    id: attachments
+    attributes:
+      label: Screenshots, recordings or a session file
+      description: |
+        A screenshot often says more than the text. For a problem inside one conversation, the session file shows every step: `.obsidian/plugins/vault-librarian/sessions/<id>.jsonl`. It holds what the agent read from your notes, so look through it first.
