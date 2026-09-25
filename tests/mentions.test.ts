@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyMention,
+	composeUserMessage,
 	draftOf,
 	folderBlock,
 	type MentionTarget,
@@ -8,6 +9,7 @@ import {
 	mentionQuery,
 	rankMentions,
 } from '../src/ui/mentions';
+import { FakeApp } from './fake-app';
 
 const targets: MentionTarget[] = [
 	{ path: '10-projects', kind: 'folder' },
@@ -87,6 +89,39 @@ describe('a queued message handed back to the composer (LIB-TEST-186)', () => {
 		);
 		expect(draftOf(`Use the obsidian-markdown skill.\n\n${block}`).text).toBe(
 			'/skill obsidian-markdown',
+		);
+	});
+
+	it('composes the message from the active note, the chips and the @path notes, each once', async () => {
+		const app = new FakeApp();
+		const active = app.vault.seed('notes/active.md', 'active body');
+		app.vault.seed('10-projects/plan.md', 'plan body, see @notes/ref');
+		app.vault.seed('10-projects/sub/b.md', 'b');
+		app.vault.seed('notes/ref.md', 'ref body');
+		app.vault.seedBinary('assets/a.pdf', new ArrayBuffer(4));
+		const text = await composeUserMessage(app as never, 'compare @plan with @notes/active', {
+			activeNote: active,
+			mentions: [
+				{ path: '10-projects/plan.md', kind: 'file' },
+				{ path: 'notes/active.md', kind: 'file' },
+				{ path: 'assets/a.pdf', kind: 'file' },
+				{ path: '10-projects', kind: 'folder' },
+			],
+		});
+		expect(text).toBe(
+			[
+				'compare @plan with @notes/active',
+				'',
+				'<attached_note path="notes/active.md">\nactive body\n</attached_note>',
+				'',
+				'<attached_note path="10-projects/plan.md">\nplan body, see @notes/ref\n</attached_note>',
+				'',
+				'<attached_file path="assets/a.pdf" />',
+				'',
+				'<attached_folder path="10-projects">\n- 10-projects/plan.md\n- 10-projects/sub/b.md\n</attached_folder>',
+				'',
+				'<imported path="notes/ref.md">\nref body\n</imported>',
+			].join('\n'),
 		);
 	});
 });

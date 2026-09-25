@@ -1,4 +1,7 @@
-import { prepareFuzzySearch } from 'obsidian';
+import { type App, prepareFuzzySearch, type TFile } from 'obsidian';
+import { vaultReferenceReader } from '../agent/prompt';
+import { expandReferences } from '../agent/references';
+import { isBinaryPath } from '../tools/path-policy';
 
 export interface MentionTarget {
 	path: string;
@@ -85,4 +88,45 @@ export function folderBlock(path: string, notes: readonly string[], limit = 200)
 	const shown = notes.slice(0, limit).map((p) => `- ${p}`);
 	if (notes.length > limit) shown.push(`(${notes.length - limit} more notes not listed)`);
 	return `<attached_folder path="${path}">\n${shown.join('\n')}\n</attached_folder>`;
+}
+
+/**
+ * The message as the model gets it: the typed text, the attached note, the mention chips, then any
+ * `@path` notes the text refers to. A note attached once is not inlined a second time by the `@path`
+ * expansion, nor is `from`, the note a command or a skill came from.
+ */
+export async function composeUserMessage(
+	app: App,
+	typed: string,
+	parts: { activeNote: TFile | null; mentions: readonly MentionTarget[]; from?: string },
+): Promise<string> {
+	const from = parts.from ?? '';
+	let text = typed;
+	const seen = new Set<string>([from]);
+	const attach = async (file: TFile) => {
+		if (seen.has(file.path)) return;
+		if (isBinaryPath(file.path)) {
+			// Nothing to inline; the path tells the model the file exists.
+			text = `${text}\n\n<attached_file path="${file.path}" />`;
+		} else {
+			const content = await app.vault.cachedRead(file);
+			text = `${text}\n\n<attached_note path="${file.path}">\n${content}\n</attached_note>`;
+		}
+		seen.add(file.path);
+	};
+	if (parts.activeNote) await attach(parts.activeNote);
+	for (const mention of parts.mentions) {
+		if (mention.kind === 'file') {
+			const file = app.vault.getFileByPath(mention.path);
+			if (file) await attach(file);
+		} else {
+			const notes = app.vault
+				.getFiles()
+				.filter((f) => f.path.startsWith(`${mention.path}/`))
+				.map((f) => f.path)
+				.sort();
+			text = `${text}\n\n${folderBlock(mention.path, notes)}`;
+		}
+	}
+	return (await expandReferences(text, from, vaultReferenceReader(app), { seen })).text;
 }
