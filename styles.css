@@ -451,6 +451,8 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	transition-timing-function: cubic-bezier(0.12, 0, 0.44, 0.99);
 }
 
+/* Every spinner turns in step with the page's clock (renderSpinner): one drawn anew carries on its
+   turn instead of starting it again from the top. */
 .librarian-spinner {
 	width: 12px;
 	height: 12px;
@@ -458,6 +460,7 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	border-top-color: var(--interactive-accent);
 	border-radius: 50%;
 	animation: librarian-spin 0.8s linear infinite;
+	animation-delay: var(--librarian-spin-delay, 0s);
 }
 
 @keyframes librarian-spin {

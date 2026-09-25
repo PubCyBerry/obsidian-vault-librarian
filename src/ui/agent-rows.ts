@@ -4,7 +4,7 @@ import { GENERAL_AGENT } from '../agent/agent-definitions';
 import type { SubagentState } from '../agent/subagent';
 import type { StoredToolCall } from '../session/session-types';
 import { summarizeCall } from './cards';
-import { firstLine } from './work-log';
+import { firstLine, renderSpinner } from './work-log';
 
 /**
  * A sub-agent run as the chat lists it (LIB-FEAT-140): one row on the timeline step that started
@@ -215,5 +215,5 @@ export function updateAgentRow(row: HTMLElement, data: AgentRowData): void {
 	mark.empty();
 	const name = STATUS_ICONS[data.status];
 	if (name) setIcon(mark, name);
-	else mark.createSpan({ cls: 'librarian-spinner' });
+	else renderSpinner(mark);
 }

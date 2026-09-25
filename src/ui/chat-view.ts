@@ -72,6 +72,7 @@ import {
 	type PopoverContent,
 	type Run,
 	renderChip,
+	renderSpinner,
 	type Step,
 	StepPopover,
 	setChipStatus,
@@ -1382,7 +1383,7 @@ export class LibrarianView extends ItemView {
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.messagesEl.createDiv({ cls: 'librarian-work is-running' });
 			const header = this.compactLineEl.createDiv({ cls: 'librarian-work-header' });
-			header.createSpan({ cls: 'librarian-spinner' });
+			renderSpinner(header);
 			header.createSpan({ cls: 'librarian-work-title', text: 'Compacting context' });
 			this.scrollToBottom();
 		} else if (!standalone) {
@@ -1481,7 +1482,7 @@ export class LibrarianView extends ItemView {
 		const block = stage.el.createDiv({ cls: 'librarian-work' });
 		block.toggleClass('is-running', running);
 		const header = block.createDiv({ cls: 'librarian-work-header' });
-		if (running) header.createSpan({ cls: 'librarian-spinner' });
+		if (running) renderSpinner(header);
 		const took =
 			view.startedAt !== null && view.endedAt !== null ? view.endedAt - view.startedAt : 0;
 		header.createSpan({
@@ -1797,9 +1798,7 @@ export class LibrarianView extends ItemView {
 				}),
 			);
 			// Turns while the thinking grows, as a running call's chip does, and goes when it stops.
-			chip.createSpan({ cls: 'librarian-chip-mark' }).createSpan({
-				cls: 'librarian-spinner',
-			});
+			renderSpinner(chip.createSpan({ cls: 'librarian-chip-mark' }));
 		}
 		live.thinkingText = thinking;
 		const calls = message.content.filter((c) => c.type === 'toolCall');

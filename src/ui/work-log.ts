@@ -114,6 +114,16 @@ export function firstLine(text: string, max = 80): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/**
+ * A spinner that turns in step with every other: made anew by a redraw, it carries on its turn
+ * where it was instead of starting it again from the top, which reads as a stutter.
+ */
+export function renderSpinner(parent: HTMLElement): HTMLElement {
+	const spinner = parent.createSpan({ cls: 'librarian-spinner' });
+	spinner.setCssProps({ '--librarian-spin-delay': `${-Math.round(performance.now())}ms` });
+	return spinner;
+}
+
 const STATUS_ICONS: Partial<Record<ToolCardStatus, string>> = {
 	ok: 'check',
 	failed: 'x',
@@ -151,7 +161,7 @@ export function setChipStatus(chip: HTMLElement, status: ToolCardStatus): void {
 	mark.empty();
 	const icon = STATUS_ICONS[status];
 	if (icon) setIcon(mark, icon);
-	else mark.createSpan({ cls: 'librarian-spinner' });
+	else renderSpinner(mark);
 }
 
 /** What a step's popover shows. Read each time it is drawn, so a streaming step stays current. */
@@ -222,7 +232,7 @@ export class StepPopover {
 		const titleRow = heading.createDiv({ cls: 'librarian-step-pop-title' });
 		const title = titleRow.createSpan();
 		// Made once and only shown or hidden: a new one each redraw would restart its turn.
-		const spinner = titleRow.createSpan({ cls: 'librarian-spinner' });
+		const spinner = renderSpinner(titleRow);
 		const subtitle = heading.createDiv({ cls: 'librarian-step-pop-subtitle' });
 		const status = header.createSpan({ cls: 'librarian-step-pop-status' });
 		const close = header.createEl('button', {
