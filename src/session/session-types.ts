@@ -8,6 +8,10 @@ export interface SessionMetadata {
 	thinkingLevel?: ThinkingLevel;
 	createdAt: string;
 	updatedAt: string;
+	/** A sub-agent's session: the conversation that started it, and the spawn_agent call. */
+	parentId?: string;
+	parentCallId?: string;
+	agentName?: string;
 }
 
 export interface SessionSummary extends SessionMetadata {
@@ -66,6 +70,8 @@ export type SessionEvent =
 			ok: boolean;
 			content: string;
 			truncated: boolean;
+			/** spawn_agent: the session of the sub-agent that gave this answer (LIB-FEAT-139). */
+			agentSession?: string;
 	  }
 	| {
 			t: string;

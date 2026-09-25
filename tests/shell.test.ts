@@ -1,7 +1,7 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CurlUsageError, cliHandlers, parseCurl } from '../src/shell/commands';
-import { ShellSession } from '../src/shell/shell-tool';
+import { createShellTool, ShellSession } from '../src/shell/shell-tool';
 import { normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
 import { Platform, requestUrlMock } from './obsidian-stub';
@@ -343,5 +343,27 @@ describe('the obsidian command (LIB-TEST-175)', () => {
 		expect(cliHandlers(app as unknown as App)).toBeNull();
 		(app as unknown as { cli: unknown }).cli = { handlers: {} };
 		expect(cliHandlers(app as unknown as App)).toBeNull();
+	});
+});
+
+describe('the bash tool result (LIB-TEST-267)', () => {
+	it('is the output as plain text, not a JSON string', async () => {
+		const { session } = shell();
+		const result = await createShellTool(session).execute(
+			'c1',
+			{ command: 'printf \'a "b"\\nc\\n\'' } as never,
+			undefined,
+		);
+		expect((result.content[0] as { text: string }).text).toBe('a "b"\nc\n');
+	});
+
+	it('runs the commands of agents working side by side one after another', async () => {
+		const { run } = shell();
+		const order: string[] = [];
+		await Promise.all([
+			run('echo one > /tmp/x; cat /tmp/x').then((o) => order.push(o)),
+			run('echo two > /tmp/x; cat /tmp/x').then((o) => order.push(o)),
+		]);
+		expect(order).toEqual(['one\n', 'two\n']);
 	});
 });

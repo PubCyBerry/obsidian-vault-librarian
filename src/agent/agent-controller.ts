@@ -6,6 +6,10 @@ import {
 } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, ImageContent, TextContent } from '@earendil-works/pi-ai';
 import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow';
+import {
+	createInitialSystemMessage,
+	toToolDeclaration,
+} from '@earendil-works/pi-ai/utils/transcript';
 
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
@@ -23,15 +27,33 @@ import { contentHash, replay, type SessionManager } from '../session/session-man
 import type {
 	IndexedEvent,
 	SessionEvent,
+	SessionEventInput,
 	SessionMetadata,
+	StoredToolCall,
 	StoredUsage,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
 import { isBinaryPath } from '../tools/path-policy';
+import { cutAt } from '../tools/registry';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
-import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
+import {
+	appIsHidden,
+	noteVisibility,
+	releaseVisibilityWaiters,
+	wasHiddenSince,
+	whenVisible,
+} from '../visibility';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
-import { BUILT_IN_SYSTEM_PROMPT, type PromptManager } from './prompt';
+import { type PromptManager, systemPromptOf } from './prompt';
+import {
+	agentName,
+	forkMessages,
+	Slots,
+	SPAWN_AGENT_NAME,
+	type SpawnArgs,
+	type SubagentState,
+	subagentSection,
+} from './subagent';
 
 export type AgentUiState =
 	| 'idle'
@@ -85,7 +107,29 @@ export interface ApprovalRequest {
 	existingLength?: number;
 	/** The tool this call came from, such as `bash` for something a shell command is about to do. */
 	calledFrom?: string;
+	/** The sub-agent asking, and its spawn_agent call; absent when the main agent asks. */
+	agentName?: string;
+	agentCallId?: string;
+	/** Other approvals queued behind this one. */
+	waiting: number;
 	resolve: (decision: ApprovalDecision) => void;
+}
+
+/** Where a call comes from, for the approval it may need. */
+interface CallOrigin {
+	calledFrom?: string;
+	agent?: SubagentState;
+}
+
+/** What ends an agent's loop early: failures by call, turns that called tools, and why it ended. */
+interface LoopLimits {
+	failures: Map<string, number>;
+	iterations: number;
+	stopReason: string | null;
+}
+
+function freshLimits(): LoopLimits {
+	return { failures: new Map(), iterations: 0, stopReason: null };
 }
 
 /** The outcome of the permission gate for one call. */
@@ -116,7 +160,9 @@ export type ControllerEvent =
 	| { type: 'error'; message: string }
 	| { type: 'queue'; queue: readonly QueuedMessage[] }
 	/** Queued messages the run did not send (Stop, an error, a session switch): back to the composer. */
-	| { type: 'unsent'; messages: QueuedMessage[] };
+	| { type: 'unsent'; messages: QueuedMessage[] }
+	/** A sub-agent of this run started, moved on or ended (LIB-FEAT-140). */
+	| { type: 'agent'; agent: SubagentState };
 
 export interface ControllerDeps {
 	app: App;
@@ -190,8 +236,17 @@ export class AgentController {
 	events: IndexedEvent[] = [];
 	usage: ContextUsage | null = null;
 	pendingApproval: ApprovalRequest | null = null;
-	/** Serializes the approvals a shell command asks for while it runs. */
-	private nestedGate: Promise<unknown> = Promise.resolve();
+	/**
+	 * One approval card at a time: sub-agents running side by side and the stages of a shell
+	 * pipeline can all ask at once, and the rest wait here in order.
+	 */
+	private approvals: Promise<unknown> = Promise.resolve();
+	private approvalsWaiting = 0;
+	/** Sub-agents of the latest run, by the spawn_agent call that started each. */
+	readonly agents = new Map<string, SubagentState>();
+	private readonly agentSlots = new Slots(() => this.deps.settings().maxSubagents);
+	/** Which sub-agent made a call, for the approvals its shell commands ask for. */
+	private readonly callOwner = new Map<string, SubagentState>();
 	/** Provider and model the current session runs on; may differ from the settings default. */
 	selection: ActiveSelection | undefined;
 	thinkingLevel: ThinkingLevel = 'off';
@@ -201,9 +256,8 @@ export class AgentController {
 	private readonly toolStatus = new Map<string, ToolCardStatus>();
 	private readonly truncatedResults = new Set<string>();
 	private readonly pendingSnapshots = new Map<string, { path: string; content: string | null }>();
-	private failures = new Map<string, number>();
-	private iterations = 0;
-	private stopReason: string | null = null;
+	/** The main agent's limits for the turn now running; each sub-agent keeps its own. */
+	private loop = freshLimits();
 	/** Set when a response stream was cut by the network; `send` then repeats the request once. */
 	private retryAfterCut = false;
 	private cutRetries = 0;
@@ -308,6 +362,7 @@ export class AgentController {
 			thinkingLevel: this.thinkingLevel,
 		});
 		this.toolStatus.clear();
+		this.forgetAgents();
 		this.deps.nestedAgentsMd?.reset();
 		await this.reloadEvents();
 		this.emit({ type: 'session', session: this.session });
@@ -324,6 +379,7 @@ export class AgentController {
 		this.selection = this.deps.providers.getModel(summary.providerId, summary.modelId);
 		if (this.selection && !this.selection.model.toolCalling) this.selection = undefined;
 		this.thinkingLevel = summary.thinkingLevel ?? 'off';
+		this.forgetAgents();
 		// A resumed conversation gets each folder's AGENTS.md again, as it now reads.
 		this.deps.nestedAgentsMd?.reset();
 		// The card states come from the log before the view draws it; drawn first, every card
@@ -355,6 +411,7 @@ export class AgentController {
 		this.session = null;
 		this.events = [];
 		this.usage = null;
+		this.forgetAgents();
 		this.deps.nestedAgentsMd?.reset();
 		this.emit({ type: 'session', session: null });
 		this.emit({ type: 'events', events: [] });
@@ -454,9 +511,8 @@ export class AgentController {
 			});
 		}
 		return this.deps.prompt.buildSystemPrompt({
-			builtIn: BUILT_IN_SYSTEM_PROMPT,
+			systemPrompt: systemPromptOf(s),
 			vaultAgentsMd: agentsMd,
-			customSystemPrompt: s.customSystemPrompt,
 			skillCatalog: this.deps.skillCatalog(),
 		});
 	}
@@ -517,9 +573,10 @@ export class AgentController {
 		if (!item || item.now) return;
 		item.now = true;
 		this.emitQueue();
-		// A shell command asking from inside its run has started already, so it keeps its card.
-		if (this.pendingApproval && !this.pendingApproval.calledFrom)
-			this.pendingApproval.resolve('skip');
+		// A shell command or a sub-agent asking from inside its call has started already, so it
+		// keeps its card.
+		const card = this.pendingApproval;
+		if (card && !card.calledFrom && !card.agentName) card.resolve('skip');
 	}
 
 	private emitQueue(): void {
@@ -546,6 +603,8 @@ export class AgentController {
 			finished = resolve;
 		});
 		this.stopRequested = false;
+		// The agents of the run before are in the log now; the chat reads them from there.
+		this.forgetAgents();
 		try {
 			let clean = await first();
 			while (clean && this.queue.length) clean = await this.sendTurn(this.takeNext());
@@ -659,9 +718,7 @@ export class AgentController {
 		this.usage = prepared.usage;
 		this.emit({ type: 'usage', usage: this.usage });
 
-		this.iterations = 0;
-		this.failures = new Map();
-		this.stopReason = null;
+		this.loop = freshLimits();
 		this.cutRetries = 0;
 		this.retryAfterCut = false;
 		this.overflowRetries = 0;
@@ -870,11 +927,11 @@ export class AgentController {
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 		onWaiting: (waiting: boolean) => void = () => {},
+		bashCallId?: string,
 	): Promise<Gate> {
 		let waited = false;
-		// One approval card at a time, in case a pipeline has several stages asking at once.
-		const gating = this.nestedGate.then(() =>
-			this.authorize(
+		try {
+			return await this.authorize(
 				callId,
 				name,
 				args,
@@ -884,12 +941,11 @@ export class AgentController {
 					waited = true;
 					onWaiting(true);
 				},
-				'bash',
-			),
-		);
-		this.nestedGate = gating.catch(() => undefined);
-		try {
-			return await gating;
+				{
+					calledFrom: 'bash',
+					agent: bashCallId ? this.callOwner.get(bashCallId) : undefined,
+				},
+			);
 		} finally {
 			if (waited) {
 				onWaiting(false);
@@ -905,7 +961,7 @@ export class AgentController {
 		args: unknown,
 		signal: AbortSignal | undefined,
 		onStatus: (status: ToolCardStatus) => void,
-		calledFrom?: string,
+		origin: CallOrigin = {},
 	): Promise<Gate> {
 		const perms = this.deps.permissions;
 		const permission = perms.resolve(name, args);
@@ -914,12 +970,14 @@ export class AgentController {
 		const record = (args ?? {}) as Record<string, unknown>;
 		if (permission === 'approval_required') {
 			onStatus('awaiting-approval');
-			const decision = await this.askApproval(toolCallId, name, record, signal, calledFrom);
+			const decision = await this.askApproval(toolCallId, name, record, signal, origin);
 			// Not an answer to the card: the call yields to a Send now message, so nothing is logged.
 			if (decision === 'skip')
 				return { ok: false, reason: SKIPPED_RESULT, status: 'skipped' };
-			if (this.session) {
-				await this.deps.sessions.append(this.session.id, {
+			// While it waited in line, an earlier card made it Always allow: it goes without a card
+			// and without an approval to log, as an allowed call does.
+			if (decision !== 'allowed') {
+				const approval: SessionEventInput = {
 					type: 'approval',
 					toolCallId,
 					name,
@@ -929,7 +987,9 @@ export class AgentController {
 							: decision === 'expired'
 								? 'expired'
 								: 'approved',
-				});
+				};
+				if (origin.agent) await this.logAgent(origin.agent, approval);
+				else if (this.session) await this.deps.sessions.append(this.session.id, approval);
 			}
 			if (decision === 'reject')
 				return {
@@ -939,14 +999,12 @@ export class AgentController {
 				};
 			if (decision === 'expired')
 				return { ok: false, reason: 'Approval expired', status: 'expired' };
-			if (decision === 'always') {
-				const key = perms.permissionKey(name, args);
-				await perms.setTool(key, 'always_allow');
+			// askApproval has stored it already, before the next card in line was judged.
+			if (decision === 'always')
 				this.emit({
 					type: 'notice',
-					message: `${key} is now always allowed. Change it in Settings.`,
+					message: `${perms.permissionKey(name, args)} is now always allowed. Change it in Settings.`,
 				});
-			}
 		}
 		try {
 			perms.assertExecutable(name);
@@ -956,12 +1014,44 @@ export class AgentController {
 		return { ok: true };
 	}
 
+	/**
+	 * Waits for its turn, then shows the card. By then the call may have been stopped, or an
+	 * earlier card may have made its key Always allow; either way no card is shown.
+	 */
 	private askApproval(
 		toolCallId: string,
 		name: string,
 		args: Record<string, unknown>,
-		signal?: AbortSignal,
-		calledFrom?: string,
+		signal: AbortSignal | undefined,
+		origin: CallOrigin,
+	): Promise<ApprovalDecision | 'allowed'> {
+		this.approvalsWaiting++;
+		const card = this.pendingApproval;
+		if (card) {
+			card.waiting = this.approvalsWaiting;
+			this.emit({ type: 'approval', request: card });
+		}
+		const perms = this.deps.permissions;
+		const turn = this.approvals.then(async () => {
+			this.approvalsWaiting--;
+			if (signal?.aborted) return 'expired' as const;
+			if (perms.resolve(name, args) !== 'approval_required') return 'allowed' as const;
+			const decision = await this.showApproval(toolCallId, name, args, signal, origin);
+			// Stored before the line moves on, so a card behind it for the same key is not shown.
+			if (decision === 'always')
+				await perms.setTool(perms.permissionKey(name, args), 'always_allow');
+			return decision;
+		});
+		this.approvals = turn.catch(() => undefined);
+		return turn;
+	}
+
+	private showApproval(
+		toolCallId: string,
+		name: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		{ calledFrom, agent }: CallOrigin,
 	) {
 		return new Promise<ApprovalDecision>((resolve) => {
 			const finish = (decision: ApprovalDecision) => {
@@ -992,6 +1082,8 @@ export class AgentController {
 				permissionKey: key,
 				existingLength: existing?.stat.size,
 				...(calledFrom ? { calledFrom } : {}),
+				...(agent ? { agentName: agent.name, agentCallId: agent.callId } : {}),
+				waiting: this.approvalsWaiting,
 				resolve: finish,
 			};
 			this.emit({ type: 'state', state: 'awaiting-approval' });
@@ -1006,22 +1098,25 @@ export class AgentController {
 		content: readonly { type: string }[],
 		isError: boolean,
 		signal?: AbortSignal,
+		limits = this.loop,
+		nested = this.deps.nestedAgentsMd,
 	) {
 		// Only Librarian writes the AGENTS.md tag; one inside a note or a page must not pass for it.
 		let text = neutralizeTags(textOf(content));
 		if (isError && !text.startsWith('Error:')) text = `Error: ${text}`;
 		const max = this.deps.settings().toolResultMaxChars;
 		if (text.length > max) {
-			const dropped = text.length - max;
-			text = `${text.slice(0, max)}\n[truncated ${dropped} characters; narrow the request to see more]`;
+			// The vault tools fit their own results; this is for the rest, such as MCP tools.
+			const kept = cutAt(text, max);
+			text = `${kept}\n[truncated ${text.length - kept.length} characters; narrow the request to see more]`;
 			this.truncatedResults.add(toolCallId);
 		}
 		// Appended after the cut, so a long result never pushes the folder's rules out.
-		if (this.deps.settings().useVaultAgentsMd && this.deps.nestedAgentsMd)
-			text += await this.deps.nestedAgentsMd.blockFor(name, args, signal);
+		if (this.deps.settings().useVaultAgentsMd && nested)
+			text += await nested.blockFor(name, args, signal);
 		const key = `${name}:${JSON.stringify(args ?? {})}`;
-		if (isError) this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
-		else this.failures.delete(key);
+		if (isError) limits.failures.set(key, (limits.failures.get(key) ?? 0) + 1);
+		else limits.failures.delete(key);
 
 		this.pendingSnapshots.delete(toolCallId);
 		return { content: [{ type: 'text' as const, text }], isError };
@@ -1061,23 +1156,286 @@ export class AgentController {
 		});
 	}
 
-	private shouldStopAfterTurn(toolResultCount: number): boolean {
+	/** `forUser` says how to go on, which only the main agent's user can do. */
+	private shouldStopAfterTurn(toolResultCount: number, limits = this.loop, forUser = true) {
 		if (toolResultCount === 0) return false;
-		this.iterations++;
+		limits.iterations++;
 		const limit = this.deps.settings().repeatedFailureLimit;
-		for (const [, count] of this.failures) {
+		for (const [, count] of limits.failures) {
 			if (count >= limit) {
-				this.stopReason = `Stopped: the same tool call failed ${count} times`;
+				limits.stopReason = `Stopped: the same tool call failed ${count} times`;
 				return true;
 			}
 		}
 		// 0 is no limit: the failure limit above and Stop are what end a long run then.
 		const max = this.deps.settings().maxIterations;
-		if (max > 0 && this.iterations >= max) {
-			this.stopReason = `Stopped after ${this.iterations} tool iterations. Send a message to continue.`;
+		if (max > 0 && limits.iterations >= max) {
+			limits.stopReason = `Stopped after ${limits.iterations} tool iterations${forUser ? '. Send a message to continue.' : ''}`;
 			return true;
 		}
 		return false;
+	}
+
+	// Sub-agents (LIB-FEAT-139)
+
+	private forgetAgents(): void {
+		this.agents.clear();
+		this.callOwner.clear();
+	}
+
+	private emitAgent(state: SubagentState): void {
+		this.emit({ type: 'agent', agent: state });
+	}
+
+	/** One event of a sub-agent: into its session file, and into what the chat draws it from. */
+	private async logAgent(state: SubagentState, event: SessionEventInput): Promise<void> {
+		if (state.sessionId) await this.deps.sessions.append(state.sessionId, event);
+		const stored: SessionEvent = { t: new Date().toISOString(), ...event };
+		state.events.push({ index: state.events.length, event: stored });
+		this.emitAgent(state);
+	}
+
+	/**
+	 * spawn_agent: runs one sub-agent to its end and returns its last message. It works with the
+	 * main agent's model, prompt, tools and permissions, and keeps its own loop limits, AGENTS.md
+	 * deliveries and session. Past `maxSubagents` it waits for a place.
+	 */
+	async runSubagent(
+		callId: string,
+		args: SpawnArgs,
+		signal?: AbortSignal,
+	): Promise<{ text: string; sessionId: string | null }> {
+		const model = this.piModel();
+		if (!model || !this.session) throw new Error('No model is selected.');
+		const task = typeof args.task === 'string' ? args.task.trim() : '';
+		if (!task) throw new Error('task must not be empty');
+		const state: SubagentState = {
+			callId,
+			name: agentName(args.name),
+			task,
+			status: 'waiting',
+			events: [],
+			stream: null,
+			toolStatus: new Map(),
+			sessionId: null,
+		};
+		this.agents.set(callId, state);
+		this.emitAgent(state);
+		try {
+			await this.agentSlots.take(signal);
+		} catch (error) {
+			state.status = 'failed';
+			this.emitAgent(state);
+			throw error;
+		}
+		try {
+			return await this.driveSubagent(state, model, args.fork_context === true, signal);
+		} catch (error) {
+			state.status = 'failed';
+			const message = signal?.aborted
+				? 'Operation aborted'
+				: rewriteProviderError(messageOf(error));
+			await this.logAgent(state, { type: 'error', stage: 'provider', message });
+			throw new Error(message);
+		} finally {
+			state.stream = null;
+			this.agentSlots.release();
+			this.emitAgent(state);
+		}
+	}
+
+	private async driveSubagent(
+		state: SubagentState,
+		model: PiModel,
+		fork: boolean,
+		signal?: AbortSignal,
+	): Promise<{ text: string; sessionId: string | null }> {
+		const selection = this.selection!;
+		const session = await this.deps.sessions.create({
+			providerId: selection.provider.id,
+			modelId: selection.model.id,
+			thinkingLevel: this.thinkingLevel,
+			parentId: this.session!.id,
+			parentCallId: state.callId,
+			agentName: state.name,
+		});
+		state.sessionId = session.id;
+		state.status = 'running';
+		await this.logAgent(state, { type: 'user', content: state.task });
+		// The main agent's tools as they are now, bar spawn_agent: one level of agents only.
+		const tools = () => this.exposedTools().filter((t) => t.name !== SPAWN_AGENT_NAME);
+		const prompt = `${await this.systemPrompt()}\n\n${subagentSection(state.name)}`;
+		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
+		const forked = fork ? forkMessages(this.agent?.state.messages ?? []) : [];
+		const limits = freshLimits();
+		const nested = this.deps.nestedAgentsMd?.fork(fork);
+		let requestStart = Date.now();
+		const agent = new Agent({
+			initialState: {
+				model,
+				thinkingLevel: this.thinkingLevel,
+				tools: tools(),
+				messages: leading ? [leading, ...forked] : forked,
+			},
+			streamFn: this.streamFn(),
+			toolExecution: this.deps.settings().toolExecution,
+			beforeToolCall: (ctx, sig) =>
+				this.beforeAgentToolCall(state, ctx.toolCall.id, ctx.toolCall.name, ctx.args, sig),
+			afterToolCall: (ctx, sig) =>
+				this.afterToolCall(
+					ctx.toolCall.id,
+					ctx.toolCall.name,
+					ctx.args,
+					ctx.result.content,
+					ctx.isError,
+					sig,
+					limits,
+					nested,
+				),
+			// No compaction here: an agent whose context fills up stops and answers with the rest.
+			finishTurn: (ctx, sig) =>
+				sig?.aborted === true ||
+				this.shouldStopAfterTurn(ctx.toolResults.length, limits, false) ||
+				(ctx.toolResults.length > 0 && this.agentContextFull(ctx.message, model, limits))
+					? { action: 'end' }
+					: undefined,
+			prepareNextTurnWithContext: (ctx) => ({
+				context: { messages: ctx.context.messages, tools: tools() },
+			}),
+		});
+		agent.subscribe(async (event) => {
+			if (event.type === 'turn_start') requestStart = Date.now();
+			else if (
+				(event.type === 'message_start' || event.type === 'message_update') &&
+				event.message.role === 'assistant'
+			) {
+				state.stream = event.message;
+				this.emitAgent(state);
+			} else if (event.type === 'message_end')
+				await this.logAgentMessage(state, event.message);
+		});
+		const onAbort = () => agent.abort();
+		signal?.addEventListener('abort', onAbort);
+		try {
+			// Stop may have come while the agent was being set up, before anyone listened.
+			if (signal?.aborted) throw new Error('Operation aborted');
+			await agent.prompt(state.task);
+			// A request that died while the app was away, or whose stream the network cut, is asked
+			// again as the main agent's would be.
+			let resumes = 0;
+			let cutRetries = 0;
+			for (;;) {
+				const last = agent.state.messages[agent.state.messages.length - 1];
+				if (signal?.aborted || last?.role !== 'assistant' || last.stopReason !== 'error')
+					break;
+				if (wasHiddenSince(requestStart) && resumes < MAX_BACKGROUND_RESUMES) {
+					resumes++;
+					await whenVisible(signal);
+				} else if (isStreamCut(last.errorMessage) && cutRetries < 1) {
+					cutRetries++;
+					await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
+				} else break;
+				if (signal?.aborted) break;
+				agent.state.messages = agent.state.messages.slice(0, -1);
+				await agent.continue();
+			}
+		} finally {
+			signal?.removeEventListener('abort', onAbort);
+		}
+		if (signal?.aborted) throw new Error('Operation aborted');
+		const last = [...agent.state.messages]
+			.reverse()
+			.find((m): m is AssistantMessage => m.role === 'assistant');
+		if (last?.stopReason === 'error') throw new Error(last.errorMessage ?? 'Request failed');
+		const text = textOf(last?.content ?? []).trim();
+		if (limits.stopReason) {
+			state.status = 'stopped';
+			await this.logAgent(state, {
+				type: 'error',
+				stage: 'tool',
+				message: limits.stopReason,
+			});
+			return {
+				text: `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`,
+				sessionId: session.id,
+			};
+		}
+		state.status = 'done';
+		return { text: text || 'The agent finished without an answer.', sessionId: session.id };
+	}
+
+	/** A sub-agent's call: its permission and approval, which says who asks. */
+	private async beforeAgentToolCall(
+		state: SubagentState,
+		toolCallId: string,
+		name: string,
+		args: unknown,
+		signal?: AbortSignal,
+	) {
+		this.callOwner.set(toolCallId, state);
+		const set = (status: ToolCardStatus) => {
+			state.toolStatus.set(toolCallId, status);
+			this.emitAgent(state);
+		};
+		if (name === SPAWN_AGENT_NAME) {
+			set('blocked');
+			return { block: true, reason: 'Sub-agents cannot spawn agents. Do the task yourself.' };
+		}
+		if (!this.deps.tools().some((t) => t.name === name))
+			return { block: true, reason: `Tool ${name} not found` };
+		const gate = await this.authorize(toolCallId, name, args, signal, set, { agent: state });
+		// The main agent is still running its tools, whatever the card that came and went.
+		if (this.agent && !this.pendingApproval)
+			this.emit({ type: 'state', state: 'tool-running' });
+		if (!gate.ok) {
+			set(gate.status);
+			return { block: true, reason: gate.reason };
+		}
+		set('running');
+		return undefined;
+	}
+
+	/** The context is as full as the main agent's would be before it compacted. */
+	private agentContextFull(message: AssistantMessage, model: PiModel, limits: LoopLimits) {
+		const u = message.usage;
+		const used = u.totalTokens || u.input + u.cacheRead + u.output;
+		if (this.deps.context.usageFor(used, model).state !== 'critical') return false;
+		limits.stopReason = 'Stopped: the context of this agent is full';
+		return true;
+	}
+
+	private async logAgentMessage(state: SubagentState, m: AgentMessage): Promise<void> {
+		if (m.role === 'assistant') {
+			state.stream = null;
+			// A failed response is asked again or ends the agent; runSubagent logs why.
+			if (m.stopReason === 'error') {
+				this.emitAgent(state);
+				return;
+			}
+			const entry = assistantEvent(m);
+			await this.logAgent(state, entry);
+			for (const call of entry.toolCalls) {
+				if (!state.toolStatus.has(call.id)) state.toolStatus.set(call.id, 'pending');
+				await this.logAgent(state, {
+					type: 'tool_call',
+					toolCallId: call.id,
+					name: call.name,
+					args: call.args,
+				});
+			}
+		} else if (m.role === 'toolResult') {
+			const current = state.toolStatus.get(m.toolCallId);
+			if (!current || ['pending', 'running', 'awaiting-approval'].includes(current))
+				state.toolStatus.set(m.toolCallId, m.isError ? 'failed' : 'ok');
+			await this.logAgent(state, {
+				type: 'tool_result',
+				toolCallId: m.toolCallId,
+				name: m.toolName,
+				ok: !m.isError,
+				content: withErrorPrefix(textOf(m.content), m.isError),
+				truncated: this.truncatedResults.delete(m.toolCallId),
+			});
+		}
 	}
 
 	private async prepareNextTurn(
@@ -1165,42 +1523,9 @@ export class AgentController {
 							break;
 						}
 					} else this.overflowRetries = 0;
-					const usage: StoredUsage | undefined =
-						m.usage.totalTokens > 0
-							? {
-									input: m.usage.input,
-									output: m.usage.output,
-									cacheRead: m.usage.cacheRead,
-									cacheWrite: m.usage.cacheWrite,
-									totalTokens: m.usage.totalTokens,
-								}
-							: undefined;
-					const thinking = m.content
-						.filter(
-							(c): c is Extract<typeof c, { type: 'thinking' }> =>
-								c.type === 'thinking',
-						)
-						.map((c) => c.thinking)
-						.join('');
-					const toolCalls = m.content
-						.filter(
-							(c): c is Extract<typeof c, { type: 'toolCall' }> =>
-								c.type === 'toolCall',
-						)
-						.map((c) => ({
-							id: c.id,
-							name: c.name,
-							args: c.arguments,
-							...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
-						}));
-					await this.deps.sessions.append(sessionId, {
-						type: 'assistant',
-						content: textOf(m.content),
-						thinking: thinking || undefined,
-						toolCalls,
-						usage,
-						stopReason: m.stopReason,
-					});
+					const entry = assistantEvent(m);
+					const toolCalls = entry.toolCalls;
+					await this.deps.sessions.append(sessionId, entry);
 					for (const call of toolCalls) {
 						await this.deps.sessions.append(sessionId, {
 							type: 'tool_call',
@@ -1222,6 +1547,8 @@ export class AgentController {
 					// The ring shows what the provider reported for this response, updated as each stream ends.
 					await this.recalculateUsage();
 				} else if (m.role === 'toolResult') {
+					const agentSession = (m.details as { agentSession?: unknown } | undefined)
+						?.agentSession;
 					await this.deps.sessions.append(sessionId, {
 						type: 'tool_result',
 						toolCallId: m.toolCallId,
@@ -1229,6 +1556,7 @@ export class AgentController {
 						ok: !m.isError,
 						content: withErrorPrefix(textOf(m.content), m.isError),
 						truncated: this.truncatedResults.delete(m.toolCallId),
+						...(typeof agentSession === 'string' ? { agentSession } : {}),
 					});
 					const current = this.toolStatus.get(m.toolCallId);
 					if (
@@ -1263,14 +1591,14 @@ export class AgentController {
 				await this.recalculateUsage();
 				break;
 			case 'agent_end':
-				if (this.stopReason) {
+				if (this.loop.stopReason) {
 					await this.deps.sessions.append(sessionId, {
 						type: 'error',
 						stage: 'tool',
-						message: this.stopReason,
+						message: this.loop.stopReason,
 					});
-					this.emit({ type: 'notice', message: this.stopReason });
-					this.stopReason = null;
+					this.emit({ type: 'notice', message: this.loop.stopReason });
+					this.loop.stopReason = null;
 					await this.reloadEvents();
 				}
 				break;
@@ -1384,6 +1712,40 @@ export class AgentController {
 
 function withErrorPrefix(text: string, isError: boolean): string {
 	return isError && !text.startsWith('Error:') ? `Error: ${text}` : text;
+}
+
+/** A response as the session log keeps it. */
+function assistantEvent(m: AssistantMessage) {
+	const usage: StoredUsage | undefined =
+		m.usage.totalTokens > 0
+			? {
+					input: m.usage.input,
+					output: m.usage.output,
+					cacheRead: m.usage.cacheRead,
+					cacheWrite: m.usage.cacheWrite,
+					totalTokens: m.usage.totalTokens,
+				}
+			: undefined;
+	const thinking = m.content
+		.filter((c): c is Extract<typeof c, { type: 'thinking' }> => c.type === 'thinking')
+		.map((c) => c.thinking)
+		.join('');
+	const toolCalls: StoredToolCall[] = m.content
+		.filter((c): c is Extract<typeof c, { type: 'toolCall' }> => c.type === 'toolCall')
+		.map((c) => ({
+			id: c.id,
+			name: c.name,
+			args: c.arguments,
+			...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
+		}));
+	return {
+		type: 'assistant' as const,
+		content: textOf(m.content),
+		thinking: thinking || undefined,
+		toolCalls,
+		usage,
+		stopReason: m.stopReason,
+	};
 }
 
 export function rewriteProviderError(message: string): string {

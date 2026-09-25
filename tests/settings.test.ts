@@ -1,5 +1,6 @@
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_SYSTEM_PROMPT, systemPromptOf } from '../src/agent/prompt';
 import type LibrarianPlugin from '../src/main';
 import { SHELL_GROUP, ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { LibrarianSettingTab } from '../src/settings/settings-tab';
@@ -145,6 +146,29 @@ describe('settings pages', () => {
 			// A tool with no label known yet keeps its ID as its name.
 			['edit', ''],
 		]);
+	});
+
+	it('LIB-TEST-266: the Agent page puts the Custom system prompt above AGENTS.md', () => {
+		const agent = page(tab(), 'Agent');
+		expect(agent.items.map((s) => s.heading)).toEqual(['Agent loop', 'Instructions', 'Chat']);
+		const instructions = agent.items.find((s) => s.heading === 'Instructions')!;
+		expect(instructions.items!.map((r) => r.name)).toEqual([
+			'Custom system prompt',
+			'Use AGENTS.md',
+		]);
+		expect(rows(agent).map((r) => r.name)).toContain('Max sub-agents');
+	});
+
+	it('LIB-TEST-266: a pre-2.15.0 custom prompt becomes the default with it added, and the default is not stored', () => {
+		const old = mergeSettings({ customSystemPrompt: '  Be brief.  ' });
+		expect(old.systemPrompt).toBe(`${DEFAULT_SYSTEM_PROMPT}\n\nBe brief.`);
+		expect('customSystemPrompt' in old).toBe(false);
+		expect(mergeSettings({ customSystemPrompt: '' }).systemPrompt).toBeUndefined();
+		expect(mergeSettings({}).systemPrompt).toBeUndefined();
+		// A prompt the user cleared stays cleared.
+		expect(mergeSettings({ systemPrompt: '', customSystemPrompt: 'x' }).systemPrompt).toBe('');
+		expect(systemPromptOf(mergeSettings({}))).toBe(DEFAULT_SYSTEM_PROMPT);
+		expect(mergeSettings({}).maxSubagents).toBe(3);
 	});
 
 	it('LIB-TEST-207: lists offer their add action and an empty state', () => {

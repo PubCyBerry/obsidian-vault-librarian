@@ -2,7 +2,7 @@ import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Bash } from 'just-bash/browser';
 import type { App } from 'obsidian';
 import { Type } from 'typebox';
-import { ok, throwIfAborted, tool } from '../tools/registry';
+import { throwIfAborted, tool } from '../tools/registry';
 import { createCurl, createObsidian, REFUSED } from './commands';
 import { VAULT_ROOT, VaultFs } from './vault-fs';
 
@@ -16,8 +16,16 @@ export interface ShellDeps {
 	app: App;
 	/** Characters of tool result the model may receive, from the context settings. */
 	resultLimit: () => number;
-	/** Permission and approval for a note the shell is about to change. Throws to refuse. */
-	gate: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<void>;
+	/**
+	 * Permission and approval for a note the shell is about to change. Throws to refuse. `callId`
+	 * is the bash call running the command, which tells whose approval it is.
+	 */
+	gate: (
+		name: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		callId: string,
+	) => Promise<void>;
 	/** Rewind snapshot around one vault write. */
 	snapshot: {
 		before: (id: string, path: string) => Promise<void>;
@@ -47,6 +55,11 @@ export class ShellSession {
 	private saved = 0;
 	/** Notes changed by the command now running, with the snapshot id opened for each. */
 	private readonly pending = new Map<string, string>();
+	/**
+	 * One command at a time, even from agents running side by side: the call being served and the
+	 * notes it changes are this session's state.
+	 */
+	private running: Promise<unknown> = Promise.resolve();
 
 	constructor(private readonly deps: ShellDeps) {}
 
@@ -63,7 +76,7 @@ export class ShellSession {
 			// unless this first write already carries what the note will hold.
 			const args =
 				content === null ? { path, removed: true } : content ? { path, content } : { path };
-			await this.deps.gate('write', args, this.call.signal);
+			await this.deps.gate('write', args, this.call.signal, this.call.id);
 			const id = `${this.call.id}/w${++this.writes}`;
 			this.pending.set(path, id);
 			await this.deps.snapshot.before(id, path);
@@ -96,12 +109,20 @@ export class ShellSession {
 		});
 	}
 
-	async run(
+	run(callId: string, command: string, timeoutSeconds: number, signal?: AbortSignal) {
+		// ponytail: one shell for every agent, so commands queue; give each agent its own if they wait long.
+		const turn = this.running.then(() => this.runNow(callId, command, timeoutSeconds, signal));
+		this.running = turn.catch(() => undefined);
+		return turn;
+	}
+
+	private async runNow(
 		callId: string,
 		command: string,
 		timeoutSeconds: number,
 		signal?: AbortSignal,
 	): Promise<string> {
+		if (signal?.aborted) throw new Error(STOPPED);
 		this.call = { id: callId, signal };
 		const bash = this.shell(timeoutSeconds);
 		this.filesystem().beginCommand();
@@ -156,7 +177,10 @@ export function createShellTool(session: ShellSession): AgentTool {
 		executionMode: 'sequential',
 		execute: async (callId, params, signal) => {
 			throwIfAborted(signal);
-			return ok(await session.run(callId, params.command, params.timeout ?? 30, signal));
+			// Plain text: as a JSON string every line break and quote came escaped, and that longer
+			// text could pass the limit fit() had already met, so the tail it kept was cut off.
+			const output = await session.run(callId, params.command, params.timeout ?? 30, signal);
+			return { content: [{ type: 'text', text: output }], details: undefined };
 		},
 	});
 }

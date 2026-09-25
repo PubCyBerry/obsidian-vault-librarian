@@ -105,4 +105,28 @@ describe('deferred tools (LIB-TEST-137)', () => {
 		expect(r.visible().map((t) => t.name)).not.toContain(TOOL_SEARCH_NAME);
 		expect(mergeSettings({}).toolDeferredByTool).toEqual({});
 	});
+
+	it('LIB-TEST-267: a match carries a short description and the result keeps within its budget', async () => {
+		const long = Array.from({ length: 12 }, (_, i) =>
+			fakeTool(`atlassian__tool_${i}`, `Search Jira issues. ${'Details. '.repeat(400)}`),
+		);
+		const r = new ToolRegistry({
+			registered: () => long,
+			sourceOf: () => 'Atlassian',
+			deferred: () => true,
+			budget: () => 2000,
+		});
+		const search = r.visible().find((t) => t.name === TOOL_SEARCH_NAME)!;
+		const result = await search.execute('s', {
+			query: 'search jira issues',
+			limit: 12,
+		} as never);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text.length).toBeLessThanOrEqual(2000);
+		const parsed = JSON.parse(text) as { matches: { description: string }[] };
+		expect(parsed.matches.length).toBeGreaterThan(0);
+		expect(parsed.matches[0]!.description.length).toBeLessThanOrEqual(301);
+		// Every match is on for the next call, including those the result had no room to name.
+		expect(r.activatedNames()).toHaveLength(12);
+	});
 });

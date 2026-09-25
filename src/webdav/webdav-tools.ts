@@ -14,6 +14,7 @@ import {
 	pageOf,
 	rejectHiddenWrite,
 	replaceExact,
+	resultBudget,
 	throwIfAborted,
 	tool,
 } from '../tools/registry';
@@ -101,10 +102,15 @@ function lsTool(deps: WebDavToolDeps): AgentTool {
 			throwIfAborted(signal);
 			const path = storagePath(params.path ?? '');
 			const entries = await deps.client(signal).list(path);
-			return ok({
-				path,
-				...pageOf(entries, params.offset ?? 0, params.limit ?? deps.settings().listLimit),
-			});
+			return ok(
+				pageOf(
+					entries,
+					params.offset ?? 0,
+					params.limit ?? deps.settings().listLimit,
+					resultBudget(deps.settings()),
+					{ path },
+				),
+			);
 		},
 	});
 }
@@ -132,14 +138,17 @@ function readTool(deps: WebDavToolDeps): AgentTool {
 			const path = nonRoot(storagePath(params.path), 'file');
 			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
 			const { data } = await deps.client(signal).get(path);
-			return ok({
-				path,
-				...lineWindow(
+			return ok(
+				lineWindow(
 					new TextDecoder().decode(data),
 					params.offset ?? 1,
 					params.limit ?? deps.settings().readLineLimit,
+					resultBudget(deps.settings()),
+					{ path },
+					(line, length, shown) =>
+						`Line ${line} has ${length} characters; the first ${shown} are shown. To read the rest, copy the file into the vault with webdav_download and read that line with bash.`,
 				),
-			});
+			);
 		},
 	});
 }

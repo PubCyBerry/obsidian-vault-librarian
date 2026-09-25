@@ -284,3 +284,110 @@ describe('any file type (LIB-TEST-129)', () => {
 		expect(app.vault.text('10-projects/alpha/notes.txt')).toBe('edited');
 	});
 });
+
+describe('tool audit 2026-09-25 (LIB-TEST-267)', () => {
+	/** The tools with a small result limit, and the raw result text the model gets. */
+	function small(max: number) {
+		const settings = mergeSettings({ toolResultMaxChars: max });
+		const set = createVaultTools({ app: app as unknown as App, settings: () => settings });
+		return async (name: string, args: Record<string, unknown>) => {
+			const t = set.find((x) => x.name === name)!;
+			const result = await t.execute('id', args as never, undefined);
+			return (result.content[0] as { text: string }).text;
+		};
+	}
+
+	it('"./" and "." name the vault, not a hidden folder', async () => {
+		expect(checkPath('./notes/a.md', { configDir: '.obsidian' })).toBe('notes/a.md');
+		expect(checkPath('.', { allowRoot: true, configDir: '.obsidian' })).toBe('');
+		await run('write', { path: './00-inbox/dot.md', content: 'x' });
+		expect(app.vault.text('00-inbox/dot.md')).toBe('x');
+		const root = await run('ls', { path: '.' });
+		expect(root.path).toBe('');
+		const found = await run('grep', { query: 'inbox', path: './00-inbox' });
+		expect((found.matches as { path: string }[])[0]?.path).toBe('00-inbox/inbox.md');
+	});
+
+	it('read fits the lines into one result and says where to go on', async () => {
+		const line = (i: number) => `line ${i} ${'가'.repeat(60)}`;
+		app.vault.seed('long.md', Array.from({ length: 300 }, (_, i) => line(i + 1)).join('\n'));
+		const read = small(2000);
+		const text = await read('read', { path: 'long.md' });
+		expect(text.length).toBeLessThanOrEqual(1900);
+		const parsed = JSON.parse(text) as {
+			lines: { line: number }[];
+			nextOffset: number;
+			totalLines: number;
+			note: string;
+		};
+		expect(parsed.totalLines).toBe(300);
+		expect(parsed.nextOffset).toBe(parsed.lines.length + 1);
+		expect(parsed.note).toContain(`offset ${parsed.nextOffset}`);
+		const next = JSON.parse(await read('read', { path: 'long.md', offset: parsed.nextOffset }));
+		expect(next.lines[0].line).toBe(parsed.nextOffset);
+		await expect(run('read', { path: 'long.md', offset: 301 })).rejects.toThrow(/past the end/);
+	});
+
+	it('a line longer than one result comes back cut, with the command for the rest', async () => {
+		app.vault.seed('para.md', `short\n${'x'.repeat(5000)}\nend`);
+		const text = await small(2000)('read', { path: 'para.md', offset: 2 });
+		expect(text.length).toBeLessThanOrEqual(1900);
+		const parsed = JSON.parse(text) as {
+			lines: { text: string }[];
+			note: string;
+			nextOffset: number;
+		};
+		expect(parsed.lines).toHaveLength(1);
+		const shown = parsed.lines[0]!.text.length;
+		expect(shown).toBeGreaterThan(1000);
+		expect(parsed.note).toContain(`sed -n '2p' 'para.md' | cut -c ${shown + 1}-`);
+		expect(parsed.nextOffset).toBe(3);
+	});
+
+	it('grep cuts long lines around the match and keeps within one result', async () => {
+		app.vault.seed('big.md', `${'a'.repeat(3000)} NEEDLE ${'b'.repeat(3000)}`);
+		for (let i = 0; i < 40; i++)
+			app.vault.seed(`many/${i}.md`, `NEEDLE ${i} ${'c'.repeat(200)}`);
+		const text = await small(2000)('grep', { query: 'needle', limit: 100 });
+		expect(text.length).toBeLessThanOrEqual(1900);
+		const parsed = JSON.parse(text) as {
+			matches: { path: string; text: string }[];
+			truncated: boolean;
+		};
+		expect(parsed.truncated).toBe(true);
+		const big = (await run('grep', { query: 'NEEDLE', path: 'big.md' })).matches as {
+			text: string;
+		}[];
+		expect(big[0]!.text.length).toBeLessThanOrEqual(302);
+		expect(big[0]!.text).toContain('NEEDLE');
+	});
+
+	it('ls keeps within one result and pages on with nextOffset', async () => {
+		for (let i = 0; i < 80; i++) app.vault.seed(`folder/${'n'.repeat(30)}-${i}.md`, 'x');
+		const parsed = JSON.parse(await small(1500)('ls', { path: 'folder' })) as {
+			entries: unknown[];
+			nextOffset: number;
+			total: number;
+		};
+		expect(parsed.total).toBe(80);
+		expect(parsed.entries.length).toBeLessThan(80);
+		expect(parsed.nextOffset).toBe(parsed.entries.length);
+	});
+
+	it('find matches every word of the query in any order', async () => {
+		const found = await run('find', { query: 'structure vault' });
+		expect((found.matches as { path: string }[])[0]?.path).toBe(
+			'10-projects/alpha/vault-structure.md',
+		);
+		const guide = await run('find', { query: 'GUIDE structure' });
+		expect((guide.matches as { path: string }[]).map((m) => m.path)).toContain(
+			'10-projects/alpha/vault-structure.md',
+		);
+	});
+
+	it('edit matches a file with Windows line ends and keeps them', async () => {
+		app.vault.seed('crlf.md', 'one\r\ntwo\r\nthree');
+		await run('edit', { path: 'crlf.md', old_text: 'one\ntwo', new_text: 'ONE\nTWO' });
+		expect(app.vault.text('crlf.md')).toBe('ONE\r\nTWO\r\nthree');
+	});
+});

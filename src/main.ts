@@ -3,11 +3,16 @@ import { ACTIVE_TURN_KEY, AgentController, hasUnfinishedTurn } from './agent/age
 import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
+import { createSpawnAgentTool } from './agent/subagent';
 import { ContextManager } from './context/context-manager';
 import { desktopHttp, openInBrowser } from './mcp/loopback';
 import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
 import { clientSecretId, OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
-import { SHELL_GROUP, ToolPermissionManager } from './permissions/tool-permission-manager';
+import {
+	AGENTS_GROUP,
+	SHELL_GROUP,
+	ToolPermissionManager,
+} from './permissions/tool-permission-manager';
 import { ProviderManager } from './provider/provider-manager';
 import { TransportRouter } from './provider/transport';
 import { replay, SessionManager } from './session/session-manager';
@@ -23,7 +28,7 @@ import {
 	skillsSection,
 } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
-import { createVaultTools, type ToolDeps } from './tools/registry';
+import { createVaultTools, resultBudget, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { DEFAULT_LISTED_TOOLS, type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
@@ -107,6 +112,7 @@ export default class LibrarianPlugin extends Plugin {
 		this.permissions.attachExtras(
 			() => [
 				SHELL_GROUP,
+				AGENTS_GROUP,
 				...this.mcp.groups(),
 				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
 				...skillGroups(this.skills.skills),
@@ -165,12 +171,14 @@ export default class LibrarianPlugin extends Plugin {
 		this.shell = new ShellSession({
 			app: this.app,
 			resultLimit: () => this.settings.toolResultMaxChars,
-			gate: async (name, args, signal) => {
+			gate: async (name, args, signal, bashCallId) => {
 				const gate = await this.controller.gateShellAction(
 					`${name}-${++this.shellActions}`,
 					name,
 					args,
 					signal,
+					undefined,
+					bashCallId,
 				);
 				if (!gate.ok) throw new Error(gate.reason);
 			},
@@ -185,6 +193,9 @@ export default class LibrarianPlugin extends Plugin {
 					);
 		const deferredSkills = () =>
 			usableSkills().filter((s) => this.toolDeferredOf(skillKey(s.name)));
+		const spawnAgent = createSpawnAgentTool((id, args, signal) =>
+			this.controller.runSubagent(id, args, signal),
+		);
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
@@ -194,10 +205,13 @@ export default class LibrarianPlugin extends Plugin {
 				return [
 					...createVaultTools(vaultDeps),
 					createShellTool(this.shell),
+					spawnAgent,
 					...webdavTools(),
 					...this.mcp.tools(),
 					// Only while some skill waits to be found, as tool_search for deferred tools.
-					...(hidden.length ? [createSkillSearchTool(hidden)] : []),
+					...(hidden.length
+						? [createSkillSearchTool(hidden, resultBudget(this.settings))]
+						: []),
 				].map((t) => ({
 					...t,
 					executionMode:
@@ -207,6 +221,7 @@ export default class LibrarianPlugin extends Plugin {
 			sourceOf: (t) =>
 				this.mcpServerNameOf(t.name) ?? (t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
 			deferred: (t) => this.toolDeferredOf(t.name),
+			budget: () => resultBudget(this.settings),
 		});
 		const context = new ContextManager(this.app, () => this.settings.context);
 		this.controller = new AgentController({

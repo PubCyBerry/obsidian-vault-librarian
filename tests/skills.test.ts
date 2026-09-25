@@ -87,9 +87,8 @@ describe('skills (LIB-TEST-123)', () => {
 		);
 		expect(catalogOf([])).toBe('');
 		const prompt = new PromptManager(app as unknown as App).buildSystemPrompt({
-			builtIn: 'built-in',
+			systemPrompt: 'built-in',
 			vaultAgentsMd: null,
-			customSystemPrompt: '',
 			skillCatalog: skillsSection(skills.skills, []),
 		});
 		expect(prompt).toContain('# Skills');

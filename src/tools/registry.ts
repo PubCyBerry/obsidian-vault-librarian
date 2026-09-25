@@ -32,6 +32,53 @@ export function ok(result: unknown): AgentToolResult {
 	return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result as never };
 }
 
+/**
+ * Characters one result may take. The controller cuts anything longer, which would chop a JSON
+ * result in the middle and drop where to read on, so the tools fit their own results inside it.
+ */
+export function resultBudget(settings: LibrarianSettings): number {
+	return Math.max(1000, settings.toolResultMaxChars - 100);
+}
+
+/**
+ * The most of `total` items whose result fits `budget`: `build(n)` is the result with the first n,
+ * measured as the JSON the model gets. 0 when not even one fits.
+ */
+export function fitCount(total: number, budget: number, build: (n: number) => unknown): number {
+	const fits = (n: number) => JSON.stringify(build(n)).length <= budget;
+	if (fits(total)) return total;
+	let lo = 0;
+	let hi = total;
+	while (hi - lo > 1) {
+		const mid = (lo + hi) >> 1;
+		if (fits(mid)) lo = mid;
+		else hi = mid;
+	}
+	return lo;
+}
+
+/** The first `n` characters, one less when that would split a surrogate pair. */
+export function cutAt(text: string, n: number): string {
+	const code = text.charCodeAt(n - 1);
+	return text.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n);
+}
+
+/** A long line cut to `max` characters around `at`, with an ellipsis where text was left out. */
+function clip(text: string, max: number, at = 0): string {
+	if (text.length <= max) return text;
+	const start = Math.max(0, Math.min(at - Math.floor(max / 3), text.length - max));
+	const end = start + max;
+	return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
+
+/** Single-quoted for the shell. */
+function shellQuote(s: string): string {
+	return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+const GREP_LINE_MAX = 300;
+const GREP_CONTEXT_MAX = 160;
+
 export function throwIfAborted(signal?: AbortSignal) {
 	if (signal?.aborted) throw new Error('Operation aborted');
 }
@@ -44,6 +91,11 @@ export function replaceExact(
 	replaceAll?: boolean,
 ): { text: string; replacements: number } | { failure: string } {
 	const count = data.split(oldText).length - 1;
+	// A file saved with Windows line ends never matches the model's \n; match it in the file's own.
+	if (count === 0 && oldText.includes('\n') && !oldText.includes('\r') && data.includes('\r\n')) {
+		const crlf = (s: string) => s.replace(/\r?\n/g, '\r\n');
+		return replaceExact(data, crlf(oldText), crlf(newText), replaceAll);
+	}
 	if (count === 0)
 		return { failure: 'old_text was not found in the note. Reread the note and retry.' };
 	if (count > 1 && !replaceAll)
@@ -143,7 +195,10 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				}),
 			),
 			offset: Type.Optional(
-				Type.Integer({ minimum: 0, description: 'Entries to skip. Default 0.' }),
+				Type.Integer({
+					minimum: 0,
+					description: 'Entries to skip. Default 0. Pass nextOffset to list more.',
+				}),
 			),
 			limit: Type.Optional(
 				Type.Integer({
@@ -168,39 +223,95 @@ export function createLsTool(deps: ToolDeps): AgentTool {
 				...listing.folders.map((p) => ({ type: 'folder' as const, path: p })),
 				...listing.files.map((p) => ({ type: 'file' as const, path: p })),
 			].sort((a, b) => a.path.localeCompare(b.path));
-			return ok({
-				path,
-				...pageOf(entries, params.offset ?? 0, params.limit ?? deps.settings().listLimit),
-			});
+			return ok(
+				pageOf(
+					entries,
+					params.offset ?? 0,
+					params.limit ?? deps.settings().listLimit,
+					resultBudget(deps.settings()),
+					{ path },
+				),
+			);
 		},
 	});
 }
 
-/** The ls result shape, shared with the storage listing. */
-export function pageOf<T>(items: T[], offset: number, limit: number) {
-	const entries = items.slice(offset, offset + limit);
-	const next = offset + entries.length;
-	return {
-		entries,
-		offset,
-		...(next < items.length ? { nextOffset: next } : {}),
-		total: items.length,
+/**
+ * The ls result shape, shared with the storage listing: `head`, then as many entries from
+ * `offset` as fit in `budget`, and `nextOffset` while more are left.
+ */
+export function pageOf<T>(
+	items: T[],
+	offset: number,
+	limit: number,
+	budget = Number.POSITIVE_INFINITY,
+	head: Record<string, unknown> = {},
+) {
+	const window = items.slice(offset, offset + limit);
+	const page = (n: number) => {
+		const entries = window.slice(0, n);
+		const next = offset + entries.length;
+		return {
+			...head,
+			entries,
+			offset,
+			...(next < items.length ? { nextOffset: next } : {}),
+			total: items.length,
+		};
 	};
+	return page(Math.max(1, fitCount(window.length, budget, page)));
 }
 
-/** The read result shape, shared with the storage read. `offset` is 1-based. */
-export function lineWindow(text: string, offset: number, limit: number) {
+/**
+ * The read result shape, shared with the storage read. `offset` is 1-based. As many lines as fit
+ * in `budget` come back, with `nextOffset` to read on; a first line longer than that alone comes
+ * back cut, and `longLine` says how to get the rest of it.
+ */
+export function lineWindow(
+	text: string,
+	offset: number,
+	limit: number,
+	budget = Number.POSITIVE_INFINITY,
+	head: Record<string, unknown> = {},
+	longLine: (line: number, length: number, shown: number) => string = (line, length, shown) =>
+		`Line ${line} has ${length} characters; only the first ${shown} are shown.`,
+) {
 	const all = text.split('\n');
-	const lines = all
-		.slice(offset - 1, offset - 1 + limit)
-		.map((line, i) => ({ line: offset + i, text: line }));
-	const next = offset + lines.length;
-	return {
-		offset,
-		lines,
-		totalLines: all.length,
-		...(next <= all.length ? { nextOffset: next } : {}),
+	if (offset > all.length)
+		throw new Error(
+			`offset ${offset} is past the end of the file, which has ${all.length} lines`,
+		);
+	const window = all.slice(offset - 1, offset - 1 + limit);
+	const page = (lines: { line: number; text: string }[], note?: string) => {
+		const next = offset + lines.length;
+		return {
+			...head,
+			offset,
+			lines,
+			totalLines: all.length,
+			...(next <= all.length ? { nextOffset: next } : {}),
+			...(note ? { note } : {}),
+		};
 	};
+	const numbered = (n: number) =>
+		window.slice(0, n).map((t, i) => ({ line: offset + i, text: t }));
+	// Cut by the size of a result rather than by limit: said, so the model reads on.
+	const sized = (n: number) =>
+		page(
+			numbered(n),
+			n < window.length
+				? `Stopped at the size limit of one result. Continue with offset ${offset + n}.`
+				: undefined,
+		);
+	const n = fitCount(window.length, budget, sized);
+	if (n > 0) return sized(n);
+	const first = window[0] ?? '';
+	// Room for the note, which names the line and may carry a path.
+	const shown = fitCount(first.length, budget - 400, (c) =>
+		page([{ line: offset, text: first.slice(0, c) }]),
+	);
+	const cut = cutAt(first, shown);
+	return page([{ line: offset, text: cut }], longLine(offset, first.length, cut.length));
 }
 
 export function createFindTool(deps: ToolDeps): AgentTool {
@@ -208,7 +319,7 @@ export function createFindTool(deps: ToolDeps): AgentTool {
 		name: 'find',
 		label: 'Find note',
 		description:
-			'Find files by filename, path, title, or alias. Use this when the user names or approximately names a note or file.',
+			'Find files by filename, path, title, or alias. Use this when the user names or approximately names a note or file. Every word of the query must appear, in any order and any case.',
 		parameters: Type.Object({
 			query: Type.String({ minLength: 1 }),
 			path: Type.Optional(Type.String({ description: 'Optional folder restriction.' })),
@@ -221,7 +332,10 @@ export function createFindTool(deps: ToolDeps): AgentTool {
 			const folder = params.path
 				? checkPath(params.path, { allowRoot: true, configDir: deps.app.vault.configDir })
 				: undefined;
-			const q = params.query.toLowerCase();
+			const q = params.query.trim().toLowerCase();
+			// "librarian plugin" finds "Obsidian Librarian 플러그인 개발/Librarian plugin notes.md".
+			const words = q.split(/\s+/).filter(Boolean);
+			const hasAll = (s: string) => words.every((w) => s.includes(w));
 			const limit = params.limit ?? 20;
 			const scored: { score: number; path: string; title?: string; aliases?: string[] }[] =
 				[];
@@ -233,20 +347,26 @@ export function createFindTool(deps: ToolDeps): AgentTool {
 				const aliases = parseFrontMatterAliases(fm) ?? undefined;
 				const base = basenameOf(path).toLowerCase();
 				let score = 0;
-				if (base === q) score = 4;
-				else if (base.includes(q)) score = 3;
-				else if (title?.toLowerCase().includes(q)) score = 2;
-				else if (aliases?.some((a) => a.toLowerCase().includes(q))) score = 2;
-				else if (path.toLowerCase().includes(q)) score = 1;
+				if (base === q) score = 5;
+				else if (base.includes(q)) score = 4;
+				else if (hasAll(base)) score = 3;
+				else if ([title, ...(aliases ?? [])].some((t) => t && hasAll(t.toLowerCase())))
+					score = 2;
+				else if (hasAll(path.toLowerCase())) score = 1;
 				if (score > 0) scored.push({ score, path, title, aliases });
 			}
 			scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-			const matches = scored.slice(0, limit).map(({ path, title, aliases }) => ({
+			const found = scored.slice(0, limit).map(({ path, title, aliases }) => ({
 				path,
 				...(title ? { title } : {}),
 				...(aliases?.length ? { aliases } : {}),
 			}));
-			return ok({ query: params.query, matches, truncated: scored.length > limit });
+			const result = (n: number) => ({
+				query: params.query,
+				matches: found.slice(0, n),
+				truncated: scored.length > n,
+			});
+			return ok(result(fitCount(found.length, resultBudget(deps.settings()), result)));
 		},
 	});
 }
@@ -256,7 +376,7 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 		name: 'grep',
 		label: 'Search contents',
 		description:
-			'Search text file contents in the vault and return matching lines with paths and line numbers. Use this when the relevant note is not already known.',
+			'Search text file contents in the vault and return matching lines with paths and line numbers. Use this when the relevant note is not already known. The query matches within one line; regex mode uses JavaScript syntax. Long lines come back cut around the match; read the note to see them whole.',
 		parameters: Type.Object({
 			query: Type.String({ minLength: 1 }),
 			path: Type.Optional(
@@ -306,13 +426,16 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 				(f) => !isBinaryPath(f.path),
 			);
 			let batch = 0;
+			// A paragraph is one line in Markdown; a whole one per match would crowd out the rest.
+			const around = (lines: string[]) => lines.map((l) => clip(l, GREP_CONTEXT_MAX));
 			// ponytail: full scan with a yield every 20 files; add an index if real vaults measure slow.
 			for (const file of files) {
 				throwIfAborted(signal);
 				if (++batch % 20 === 0) await yieldToUi();
 				const lines = (await readEntry(deps.app, file)).split('\n');
 				for (let i = 0; i < lines.length; i++) {
-					if (!re.test(lines[i]!)) continue;
+					const hit = re.exec(lines[i]!);
+					if (!hit) continue;
 					if (matches.length >= limit) {
 						truncated = true;
 						break;
@@ -320,14 +443,21 @@ export function createGrepTool(deps: ToolDeps): AgentTool {
 					matches.push({
 						path: file.path,
 						line: i + 1,
-						text: lines[i]!,
-						...(ctx > 0 ? { before: lines.slice(Math.max(0, i - ctx), i) } : {}),
-						...(ctx > 0 ? { after: lines.slice(i + 1, i + 1 + ctx) } : {}),
+						text: clip(lines[i]!, GREP_LINE_MAX, hit.index),
+						...(ctx > 0
+							? { before: around(lines.slice(Math.max(0, i - ctx), i)) }
+							: {}),
+						...(ctx > 0 ? { after: around(lines.slice(i + 1, i + 1 + ctx)) } : {}),
 					});
 				}
 				if (truncated) break;
 			}
-			return ok({ query: params.query, matches, truncated });
+			const result = (n: number) => ({
+				query: params.query,
+				matches: matches.slice(0, n),
+				truncated: truncated || n < matches.length,
+			});
+			return ok(result(fitCount(matches.length, resultBudget(deps.settings()), result)));
 		},
 	});
 }
@@ -337,7 +467,7 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 		name: 'read',
 		label: 'Read note',
 		description:
-			'Read a range of lines from a text file. Use this after find or grep to inspect the actual source text.',
+			'Read a range of lines from a text file. Use this after find or grep to inspect the actual source text. One result holds as many lines as fit in it; when it has nextOffset, call again with that offset to read on.',
 		parameters: Type.Object({
 			path: Type.String({ description: 'Vault-relative file path.' }),
 			offset: Type.Optional(
@@ -369,15 +499,17 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 					text = await deps.app.vault.adapter.read(path);
 				} else throw new Error(`File not found: ${path}`);
 			}
-			return ok({
-				path,
-				...lineWindow(
+			return ok(
+				lineWindow(
 					text,
 					params.offset ?? 1,
 					params.limit ?? deps.settings().readLineLimit,
+					resultBudget(deps.settings()),
+					{ path, ...extra },
+					(line, length, shown) =>
+						`Line ${line} has ${length} characters; the first ${shown} are shown. Read the rest with bash: sed -n '${line}p' ${shellQuote(path)} | cut -c ${shown + 1}-${shown * 2}`,
 				),
-				...extra,
-			});
+			);
 		},
 	});
 }
@@ -403,7 +535,7 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 		name: 'write',
 		label: 'Write note',
 		description:
-			'Create a file or replace the full contents of an existing file. Prefer edit for localized changes.',
+			'Create a file or replace the full contents of an existing file. Missing parent folders are created. Give the path with its extension, such as .md for a note. Prefer edit for localized changes.',
 		parameters: Type.Object({
 			path: Type.String({ description: 'Vault-relative file path.' }),
 			content: Type.String({ description: 'Complete file content.' }),
@@ -449,7 +581,7 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 		name: 'edit',
 		label: 'Edit note',
 		description:
-			'Modify part of an existing text file by replacing exact text. Read the file first unless its current content is already available.',
+			'Modify part of an existing text file by replacing exact text. old_text must match the file exactly, whitespace included, and occur once unless replace_all is set. Read the file first unless its current content is already available.',
 		parameters: Type.Object({
 			path: Type.String({ description: 'Vault-relative file path.' }),
 			old_text: Type.String({ minLength: 1, description: 'Exact existing text.' }),

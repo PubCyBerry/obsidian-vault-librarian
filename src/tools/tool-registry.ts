@@ -1,5 +1,6 @@
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
+import { cutAt, fitCount } from './registry';
 
 export const TOOL_SEARCH_NAME = 'tool_search';
 export const DEFAULT_SEARCH_LIMIT = 5;
@@ -101,6 +102,8 @@ export interface ToolRegistryDeps {
 	registered: () => AgentTool[];
 	sourceOf: (tool: AgentTool) => string;
 	deferred: (tool: AgentTool) => boolean;
+	/** Characters a tool_search result may take. */
+	budget?: () => number;
 }
 
 /**
@@ -184,10 +187,12 @@ export class ToolRegistry {
 				if (!query) throw new Error('query must not be empty');
 				const matches = this.search(query, params.limit ?? DEFAULT_SEARCH_LIMIT);
 				this.activate(matches.map((m) => m.name));
+				// A server's description can run to kilobytes; the whole one comes with the tool.
 				return searchResult(
 					query,
-					matches,
+					matches.map((m) => ({ ...m, description: shortDescription(m.description) })),
 					'These tools are available from your next response on.',
+					this.deps.budget?.(),
 				);
 			},
 		};
@@ -209,11 +214,28 @@ export function searchParameters(query: string, noun: string) {
 	});
 }
 
-/** The matches, with a nudge toward English when a non-ASCII query finds nothing. */
-export function searchResult(query: string, matches: unknown[], note: string): AgentToolResult {
-	const result: Record<string, unknown> = { query, matches };
-	if (!matches.length && /\P{ASCII}/u.test(query))
-		result.hint = 'No match. Write the query in English keywords.';
-	else if (matches.length) result.note = note;
+/**
+ * The matches that fit in `budget`, with a nudge toward English when a non-ASCII query finds
+ * nothing.
+ */
+export function searchResult(
+	query: string,
+	matches: unknown[],
+	note: string,
+	budget = Number.POSITIVE_INFINITY,
+): AgentToolResult {
+	const build = (n: number) => {
+		const result: Record<string, unknown> = { query, matches: matches.slice(0, n) };
+		if (!matches.length && /\P{ASCII}/u.test(query))
+			result.hint = 'No match. Write the query in English keywords.';
+		else if (matches.length) result.note = note;
+		return result;
+	};
+	const result = build(Math.max(1, fitCount(matches.length, budget, build)));
 	return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result as never };
+}
+
+/** A description short enough for a list of matches; the tool itself carries the whole one. */
+export function shortDescription(text: string, max = 300): string {
+	return text.length > max ? `${cutAt(text, max)}…` : text;
 }

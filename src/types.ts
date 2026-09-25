@@ -1,3 +1,5 @@
+import { DEFAULT_SYSTEM_PROMPT } from './agent/prompt';
+
 /** Chat Completions (`/chat/completions`), which every OpenAI-compatible server speaks. */
 export const COMPLETIONS_API = 'openai-completions';
 /** OpenAI's Responses API (`/responses`), which newer reasoning models need to call tools (LIB-FEAT-247). */
@@ -170,8 +172,15 @@ export interface LibrarianSettings {
 	/** Turns with tool calls before a run stops and waits; 0 means no limit. */
 	maxIterations: number;
 	repeatedFailureLimit: number;
+	/** Sub-agents that run at once; further spawn_agent calls wait for a slot (LIB-FEAT-139). */
+	maxSubagents: number;
 	useVaultAgentsMd: boolean;
-	customSystemPrompt: string;
+	/**
+	 * The Custom system prompt, which every request starts with ahead of the vault root AGENTS.md.
+	 * Absent while the user has not changed the default (DEFAULT_SYSTEM_PROMPT), so a new release
+	 * can improve it; `systemPromptOf` reads it.
+	 */
+	systemPrompt?: string;
 	context: ContextSettings;
 	toolResultMaxChars: number;
 	listLimit: number;
@@ -216,6 +225,7 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		write: 'approval_required',
 		edit: 'approval_required',
 		bash: 'approval_required',
+		spawn_agent: 'approval_required',
 	},
 };
 
@@ -229,6 +239,8 @@ export const DEFAULT_LISTED_TOOLS: ReadonlySet<string> = new Set([
 	'edit',
 	'bash',
 	'skill_search',
+	// Listed, or the model would not think of splitting work it was not told to split.
+	'spawn_agent',
 ]);
 
 export const DEFAULT_REQUEST_DEFAULTS: RequestDefaults = {
@@ -252,8 +264,8 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	commandsFolder: 'Librarian/commands',
 	maxIterations: 0,
 	repeatedFailureLimit: 3,
+	maxSubagents: 3,
 	useVaultAgentsMd: true,
-	customSystemPrompt: '',
 	context: {
 		warningAt: 0.7,
 		compactAt: 0.85,
@@ -268,7 +280,13 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 
 /** Deep-ish merge of stored data over the defaults so that new fields get their default. */
 export function mergeSettings(stored: unknown): LibrarianSettings {
-	const s = (stored ?? {}) as Partial<LibrarianSettings>;
+	// Before 2.15.0 the user's prompt came after the built-in one and AGENTS.md as an addition.
+	const { customSystemPrompt: legacyPrompt, ...s } = (stored ??
+		{}) as Partial<LibrarianSettings> & {
+		customSystemPrompt?: unknown;
+	};
+	if (s.systemPrompt === undefined && typeof legacyPrompt === 'string' && legacyPrompt.trim())
+		s.systemPrompt = `${DEFAULT_SYSTEM_PROMPT}\n\n${legacyPrompt.trim()}`;
 	const byTool = { ...DEFAULT_TOOL_PERMISSIONS.byTool, ...(s.toolPermissions?.byTool ?? {}) };
 	// Settings written before 1.8.0 kept this choice per provider as `parallelReadTools`.
 	const legacySequential = (s.providers ?? []).some(

@@ -97,6 +97,7 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 	}
 	if (!title && firstUser) title = firstUser.replace(/\s+/g, ' ').trim().slice(0, 60);
 	const last = events[events.length - 1];
+	const { parentId, parentCallId, agentName } = meta.session;
 	return {
 		id,
 		path,
@@ -107,6 +108,7 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 		createdAt: meta.session.createdAt,
 		updatedAt: last?.t ?? meta.session.createdAt,
 		messageCount,
+		...(parentId ? { parentId, parentCallId, agentName } : {}),
 	};
 }
 
@@ -204,13 +206,16 @@ export class SessionManager {
 		await this.append(id, { type: 'rename', title });
 	}
 
+	/** Deletes a session, its rewind snapshots and the sessions of the sub-agents it started. */
 	async delete(id: string): Promise<void> {
 		const adapter = this.app.vault.adapter;
+		const children = (await this.list()).filter((s) => s.parentId === id);
 		const path = this.sessionPath(id);
 		if (await adapter.exists(path)) await adapter.remove(path);
 		const snapDir = normalizePath(`${this.snapshotsDir}/${id}`);
 		if (await adapter.exists(snapDir)) await adapter.rmdir(snapDir, true);
 		this.summaries.delete(id);
+		for (const child of children) await this.delete(child.id);
 	}
 
 	async recordModelChange(
@@ -272,7 +277,10 @@ export class SessionManager {
 		const dir = this.snapshotDirFor(sessionId);
 		await this.ensureDir(dir);
 		const base = notePath.slice(notePath.lastIndexOf('/') + 1);
-		const ref = `${pad(eventIndex, 4)}-${base}`;
+		// Agents working side by side can change two notes of one name before the log moves on.
+		let ref = `${pad(eventIndex, 4)}-${base}`;
+		for (let n = 2; await this.app.vault.adapter.exists(normalizePath(`${dir}/${ref}`)); n++)
+			ref = `${pad(eventIndex, 4)}-${n}-${base}`;
 		await this.app.vault.adapter.write(normalizePath(`${dir}/${ref}`), content);
 		return ref;
 	}

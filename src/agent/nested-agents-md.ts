@@ -91,6 +91,16 @@ export class NestedAgentsMd {
 	}
 
 	/**
+	 * Deliveries for another conversation: a sub-agent's. One that starts from this conversation
+	 * has already been given what was delivered here.
+	 */
+	fork(keepDelivered = false): NestedAgentsMd {
+		const copy = new NestedAgentsMd(this.deps);
+		if (keepDelivered) for (const key of this.seen) copy.seen.add(key);
+		return copy;
+	}
+
+	/**
 	 * The blocks to append to this call's result, or an empty string. After Stop nothing is read:
 	 * a storage read can otherwise wait for the app to come back long after the run was stopped.
 	 */

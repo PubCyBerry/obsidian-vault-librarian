@@ -24,6 +24,9 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
  */
 export const SHELL_GROUP: ToolGroup = { id: 'shell', label: 'Commands', tools: ['bash'] };
 
+/** spawn_agent. What a sub-agent then does is judged call by call, like the main agent's calls. */
+export const AGENTS_GROUP: ToolGroup = { id: 'agents', label: 'Agents', tools: ['spawn_agent'] };
+
 export type ToolGroupDisplayPermission = ToolPermission | 'mixed';
 
 export const PERMISSION_LABELS: Record<ToolPermission, string> = {

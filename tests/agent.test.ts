@@ -8,7 +8,7 @@ import {
 	SKIPPED_RESULT,
 } from '../src/agent/agent-controller';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
-import { PromptManager } from '../src/agent/prompt';
+import { DEFAULT_SYSTEM_PROMPT, PromptManager } from '../src/agent/prompt';
 import { ContextManager, HANDOFF_PROMPT } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
@@ -212,29 +212,39 @@ describe('agent loop through Pi (LIB-TEST-030, LIB-TEST-038, LIB-TEST-088)', () 
 		const h = harness(
 			[{ text: 'ok' }],
 			{},
-			{ useVaultAgentsMd: false, customSystemPrompt: 'Be brief.' },
+			{ useVaultAgentsMd: false, systemPrompt: 'Be brief.' },
 		);
 		await h.controller.send('hi');
 		let system = h.requests[0]!.messages[0] as { content: string };
 		expect(system.content).not.toContain('Vault root AGENTS.md\n\nAnswer');
-		expect(system.content.indexOf('Custom system prompt')).toBeGreaterThan(
-			system.content.indexOf('You are Librarian'),
-		);
-		const h2 = harness(
-			[{ text: 'ok' }, { text: 'ok' }],
-			{},
-			{ customSystemPrompt: 'Be brief.' },
-		);
+		// The user's prompt replaces the default outright.
+		expect(system.content.startsWith('Be brief.')).toBe(true);
+		expect(system.content).not.toContain('You are Librarian');
+		const h2 = harness([{ text: 'ok' }, { text: 'ok' }], {}, { systemPrompt: 'Be brief.' });
 		await h2.controller.send('hi');
 		system = h2.requests[0]!.messages[0] as { content: string };
-		expect(system.content.indexOf('# Vault root AGENTS.md')).toBeLessThan(
-			system.content.indexOf('# Custom system prompt'),
+		expect(system.content).toMatch(
+			/^Be brief\.\n\n# Vault root AGENTS\.md\n\nAnswer in Korean\./,
 		);
 		await h2.app.vault.modify(h2.app.vault.getFileByPath('AGENTS.md')!, '   ');
 		await h2.controller.send('again');
 		system = h2.requests[1]!.messages[0] as { content: string };
 		expect(system.content).not.toContain('# Vault root AGENTS.md');
 		expect(h2.events.some((e) => e.type === 'approval')).toBe(false);
+	});
+
+	it('LIB-TEST-266: the default system prompt comes first, then AGENTS.md, and states that order', async () => {
+		const h = harness([{ text: 'ok' }]);
+		await h.controller.send('hi');
+		const system = (h.requests[0]!.messages[0] as { content: string }).content;
+		expect(system.startsWith(DEFAULT_SYSTEM_PROMPT)).toBe(true);
+		expect(system.indexOf('\n# Vault root AGENTS.md\n')).toBeGreaterThan(
+			DEFAULT_SYSTEM_PROMPT.length - 1,
+		);
+		expect(DEFAULT_SYSTEM_PROMPT).toContain(
+			'follow this order: these instructions, the AGENTS.md of the folder you are working in, the vault root AGENTS.md, ordinary vault content.',
+		);
+		expect(system).not.toContain('# Custom system prompt');
 	});
 });
 

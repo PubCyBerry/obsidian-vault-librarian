@@ -1,5 +1,6 @@
 import {
 	type App,
+	type ButtonComponent,
 	FuzzySuggestModal,
 	Modal,
 	Notice,
@@ -14,8 +15,10 @@ import {
 	SettingGroup,
 	setIcon,
 	setTooltip,
+	type TextAreaComponent,
 	type TFile,
 } from 'obsidian';
+import { DEFAULT_SYSTEM_PROMPT, systemPromptOf } from '../agent/prompt';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
 import { clientSecretId } from '../mcp/oauth-provider';
@@ -93,6 +96,8 @@ function groupNote(groupId: string): string {
 		return 'bash runs commands inside the plugin, curl and obsidian among them. A new install asks first.';
 	if (groupId === 'webdav')
 		return 'They reach the WebDAV storage. A new install lists and reads without asking and asks before any change.';
+	if (groupId === 'agents')
+		return 'spawn_agent starts a sub-agent with the same tools and permissions, which hands back one answer. A new install asks first.';
 	return 'Tools of this server, their results marked untrusted. A new install runs the ones that only read without asking.';
 }
 
@@ -1154,6 +1159,23 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								),
 						},
 						{
+							name: 'Max sub-agents',
+							desc: 'How many sub-agents run at once. Further spawn_agent calls wait for a slot. Keep it small on a phone.',
+							render: (setting) =>
+								numberInput(
+									setting,
+									s.maxSubagents,
+									async (v) => {
+										s.maxSubagents =
+											v === undefined
+												? 3
+												: Math.min(8, Math.max(1, Math.floor(v)));
+										await this.save();
+									},
+									'3',
+								),
+						},
+						{
 							name: 'Tool execution',
 							desc: 'How the calls in one response run. A batch with a sequential tool in it runs one call at a time; each tool can be set under Tool permissions.',
 							render: (setting) =>
@@ -1178,6 +1200,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					heading: 'Instructions',
 					items: [
 						{
+							name: 'Custom system prompt',
+							desc: "The instructions every request starts with, before the vault root AGENTS.md; where the two disagree, these win. They start as Librarian's own, which Restore default brings back.",
+							render: (setting) => this.systemPromptSetting(setting),
+						},
+						{
 							name: 'Use AGENTS.md',
 							desc: this.app.vault.getFileByPath('AGENTS.md')
 								? agentsMdDesc
@@ -1189,23 +1216,6 @@ export class LibrarianSettingTab extends PluginSettingTab {
 										await this.save();
 									}),
 								),
-						},
-						{
-							name: 'Custom system prompt',
-							desc: 'Your own instructions. They come after the built-in instructions and the vault root AGENTS.md.',
-							render: (setting) => {
-								setting.settingEl.addClass('librarian-prompt-setting');
-								setting.addTextArea((t) => {
-									t.inputEl.rows = 6;
-									t.setPlaceholder(
-										'For example: Keep answers short and cite the notes you read.',
-									);
-									t.setValue(s.customSystemPrompt).onChange(async (v) => {
-										s.customSystemPrompt = v;
-										await this.save();
-									});
-								});
-							},
 						},
 					],
 				},
@@ -1245,6 +1255,49 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				},
 			],
 		};
+	}
+
+	/**
+	 * The Custom system prompt: the default until edited, and stored only while it differs, so a
+	 * release that improves the default still reaches everyone who kept it (LIB-FEAT-265).
+	 */
+	private systemPromptSetting(setting: Setting): void {
+		const s = this.plugin.settings;
+		setting.settingEl.addClass('librarian-prompt-setting');
+		let area: TextAreaComponent | null = null;
+		let restore: ButtonComponent | null = null;
+		const showRestore = () => restore?.buttonEl.toggle(s.systemPrompt !== undefined);
+		setting.addTextArea((t) => {
+			area = t;
+			t.inputEl.rows = 14;
+			t.setValue(systemPromptOf(s)).onChange(async (v) => {
+				if (v === DEFAULT_SYSTEM_PROMPT) delete s.systemPrompt;
+				else s.systemPrompt = v;
+				showRestore();
+				await this.save();
+			});
+		});
+		setting.addButton((b) => {
+			restore = b;
+			b.setButtonText('Restore default').onClick(() =>
+				new ConfirmModal(
+					this.app,
+					'Restore the default system prompt?',
+					(el) =>
+						el.createEl('p', {
+							text: 'Your edits are replaced by the default instructions.',
+						}),
+					'Restore',
+					async () => {
+						delete s.systemPrompt;
+						area?.setValue(DEFAULT_SYSTEM_PROMPT);
+						showRestore();
+						await this.save();
+					},
+				).open(),
+			);
+		});
+		showRestore();
 	}
 
 	// MCP servers

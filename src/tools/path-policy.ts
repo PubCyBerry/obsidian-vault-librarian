@@ -59,13 +59,15 @@ export function checkPath(raw: string, opts: { allowRoot?: boolean; configDir: s
 	if (/^[a-zA-Z]:[\\/]/.test(trimmed) || /^[\\/]/.test(trimmed) || /^~/.test(trimmed)) {
 		throw new Error(`Absolute paths are not allowed: ${raw}`);
 	}
-	const path = normalizePath(trimmed);
-	const segments = path.split('/').filter((s) => s.length > 0);
+	// "." segments go: models often write "./notes/a.md", and a kept "." reads as a dot folder.
+	const segments = normalizePath(trimmed)
+		.split('/')
+		.filter((s) => s.length > 0 && s !== '.');
 	if (segments.some((s) => s === '..'))
 		throw new Error(`Parent traversal is not allowed: ${raw}`);
 	if (segments.length === 0) {
 		if (opts.allowRoot) return '';
 		throw new Error('path must not be empty');
 	}
-	return path;
+	return segments.join('/');
 }

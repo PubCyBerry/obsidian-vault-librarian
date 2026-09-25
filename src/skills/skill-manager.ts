@@ -146,7 +146,10 @@ export function skillsSection(listed: readonly Skill[], deferred: readonly Skill
  * of each deferred skill. It only names skills; reading a SKILL.md with read loads one, under
  * that skill's permission.
  */
-export function createSkillSearchTool(skills: readonly Skill[]): AgentTool {
+export function createSkillSearchTool(
+	skills: readonly Skill[],
+	budget = Number.POSITIVE_INFINITY,
+): AgentTool {
 	const folders = new Map<string, number>();
 	for (const s of skills) {
 		const folder = s.dir.slice(0, s.dir.lastIndexOf('/'));
@@ -177,6 +180,7 @@ export function createSkillSearchTool(skills: readonly Skill[]): AgentTool {
 				query,
 				matches,
 				'Read the SKILL.md at the location of the skill that fits, then follow it.',
+				budget,
 			);
 		},
 	};
