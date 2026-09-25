@@ -1,0 +1,25 @@
+import { describe, expect, it } from 'vitest';
+import { trimToPath } from '../src/ui/sources';
+
+const notes = new Set(['Meetings/2026-09-15 Design review.md', 'notes.md', '(Archive)/old.md']);
+const exists = (path: string) => notes.has(path);
+
+describe('source links (LIB-TEST-264)', () => {
+	it('finds a path with spaces inside the parentheses a citation often sits in', () => {
+		expect(trimToPath(' (Meetings/2026-09-15 Design review.md', exists)).toBe(
+			'Meetings/2026-09-15 Design review.md',
+		);
+		expect(trimToPath('as written in “notes.md', exists)).toBe('notes.md');
+	});
+
+	it('keeps the longest trailing part that is a note, and a folder that starts with a bracket', () => {
+		expect(trimToPath('Decided in Meetings/2026-09-15 Design review.md', exists)).toBe(
+			'Meetings/2026-09-15 Design review.md',
+		);
+		expect(trimToPath('see (Archive)/old.md', exists)).toBe('(Archive)/old.md');
+	});
+
+	it('falls back to the last word, without its opening bracket, when no part is a note', () => {
+		expect(trimToPath('(missing note.md', exists)).toBe('note.md');
+	});
+});

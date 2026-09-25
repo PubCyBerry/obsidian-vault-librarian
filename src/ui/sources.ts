@@ -7,14 +7,23 @@ import { type App, MarkdownView, Notice, TFile } from 'obsidian';
  */
 const SOURCE_PATTERN = /([^\n:`[\]|]+?\.md):(\d+)(?:-(\d+))?/g;
 
-/** Longest trailing space-separated part of `candidate` that `exists` accepts, else the last word. */
-function trimToPath(candidate: string, exists: (path: string) => boolean): string {
+/** A bracket or quote a citation often opens with, as in `(Meetings/Review.md:3)`. */
+const OPENERS = /^[("'“‘<{]+/;
+
+/**
+ * Longest trailing space-separated part of `candidate` that `exists` accepts, else the last word,
+ * without the bracket or quote the citation opened with.
+ */
+export function trimToPath(candidate: string, exists: (path: string) => boolean): string {
 	const words = candidate.trim().split(' ');
 	for (let i = 0; i < words.length; i++) {
 		const part = words.slice(i).join(' ');
 		if (exists(part)) return part;
+		// Checked second, so a folder whose name starts with a bracket still resolves.
+		const bare = part.replace(OPENERS, '');
+		if (bare !== part && exists(bare)) return bare;
 	}
-	return words[words.length - 1] ?? candidate.trim();
+	return (words[words.length - 1] ?? candidate.trim()).replace(OPENERS, '');
 }
 
 export interface SourceRef {
