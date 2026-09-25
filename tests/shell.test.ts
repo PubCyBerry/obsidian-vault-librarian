@@ -357,6 +357,18 @@ describe('the bash tool result (LIB-TEST-267)', () => {
 		expect((result.content[0] as { text: string }).text).toBe('a "b"\nc\n');
 	});
 
+	it('LIB-TEST-270: writes and removes agent definitions, and nothing else hidden', async () => {
+		const { run, app, asked } = shell();
+		await run('mkdir -p .agents/agents && echo "name: x" > .agents/agents/x.md');
+		expect(app.vault.text('.agents/agents/x.md')).toBe('name: x\n');
+		expect(asked.map((a) => a.args.path)).toContain('.agents/agents/x.md');
+		await run('rm .agents/agents/x.md');
+		expect(app.vault.text('.agents/agents/x.md')).toBeUndefined();
+		const refused = await run('echo y > .agents/skills/s.md');
+		expect(refused).toMatch(/read-only/i);
+		expect(app.vault.text('.agents/skills/s.md')).toBeUndefined();
+	});
+
 	it('runs the commands of agents working side by side one after another', async () => {
 		const { run } = shell();
 		const order: string[] = [];

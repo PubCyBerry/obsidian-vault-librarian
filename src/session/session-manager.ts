@@ -97,7 +97,7 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 	}
 	if (!title && firstUser) title = firstUser.replace(/\s+/g, ' ').trim().slice(0, 60);
 	const last = events[events.length - 1];
-	const { parentId, parentCallId, agentName } = meta.session;
+	const { parentId, parentCallId, agentType, agentTitle } = meta.session;
 	return {
 		id,
 		path,
@@ -108,7 +108,7 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 		createdAt: meta.session.createdAt,
 		updatedAt: last?.t ?? meta.session.createdAt,
 		messageCount,
-		...(parentId ? { parentId, parentCallId, agentName } : {}),
+		...(parentId ? { parentId, parentCallId, agentType, agentTitle } : {}),
 	};
 }
 

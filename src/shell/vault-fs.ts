@@ -1,6 +1,6 @@
 import type { FsStat, IFileSystem } from 'just-bash/browser';
 import type { App } from 'obsidian';
-import { isHiddenPath } from '../tools/path-policy';
+import { isReadOnlyPath } from '../tools/path-policy';
 
 /** Where the vault sits in the shell. Everything else is scratch space in memory. */
 export const VAULT_ROOT = '/vault';
@@ -110,7 +110,7 @@ export class VaultFs implements IFileSystem {
 			await write();
 			return;
 		}
-		if (isHiddenPath(rel, this.app.vault.configDir)) throw new Error(READ_ONLY(rel));
+		if (isReadOnlyPath(rel, this.app.vault.configDir)) throw new Error(READ_ONLY(rel));
 		if (this.approved.has(rel)) {
 			await write();
 			return;

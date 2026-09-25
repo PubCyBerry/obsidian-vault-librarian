@@ -3,7 +3,7 @@ import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
 import { withFileMutationQueue } from './mutation-queue';
-import { checkPath, isBinaryPath, isHiddenPath } from './path-policy';
+import { checkPath, isAgentsPath, isBinaryPath, isHiddenPath, isReadOnlyPath } from './path-policy';
 
 /** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
 export interface HiddenReader {
@@ -21,6 +21,8 @@ export interface ToolDeps {
 	settings: () => LibrarianSettings;
 	hidden?: HiddenReader;
 	mutation?: MutationHooks;
+	/** What an agent definition file now defines, or why nothing, after a write or edit to it. */
+	describeAgent?: (path: string) => Record<string, unknown> | null;
 }
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
@@ -165,8 +167,63 @@ async function readEntry(app: App, entry: Entry): Promise<string> {
 }
 
 export function rejectHiddenWrite(app: App, path: string): void {
-	if (isHiddenPath(path, app.vault.configDir))
+	if (isReadOnlyPath(path, app.vault.configDir))
 		throw new Error(`Hidden paths are read-only: ${path}`);
+}
+
+/** Folders on the way to a path the vault index does not hold, made through the adapter. */
+async function ensureHiddenFolder(app: App, path: string): Promise<void> {
+	let current = '';
+	for (const part of path.split('/').filter(Boolean)) {
+		current = current ? `${current}/${part}` : part;
+		if (!(await app.vault.adapter.exists(current))) await app.vault.adapter.mkdir(current);
+	}
+}
+
+/**
+ * write for an agent definition (LIB-FEAT-268), which lives outside the vault index, so through
+ * the adapter. The rewind snapshot is taken the same way as for a note.
+ */
+async function writeAgentFile(
+	deps: ToolDeps,
+	id: string,
+	path: string,
+	content: string,
+	overwrite: boolean,
+): Promise<'created' | 'overwritten'> {
+	const adapter = deps.app.vault.adapter;
+	const stat = await adapter.stat(path);
+	if (stat?.type === 'folder') throw new Error(`A folder exists at ${path}`);
+	if (stat && !overwrite)
+		throw new Error(`File already exists: ${path}. Set overwrite to true to replace it.`);
+	await deps.mutation?.before(id, path);
+	const slash = path.lastIndexOf('/');
+	if (slash > 0) await ensureHiddenFolder(deps.app, path.slice(0, slash));
+	await adapter.write(path, content);
+	await deps.mutation?.after(id, path);
+	return stat ? 'overwritten' : 'created';
+}
+
+/** edit for an agent definition, through the adapter; one exact match unless replace_all. */
+async function editAgentFile(
+	deps: ToolDeps,
+	id: string,
+	path: string,
+	params: { old_text: string; new_text: string; replace_all?: boolean },
+): Promise<number> {
+	const adapter = deps.app.vault.adapter;
+	if ((await adapter.stat(path))?.type !== 'file') throw new Error(`File not found: ${path}`);
+	await deps.mutation?.before(id, path);
+	const edit = replaceExact(
+		await adapter.read(path),
+		params.old_text,
+		params.new_text,
+		params.replace_all,
+	);
+	if ('failure' in edit) throw new Error(edit.failure);
+	await adapter.write(path, edit.text);
+	await deps.mutation?.after(id, path);
+	return edit.replacements;
 }
 
 function escapeRegExp(s: string): string {
@@ -552,6 +609,21 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
+				if (isAgentsPath(path)) {
+					const operation = await writeAgentFile(
+						deps,
+						id,
+						path,
+						params.content,
+						params.overwrite === true,
+					);
+					return ok({
+						path,
+						operation,
+						characters: params.content.length,
+						...deps.describeAgent?.(path),
+					});
+				}
 				await deps.mutation?.before(id, path);
 				const existing = deps.app.vault.getAbstractFileByPath(path);
 				if (existing instanceof TFolder) throw new Error(`A folder exists at ${path}`);
@@ -598,6 +670,10 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
+				if (isAgentsPath(path)) {
+					const replacements = await editAgentFile(deps, id, path, params);
+					return ok({ path, replacements, changed: true, ...deps.describeAgent?.(path) });
+				}
 				const file = vaultFile(deps.app, path);
 				await deps.mutation?.before(id, path);
 				let replacements = 0;

@@ -1,5 +1,5 @@
 import { normalizePath } from 'obsidian';
-
+import { isAgentsPath } from '../tools/path-policy';
 import type { LibrarianSettings, ToolPermission } from '../types';
 
 export interface ToolGroup {
@@ -24,8 +24,12 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
  */
 export const SHELL_GROUP: ToolGroup = { id: 'shell', label: 'Commands', tools: ['bash'] };
 
-/** spawn_agent. What a sub-agent then does is judged call by call, like the main agent's calls. */
-export const AGENTS_GROUP: ToolGroup = { id: 'agents', label: 'Agents', tools: ['spawn_agent'] };
+/** Tools that only read, the vault's and the storage's: all a read-only agent gets of them. */
+export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+	...TOOL_GROUPS[0]!.tools,
+	'webdav_ls',
+	'webdav_read',
+]);
 
 export type ToolGroupDisplayPermission = ToolPermission | 'mixed';
 
@@ -49,11 +53,26 @@ export const PERMISSION_DESCRIPTIONS: Record<ToolPermission, string> = {
 };
 
 /** Same normalization as checkPath, so "./AGENTS.md " cannot slip past the forced approval. */
-export function isRootAgentsMd(path: string): boolean {
-	const segments = normalizePath(path.trim())
+function segmentsOf(path: string): string[] {
+	return normalizePath(path.trim())
 		.split('/')
 		.filter((s) => s.length > 0 && s !== '.');
+}
+
+export function isRootAgentsMd(path: string): boolean {
+	const segments = segmentsOf(path);
 	return segments.length === 1 && segments[0]!.toLowerCase() === 'agents.md';
+}
+
+/**
+ * Why a change to this path always asks, whatever its tool's row says: the vault root AGENTS.md
+ * and the sub-agent definitions steer every later turn. Null for any other path.
+ */
+export function alwaysAsksFor(path: string): string | null {
+	if (isRootAgentsMd(path)) return 'Changes to the vault root AGENTS.md always ask first.';
+	return isAgentsPath(segmentsOf(path).join('/'))
+		? 'Changes to sub-agent definitions always ask first.'
+		: null;
 }
 
 export class ToolPermissionManager {
@@ -121,7 +140,7 @@ export class ToolPermissionManager {
 		if (!this.canAlwaysAllow(tool) || !this.canAlwaysAllow(key)) return 'approval_required';
 		if (tool === 'write' || tool === 'edit') {
 			const path = (args as { path?: unknown } | null)?.path;
-			if (typeof path === 'string' && isRootAgentsMd(path)) return 'approval_required';
+			if (typeof path === 'string' && alwaysAsksFor(path)) return 'approval_required';
 		}
 		return stored;
 	}

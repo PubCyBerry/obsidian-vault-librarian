@@ -1,14 +1,24 @@
-import type { StreamFn } from '@earendil-works/pi-agent-core';
+import type { AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { AgentController, type ControllerEvent } from '../src/agent/agent-controller';
+import { AgentController, type ControllerEvent, findModel } from '../src/agent/agent-controller';
+import {
+	AgentManager,
+	agentKey,
+	BUILT_IN_AGENTS,
+	parseAgentMd,
+	toolsFor,
+} from '../src/agent/agent-definitions';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { PromptManager } from '../src/agent/prompt';
-import { createSpawnAgentTool, forkMessages, Slots } from '../src/agent/subagent';
+import { createSpawnAgentTool, forkMessages, Slots, SPAWN_AGENT_NAME } from '../src/agent/subagent';
 import { ContextManager } from '../src/context/context-manager';
-import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
+import {
+	READ_ONLY_TOOL_NAMES,
+	ToolPermissionManager,
+} from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
 import { SessionManager } from '../src/session/session-manager';
@@ -18,13 +28,13 @@ import { mergeSettings, newModel, newProvider, type ToolPermission } from '../sr
 import { FakeApp } from './fake-app';
 import { type ScriptedTurn, scriptedStream } from './scripted-stream';
 
-/** The agent a request is for: a sub-agent's system prompt names it, the main agent's does not. */
-function agentOf(context: Parameters<StreamFn>[1]): string {
+/** The run a request is for: a sub-agent's system prompt names its title, the main agent's none. */
+function runOf(context: Parameters<StreamFn>[1]): string {
 	const system = context.messages.find((m) => m.role === 'system') as
 		| { content?: unknown }
 		| undefined;
 	const text = typeof system?.content === 'string' ? system.content : '';
-	return /You are a sub-agent named (\S+)\./.exec(text)?.[1] ?? 'main';
+	return /agent, working on "([^"]+)"\./.exec(text)?.[1] ?? 'main';
 }
 
 /** A response that never comes, until the request is stopped. */
@@ -62,16 +72,21 @@ function harness(
 	scripts: Record<string, ScriptedTurn[] | 'hang'>,
 	perms: Partial<Record<string, ToolPermission>> = {},
 	extra: Record<string, unknown> = {},
+	files: Record<string, string> = {},
 ) {
 	const app = new FakeApp();
 	app.vault.seed('notes/a.md', 'alpha\nbeta');
 	app.vault.seed('notes/b.md', 'gamma');
+	for (const [path, text] of Object.entries(files)) app.vault.seed(path, text);
 	const settings = mergeSettings({
 		providers: [
 			{
 				...newProvider('p'),
 				baseUrl: 'https://x',
-				models: [{ ...newModel('m'), contextWindow: 100000, maxTokens: 1000 }],
+				models: [
+					{ ...newModel('m'), contextWindow: 100000, maxTokens: 1000 },
+					{ ...newModel('small'), contextWindow: 100000, maxTokens: 1000 },
+				],
 			},
 		],
 		activeProviderId: 'p',
@@ -80,16 +95,19 @@ function harness(
 	});
 	for (const tool of Object.keys(settings.toolPermissions.byTool))
 		settings.toolPermissions.byTool[tool] = 'always_allow';
+	settings.toolPermissions.byTool['agent:general-purpose'] = 'always_allow';
 	for (const [tool, p] of Object.entries(perms)) settings.toolPermissions.byTool[tool] = p!;
 	app.secrets.set('vault-librarian-p', 'key');
 	const streams = Object.fromEntries(
 		Object.entries(scripts).map(([name, s]) => [name, s === 'hang' ? null : scriptedStream(s)]),
 	);
 	const requests: Record<string, Parameters<StreamFn>[1][]> = {};
+	const models: Record<string, string[]> = {};
 	const streamFn: StreamFn = (model, context, options) => {
-		const name = agentOf(context);
-		requests[name] = [...(requests[name] ?? []), context];
-		const scripted = streams[name];
+		const run = runOf(context);
+		requests[run] = [...(requests[run] ?? []), context];
+		models[run] = [...(models[run] ?? []), model.id];
+		const scripted = streams[run];
 		return scripted
 			? scripted.streamFn(model, context, options)
 			: hanging(model, context, options);
@@ -99,14 +117,34 @@ function harness(
 		() => settings,
 		async () => {},
 	);
+	const defs = new AgentManager(app as unknown as App);
+	permissions.attachExtras(
+		() => [],
+		() => new Set(),
+		(tool, args) => (tool === SPAWN_AGENT_NAME ? agentKey(controller.agentOfCall(args)) : null),
+		() =>
+			new Set(
+				defs.agents.filter((a) => a.permissionMode === 'plan').map((a) => agentKey(a.name)),
+			),
+	);
 	const transport = {
 		createStreamFn: () => streamFn,
 		effectiveMode: () => 'fetch',
 		hasFallenBack: () => false,
 	} as unknown as TransportRouter;
-	const spawn = createSpawnAgentTool((id, args, signal) =>
-		controller.runSubagent(id, args, signal),
-	);
+	const vault = (): AgentTool[] =>
+		createVaultTools({
+			app: app as unknown as App,
+			settings: () => settings,
+			mutation: {
+				before: (id, p) => controller.beforeMutation(id, p),
+				after: async (id, p) => {
+					await controller.afterMutation(id, p);
+					if (p.startsWith('.agents/')) await defs.scan();
+				},
+			},
+			describeAgent: (p) => defs.describe(p),
+		});
 	const controller: AgentController = new AgentController({
 		app: app as unknown as App,
 		settings: () => settings,
@@ -119,15 +157,10 @@ function harness(
 		prompt: new PromptManager(app as unknown as App),
 		secrets: new SecretStore(app as unknown as App),
 		tools: () => [
-			...createVaultTools({
-				app: app as unknown as App,
-				settings: () => settings,
-				mutation: {
-					before: (id, p) => controller.beforeMutation(id, p),
-					after: (id, p) => controller.afterMutation(id, p),
-				},
-			}),
-			spawn,
+			...vault(),
+			createSpawnAgentTool(defs.agents, (id, args, signal) =>
+				controller.runSubagent(id, args, signal),
+			),
 		],
 		skillCatalog: () => '',
 		nestedAgentsMd: new NestedAgentsMd({
@@ -135,6 +168,9 @@ function harness(
 			storage: () => null,
 			activePath: () => null,
 		}),
+		agentDefinition: (name) => defs.get(name),
+		readsOnly: (name) => READ_ONLY_TOOL_NAMES.has(name),
+		agentDefinitionsChanged: () => defs.scan(),
 	});
 	const events: ControllerEvent[] = [];
 	controller.subscribe((e) => events.push(e));
@@ -145,13 +181,40 @@ function harness(
 			content: string;
 			agentSession?: string;
 		}[];
-	return { app, controller, events, requests, sessions, settings, toolResults };
+	return {
+		app,
+		controller,
+		defs,
+		events,
+		requests,
+		models,
+		sessions,
+		settings,
+		permissions,
+		toolResults,
+	};
 }
 
-const spawn = (name: string, task: string, extra: Record<string, unknown> = {}) => ({
+const spawn = (title: string, task: string, extra: Record<string, unknown> = {}) => ({
 	name: 'spawn_agent',
-	args: { name, task, ...extra },
+	args: { title, task, ...extra },
 });
+
+/** The text of each message of a request but the system one, as the model reads it. */
+function texts(request: Parameters<StreamFn>[1]): string[] {
+	return request.messages
+		.filter((m) => m.role !== 'system')
+		.map((m) =>
+			typeof m.content === 'string'
+				? m.content
+				: (m.content as { text?: string }[]).map((c) => c.text ?? '').join(''),
+		);
+}
+
+const declared = (request: Parameters<StreamFn>[1]) =>
+	((request.messages[0] as { toolsAdded?: { name: string }[] }).toolsAdded ?? []).map(
+		(t) => t.name,
+	);
 
 describe('sub-agents (LIB-TEST-141)', () => {
 	it('1, 7: a sub-agent sees the main tools but spawn_agent, and cannot spawn', async () => {
@@ -164,9 +227,8 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		});
 		await h.controller.send('go');
 		const first = h.requests.scout![0]!;
-		const declared = (first.messages[0] as { toolsAdded?: { name: string }[] }).toolsAdded!;
-		expect(declared.map((t) => t.name)).toContain('read');
-		expect(declared.map((t) => t.name)).not.toContain('spawn_agent');
+		expect(declared(first)).toContain('read');
+		expect(declared(first)).not.toContain('spawn_agent');
 		// Not in its tool list, so Pi's own check refuses it before any permission is judged.
 		const again = h.requests.scout![1]!.messages;
 		const refused = again.find((m) => m.role === 'toolResult') as {
@@ -192,22 +254,21 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		});
 		await h.controller.send('first question');
 		await h.controller.send('now check it');
-		const texts = (name: string) =>
-			h.requests[name]![0]!.messages.filter((m) => m.role !== 'system').map((m) =>
-				typeof m.content === 'string'
-					? m.content
-					: (m.content as { text?: string }[]).map((c) => c.text ?? '').join(''),
-			);
-		expect(texts('forked')).toEqual([
+		expect(texts(h.requests.forked![0]!)).toEqual([
 			'first question',
 			'The first answer.',
 			'now check it',
 			'Check the answer.',
 		]);
-		expect(texts('fresh')).toEqual(['Check the answer.']);
+		expect(texts(h.requests.fresh![0]!)).toEqual(['Check the answer.']);
 		const system = h.requests.fresh![0]!.messages[0] as { content: string };
-		expect(system.content).toMatch(/# Sub-agent\n\nYou are a sub-agent named fresh\./);
-		expect(system.content.trimEnd().endsWith('You cannot start other agents.')).toBe(true);
+		expect(system.content.startsWith('You are Librarian')).toBe(true);
+		expect(system.content).toMatch(
+			/# Sub-agent\n\nYou are a sub-agent, the general-purpose agent, working on "fresh"\./,
+		);
+		expect(
+			system.content.trimEnd().endsWith('You cannot start other agents or talk to them.'),
+		).toBe(true);
 	});
 
 	it('3: the last message is the result; a limit or an error says so', async () => {
@@ -236,17 +297,14 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		);
 		await h.controller.send('go');
 		const spawned = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
+		const agents = [...h.controller.agents.values()];
 		expect(spawned.map((r) => r.content)).toEqual([
-			'Found in notes/a.md:1',
-			'The agent stopped before it wrote an answer.\n\n[Stopped after 1 tool iterations]',
+			`Found in notes/a.md:1\n\n[agent_id: ${agents[0]!.sessionId}]`,
+			`The agent stopped before it wrote an answer.\n\n[Stopped after 1 tool iterations]\n\n[agent_id: ${agents[1]!.sessionId}]`,
 			'Error: HTTP 500 from the server',
 		]);
 		expect(spawned.map((r) => r.ok)).toEqual([true, true, false]);
-		expect([...h.controller.agents.values()].map((a) => a.status)).toEqual([
-			'done',
-			'stopped',
-			'failed',
-		]);
+		expect(agents.map((a) => a.status)).toEqual(['done', 'stopped', 'failed']);
 	});
 
 	it('4: past maxSubagents a call waits for a place', async () => {
@@ -266,17 +324,18 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		const seen: string[] = [];
 		h.controller.subscribe((e) => {
 			if (e.type !== 'agent') return;
-			const line = `${e.agent.name}:${e.agent.status}`;
+			const line = `${e.agent.title}:${e.agent.status}`;
 			if (seen[seen.length - 1] !== line) seen.push(line);
 		});
 		await h.controller.send('go');
-		const cRuns = seen.indexOf('c:running');
 		expect(seen).toContain('c:waiting');
-		expect(cRuns).toBeGreaterThan(Math.min(seen.indexOf('a:done'), seen.indexOf('b:done')));
+		expect(seen.indexOf('c:running')).toBeGreaterThan(
+			Math.min(seen.indexOf('a:done'), seen.indexOf('b:done')),
+		);
 		expect(seen.indexOf('c:waiting')).toBeLessThan(seen.indexOf('a:done'));
 	});
 
-	it('5: Stop ends the sub-agents with the main agent', async () => {
+	it('5: Stop ends the sub-agents with the main agent, even one still being set up', async () => {
 		const h = harness({ main: [{ toolCalls: [spawn('slow', 'Take long.')] }], slow: 'hang' });
 		h.controller.subscribe((e) => {
 			if (e.type === 'agent' && e.agent.status === 'running' && e.agent.events.length === 1)
@@ -298,7 +357,7 @@ describe('sub-agents (LIB-TEST-141)', () => {
 			},
 			{ read: 'approval_required' },
 		);
-		const cards: { agent?: string; open: boolean }[] = [];
+		const cards: { title?: string; agent?: string; open: boolean }[] = [];
 		let open = false;
 		h.controller.subscribe((e) => {
 			if (e.type !== 'approval') return;
@@ -306,8 +365,8 @@ describe('sub-agents (LIB-TEST-141)', () => {
 				open = false;
 				return;
 			}
-			if (cards.some((c) => c.agent === e.request!.agentName)) return;
-			cards.push({ agent: e.request.agentName, open });
+			if (cards.some((c) => c.title === e.request!.agentTitle)) return;
+			cards.push({ title: e.request.agentTitle, agent: e.request.agentType, open });
 			open = true;
 			queueMicrotask(() => e.request!.resolve('always'));
 		});
@@ -315,7 +374,8 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		// The first card's Always allow lets the other agent's read through without a card.
 		expect(cards).toHaveLength(1);
 		expect(cards[0]!.open).toBe(false);
-		expect(['a', 'b']).toContain(cards[0]!.agent);
+		expect(['a', 'b']).toContain(cards[0]!.title);
+		expect(cards[0]!.agent).toBe('general-purpose');
 		expect(h.settings.toolPermissions.byTool.read).toBe('always_allow');
 	});
 
@@ -329,9 +389,11 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		});
 		await h.controller.send('go');
 		const parent = await h.sessions.load(h.controller.session!.id);
-		const all = await h.sessions.list();
-		const child = all.find((s) => s.parentId === h.controller.session!.id)!;
-		expect(child.agentName).toBe('writer');
+		const child = (await h.sessions.list()).find(
+			(s) => s.parentId === h.controller.session!.id,
+		)!;
+		expect(child.agentType).toBe('general-purpose');
+		expect(child.agentTitle).toBe('writer');
 		expect(child.parentCallId).toBeTruthy();
 		const childLog = await h.sessions.load(child.id);
 		expect(childLog.map((e) => e.type)).toEqual([
@@ -352,6 +414,246 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		// Deleting the conversation deletes its agents' sessions too.
 		await h.sessions.delete(h.controller.session!.id);
 		expect((await h.sessions.list()).length).toBe(0);
+	});
+});
+
+describe('agent definitions (LIB-TEST-270)', () => {
+	const reviewer = [
+		'---',
+		'name: reviewer',
+		'description: Reviews a note against the style rules.',
+		'tools: Read, Grep, Glob',
+		'model: small',
+		'effort: bogus',
+		'maxTurns: 2',
+		'permissionMode: bypassPermissions',
+		'color: purple',
+		'hooks:',
+		'  PreToolUse: []',
+		'---',
+		'You review notes. Answer with a list of problems.',
+	].join('\n');
+
+	it('reads Claude Code frontmatter; what it cannot use warns and the rest counts', () => {
+		const { agent } = parseAgentMd(reviewer, '.agents/agents/reviewer.md');
+		expect(agent).toMatchObject({
+			name: 'reviewer',
+			tools: ['read', 'grep', 'find'],
+			model: 'small',
+			maxTurns: 2,
+			permissionMode: 'default',
+			color: 'purple',
+			prompt: 'You review notes. Answer with a list of problems.',
+		});
+		expect(agent!.effort).toBeUndefined();
+		expect(agent!.warnings.join('\n')).toMatch(/effort "bogus"/);
+		expect(agent!.warnings.join('\n')).toMatch(/permissionMode "bypassPermissions"/);
+		expect(parseAgentMd('---\nname: x\n---\nbody', 'x.md').error).toBe('Missing description');
+		expect(parseAgentMd('---\nname: a:b\ndescription: d\n---\n', 'x.md').error).toMatch(
+			/may not/,
+		);
+	});
+
+	it('scans subfolders; a file takes the place of a built-in; a second name is shadowed', async () => {
+		const app = new FakeApp();
+		app.vault.seed('.agents/agents/review/reviewer.md', reviewer);
+		app.vault.seed(
+			'.agents/agents/explore.md',
+			'---\nname: explore\ndescription: My own explorer.\n---\n',
+		);
+		app.vault.seed('.agents/agents/zz.md', reviewer);
+		const defs = new AgentManager(app as unknown as App);
+		await defs.scan();
+		expect(defs.agents.map((a) => a.name)).toEqual(['general-purpose', 'explore', 'reviewer']);
+		expect(defs.get('explore')!.description).toBe('My own explorer.');
+		expect(defs.diagnostics.map((d) => d.message)).toContain(
+			'Shadowed by .agents/agents/review/reviewer.md',
+		);
+		expect(BUILT_IN_AGENTS.map((a) => a.name)).toEqual(['general-purpose', 'explore']);
+	});
+
+	it('gives an agent its listed tools, deferred ones too, less the denied; plan keeps readers', () => {
+		const tools = ['ls', 'read', 'write', 'edit', 'bash', 'webdav_ls', 'webdav_delete'].map(
+			(name) => ({ name }),
+		);
+		const visible = tools.filter((t) => !t.name.startsWith('webdav'));
+		const readsOnly = (n: string) => READ_ONLY_TOOL_NAMES.has(n);
+		const base = BUILT_IN_AGENTS[0]!;
+		const names = (list: { name: string }[]) => list.map((t) => t.name);
+		expect(names(toolsFor(base, visible, tools, readsOnly))).toEqual(names(visible));
+		expect(
+			names(toolsFor({ ...base, tools: ['read', 'webdav_*'] }, visible, tools, readsOnly)),
+		).toEqual(['read', 'webdav_ls', 'webdav_delete']);
+		expect(
+			names(
+				toolsFor(
+					{ ...base, disallowedTools: ['bash', 'write'] },
+					visible,
+					tools,
+					readsOnly,
+				),
+			),
+		).toEqual(['ls', 'read', 'edit']);
+		expect(names(toolsFor(BUILT_IN_AGENTS[1]!, visible, tools, readsOnly))).toEqual([
+			'ls',
+			'read',
+		]);
+	});
+
+	it('runs an agent as its file says: its prompt, tools, model and turn limit', async () => {
+		const h = harness(
+			{
+				main: [
+					{ toolCalls: [spawn('style', 'Review notes/a.md.', { agent: 'reviewer' })] },
+					{ text: 'ok' },
+				],
+				style: [
+					{ toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] },
+					{ toolCalls: [{ name: 'grep', args: { query: 'beta' } }] },
+					{ text: 'never' },
+				],
+			},
+			{ 'agent:reviewer': 'always_allow' },
+			{},
+			{ '.agents/agents/reviewer.md': reviewer },
+		);
+		await h.defs.scan();
+		await h.controller.send('review it');
+		const first = h.requests.style![0]!;
+		const system = (first.messages[0] as { content: string }).content;
+		expect(system.startsWith('You review notes.')).toBe(true);
+		expect(system).not.toContain('You are Librarian');
+		// Read, Grep and Glob in Claude Code's names: Glob is find here.
+		expect(declared(first).sort()).toEqual(['find', 'grep', 'read']);
+		expect(h.models.style).toEqual(['small', 'small']);
+		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
+		expect(result!.content).toMatch(/\[Stopped after 2 tool iterations\]/);
+	});
+
+	it('a plan agent starts without asking and reads only; dontAsk refuses instead of asking', async () => {
+		const quiet = '---\nname: quiet\ndescription: Never asks.\npermissionMode: dontAsk\n---\n';
+		const h = harness(
+			{
+				main: [
+					{
+						toolCalls: [
+							spawn('look', 'Look around.', { agent: 'explore' }),
+							spawn('try', 'Write a note.', { agent: 'quiet' }),
+						],
+					},
+					{ text: 'ok' },
+				],
+				look: [{ text: 'Seen.' }],
+				try: [
+					{ toolCalls: [{ name: 'write', args: { path: 'notes/q.md', content: 'q' } }] },
+					{ text: 'Could not write.' },
+				],
+			},
+			{ write: 'approval_required', 'agent:quiet': 'always_allow' },
+			{},
+			{ '.agents/agents/quiet.md': quiet },
+		);
+		await h.defs.scan();
+		const asked: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request) {
+				asked.push(e.request.permissionKey);
+				queueMicrotask(() => e.request!.resolve('approve'));
+			}
+		});
+		await h.controller.send('go');
+		// general-purpose asks by default; explore, which only reads, does not.
+		expect(h.permissions.resolve('spawn_agent', { agent: 'explore' })).toBe('always_allow');
+		delete h.settings.toolPermissions.byTool['agent:general-purpose'];
+		expect(h.permissions.resolve('spawn_agent', {})).toBe('approval_required');
+		expect(asked).toEqual([]);
+		expect(declared(h.requests.look![0]!)).not.toContain('write');
+		const refusal = h.requests.try![1]!.messages.find((m) => m.role === 'toolResult') as {
+			content: { text: string }[];
+		};
+		expect(refusal.content[0]!.text).toMatch(/may not ask for approval/);
+		expect(h.app.vault.text('notes/q.md')).toBeUndefined();
+	});
+
+	it('resume goes on with an earlier agent of this conversation, in its own session', async () => {
+		const main: ScriptedTurn[] = [
+			{ toolCalls: [spawn('count', 'How many notes?')] },
+			{ text: 'Two.' },
+		];
+		const h = harness({
+			main,
+			count: [{ text: 'There are 2 notes.' }, { text: 'They are a.md and b.md.' }],
+		});
+		await h.controller.send('count them');
+		const id = [...h.controller.agents.values()][0]!.sessionId!;
+		// The script is read as it goes, so the follow-up can name the agent the first run made.
+		main.push({ toolCalls: [spawn('count', 'Name them.', { resume: id })] }, { text: 'done' });
+		await h.controller.send('which ones?');
+		const followUp = h.requests.count![1]!;
+		expect(texts(followUp)).toEqual(['How many notes?', 'There are 2 notes.', 'Name them.']);
+		const log = await h.sessions.load(id);
+		expect(log.filter((e) => e.type === 'user').length).toBe(2);
+	});
+
+	it('resume refuses an agent of another conversation or one still at work', async () => {
+		const h = harness({
+			main: [{ toolCalls: [spawn('x', 'X.', { resume: 'nope' })] }, { text: 'done' }],
+		});
+		await h.controller.send('go');
+		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
+		expect(result!.ok).toBe(false);
+		expect(result!.content).toMatch(/No agent with agent_id nope in this conversation/);
+	});
+
+	it('the agent can write, edit and rewind a definition, and it always asks', async () => {
+		const file = '.agents/agents/helper.md';
+		const h = harness(
+			{
+				main: [
+					{
+						toolCalls: [
+							{
+								name: 'write',
+								args: {
+									path: file,
+									content: '---\nname: helper\ndescription: Helps.\n---\nHelp.',
+								},
+							},
+						],
+					},
+					{
+						toolCalls: [
+							{
+								name: 'edit',
+								args: { path: file, old_text: 'Helps.', new_text: 'Helps a lot.' },
+							},
+						],
+					},
+					{ text: 'Made the helper agent.' },
+				],
+			},
+			{ write: 'always_allow', edit: 'always_allow' },
+		);
+		const asked: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request) {
+				asked.push(e.request.name);
+				queueMicrotask(() => e.request!.resolve('approve'));
+			}
+		});
+		await h.controller.send('make an agent');
+		expect(asked).toEqual(['write', 'edit']);
+		expect(h.defs.get('helper')!.description).toBe('Helps a lot.');
+		const results = await h.toolResults();
+		expect(JSON.parse(results[0]!.content)).toMatchObject({
+			operation: 'created',
+			agent: { name: 'helper' },
+		});
+		const user = h.controller.events.find((e) => e.event.type === 'user')!;
+		const rewound = await h.controller.rewind(user.index);
+		expect(rewound!.reverted).toContain(file);
+		expect(h.app.vault.text(file)).toBeUndefined();
+		expect(h.defs.get('helper')).toBeUndefined();
 	});
 });
 
@@ -383,5 +685,16 @@ describe('sub-agent parts', () => {
 		slots.release();
 		await second;
 		expect(order).toEqual(['third aborted', 'second']);
+	});
+
+	it('findModel reads provider/model, and an ID or a name alone', () => {
+		const options = [
+			{ provider: { id: 'p' }, model: { id: 'nvidia/big:free', name: 'Big' } },
+			{ provider: { id: 'q' }, model: { id: 'small', name: 'Small one' } },
+		];
+		expect(findModel(options, 'q/small')).toBe(options[1]);
+		expect(findModel(options, 'nvidia/big:free')).toBe(options[0]);
+		expect(findModel(options, 'small one')).toBe(options[1]);
+		expect(findModel(options, 'missing')).toBeUndefined();
 	});
 });

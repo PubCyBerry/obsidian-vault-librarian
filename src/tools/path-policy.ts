@@ -12,6 +12,19 @@ export function isHiddenPath(path: string, configDir: string): boolean {
 	);
 }
 
+/** Sub-agent definitions (LIB-FEAT-268): the one hidden folder the agent may write in. */
+export const AGENTS_DIR = '.agents/agents';
+
+/** A path inside the agent definitions folder, the folder itself, or `.agents` on the way to it. */
+export function isAgentsPath(path: string): boolean {
+	return path === '.agents' || path === AGENTS_DIR || path.startsWith(`${AGENTS_DIR}/`);
+}
+
+/** Hidden and not the agent definitions folder: read-only for the agent. */
+export function isReadOnlyPath(path: string, configDir: string): boolean {
+	return isHiddenPath(path, configDir) && !isAgentsPath(path);
+}
+
 /** Files that are not text: read and grep skip them, mentions attach them by path or as images. */
 const BINARY_EXTENSIONS = new Set([
 	'png',

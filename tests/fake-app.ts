@@ -47,6 +47,16 @@ export class FakeVault {
 			this.texts.delete(normalizePath(p));
 			this.binaries.delete(normalizePath(p));
 		},
+		/** The system trash is gone as far as the vault goes. */
+		trashSystem: async (p: string) => {
+			this.texts.delete(normalizePath(p));
+			this.binaries.delete(normalizePath(p));
+			return true;
+		},
+		trashLocal: async (p: string) => {
+			this.texts.delete(normalizePath(p));
+			this.binaries.delete(normalizePath(p));
+		},
 		rmdir: async (p: string) => {
 			const prefix = `${normalizePath(p)}/`;
 			for (const k of [...this.texts.keys()]) if (k.startsWith(prefix)) this.texts.delete(k);

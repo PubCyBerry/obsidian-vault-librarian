@@ -20,6 +20,7 @@ import {
 	effectiveRequestOptions,
 	type PiModel,
 	type ProviderManager,
+	selectableThinkingLevels,
 	toPiModel,
 } from '../provider/provider-manager';
 import type { TransportRouter } from '../provider/transport';
@@ -33,7 +34,7 @@ import type {
 	StoredUsage,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
-import { isBinaryPath } from '../tools/path-policy';
+import { isAgentsPath, isBinaryPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
 import {
@@ -43,11 +44,12 @@ import {
 	wasHiddenSince,
 	whenVisible,
 } from '../visibility';
+import { type AgentDefinition, GENERAL_AGENT, toolsFor } from './agent-definitions';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { type PromptManager, systemPromptOf } from './prompt';
 import {
-	agentName,
 	forkMessages,
+	runTitle,
 	Slots,
 	SPAWN_AGENT_NAME,
 	type SpawnArgs,
@@ -107,8 +109,9 @@ export interface ApprovalRequest {
 	existingLength?: number;
 	/** The tool this call came from, such as `bash` for something a shell command is about to do. */
 	calledFrom?: string;
-	/** The sub-agent asking, and its spawn_agent call; absent when the main agent asks. */
-	agentName?: string;
+	/** The sub-agent run asking: its title, its agent and its spawn_agent call. Absent for the main agent. */
+	agentTitle?: string;
+	agentType?: string;
 	agentCallId?: string;
 	/** Other approvals queued behind this one. */
 	waiting: number;
@@ -126,6 +129,27 @@ interface LoopLimits {
 	failures: Map<string, number>;
 	iterations: number;
 	stopReason: string | null;
+	/** Turns with tool calls allowed, when not the setting's: a sub-agent's maxTurns. */
+	max?: number;
+}
+
+/**
+ * A tool-calling model by `<provider id>/<model id>`, or by model ID or name alone. Model IDs may
+ * hold a slash themselves, so the provider is only split off when one has that ID.
+ */
+export function findModel<
+	T extends { provider: { id: string }; model: { id: string; name: string } },
+>(options: readonly T[], ref: string): T | undefined {
+	const slash = ref.indexOf('/');
+	if (slash > 0) {
+		const [provider, model] = [ref.slice(0, slash), ref.slice(slash + 1)];
+		const exact = options.find((o) => o.provider.id === provider && o.model.id === model);
+		if (exact) return exact;
+	}
+	const lower = ref.toLowerCase();
+	return options.find(
+		(o) => o.model.id.toLowerCase() === lower || o.model.name.toLowerCase() === lower,
+	);
 }
 
 function freshLimits(): LoopLimits {
@@ -181,6 +205,16 @@ export interface ControllerDeps {
 	skillCatalog: () => string;
 	/** AGENTS.md files below the vault root and on the storage, delivered as tools reach them. */
 	nestedAgentsMd?: NestedAgentsMd;
+	/** A sub-agent definition by name, built in or from `.agents/agents` (LIB-FEAT-268). */
+	agentDefinition?: (name: string) => AgentDefinition | undefined;
+	/** Every registered tool, deferred ones too, for an agent that lists the tools it uses. */
+	registeredTools?: () => AgentTool[];
+	/** Whether a tool only reads, for an agent that may only read (permissionMode plan). */
+	readsOnly?: (name: string) => boolean;
+	/** The instructions of a skill an agent preloads, or null when it cannot be used. */
+	skillActivation?: (name: string) => Promise<string | null>;
+	/** A rewind changed a definition file: read the definitions again. */
+	agentDefinitionsChanged?: () => Promise<unknown>;
 }
 
 const RETRY_DELAY_MS = 1500;
@@ -530,11 +564,21 @@ export class AgentController {
 	}
 
 	private streamFn(): StreamFn {
-		const sel = this.selection!;
+		return this.streamFor(this.selection!, () => this.thinkingLevel);
+	}
+
+	private streamFor(
+		sel: ActiveSelection,
+		level: ThinkingLevel | (() => ThinkingLevel),
+	): StreamFn {
 		return this.deps.transport.createStreamFn(sel.provider, () => ({
 			apiKey: this.deps.secrets.get(sel.provider.secretId),
 			authHeader: sel.provider.authHeader,
-			options: effectiveRequestOptions(sel.provider, sel.model, this.thinkingLevel),
+			options: effectiveRequestOptions(
+				sel.provider,
+				sel.model,
+				typeof level === 'function' ? level() : level,
+			),
 		}));
 	}
 
@@ -576,7 +620,7 @@ export class AgentController {
 		// A shell command or a sub-agent asking from inside its call has started already, so it
 		// keeps its card.
 		const card = this.pendingApproval;
-		if (card && !card.calledFrom && !card.agentName) card.resolve('skip');
+		if (card && !card.calledFrom && !card.agentCallId) card.resolve('skip');
 	}
 
 	private emitQueue(): void {
@@ -1082,7 +1126,9 @@ export class AgentController {
 				permissionKey: key,
 				existingLength: existing?.stat.size,
 				...(calledFrom ? { calledFrom } : {}),
-				...(agent ? { agentName: agent.name, agentCallId: agent.callId } : {}),
+				...(agent
+					? { agentTitle: agent.title, agentType: agent.agent, agentCallId: agent.callId }
+					: {}),
 				waiting: this.approvalsWaiting,
 				resolve: finish,
 			};
@@ -1125,18 +1171,63 @@ export class AgentController {
 	// Rewind snapshots. Both run inside the tool's per-file mutation queue, so a parallel batch
 	// cannot read a note between another call's snapshot and its change.
 
+	/**
+	 * A file as snapshots and rewind see it: through the vault index, or through the adapter for a
+	 * sub-agent definition, which the index does not hold (LIB-FEAT-268). Null when there is none.
+	 */
+	private async noteAt(path: string): Promise<{
+		path: string;
+		read(): Promise<string>;
+		trash(): Promise<void>;
+		/** Puts `previous` back unless the file changed since `afterHash`; false when it had. */
+		replace(previous: string, afterHash: string): Promise<boolean>;
+	} | null> {
+		const { vault, fileManager } = this.deps.app;
+		const file = vault.getFileByPath(path);
+		if (file)
+			return {
+				path: file.path,
+				read: () => vault.read(file),
+				trash: () => fileManager.trashFile(file),
+				replace: async (previous, afterHash) => {
+					let applied = false;
+					await vault.process(file, (data) => {
+						if (contentHash(data) !== afterHash) return data;
+						applied = true;
+						return previous;
+					});
+					return applied;
+				},
+			};
+		const adapter = vault.adapter;
+		if (!isAgentsPath(path) || (await adapter.stat(path))?.type !== 'file') return null;
+		return {
+			path,
+			read: () => adapter.read(path),
+			trash: async () => {
+				if (!(await adapter.trashSystem(path))) await adapter.trashLocal(path);
+			},
+			// ponytail: read then write, not one step like Vault.process; fine for a definition file.
+			replace: async (previous, afterHash) => {
+				if (contentHash(await adapter.read(path)) !== afterHash) return false;
+				await adapter.write(path, previous);
+				return true;
+			},
+		};
+	}
+
 	async beforeMutation(toolCallId: string, path: string): Promise<void> {
-		const file = this.deps.app.vault.getFileByPath(path);
-		const content = file ? await this.deps.app.vault.read(file) : null;
-		this.pendingSnapshots.set(toolCallId, { path: file?.path ?? path, content });
+		const note = await this.noteAt(path);
+		const content = note ? await note.read() : null;
+		this.pendingSnapshots.set(toolCallId, { path: note?.path ?? path, content });
 	}
 
 	async afterMutation(toolCallId: string, path: string): Promise<void> {
 		const snapshot = this.pendingSnapshots.get(toolCallId);
 		this.pendingSnapshots.delete(toolCallId);
-		const file = this.deps.app.vault.getFileByPath(path);
+		const file = await this.noteAt(path);
 		if (!snapshot || !file || !this.session) return;
-		const after = await this.deps.app.vault.read(file);
+		const after = await file.read();
 		const index = this.events.length ? this.events[this.events.length - 1]!.index + 1 : 0;
 		const ref =
 			snapshot.content === null
@@ -1168,7 +1259,7 @@ export class AgentController {
 			}
 		}
 		// 0 is no limit: the failure limit above and Stop are what end a long run then.
-		const max = this.deps.settings().maxIterations;
+		const max = limits.max ?? this.deps.settings().maxIterations;
 		if (max > 0 && limits.iterations >= max) {
 			limits.stopReason = `Stopped after ${limits.iterations} tool iterations${forUser ? '. Send a message to continue.' : ''}`;
 			return true;
@@ -1196,28 +1287,59 @@ export class AgentController {
 	}
 
 	/**
-	 * spawn_agent: runs one sub-agent to its end and returns its last message. It works with the
-	 * main agent's model, prompt, tools and permissions, and keeps its own loop limits, AGENTS.md
-	 * deliveries and session. Past `maxSubagents` it waits for a place.
+	 * The agent a spawn_agent call starts, which its permission is judged by: the one it names, or
+	 * the one of the run it resumes, as this conversation's log recorded it.
+	 */
+	agentOfCall(args: unknown): string {
+		const a = (args ?? {}) as { agent?: unknown; resume?: unknown };
+		const resume = typeof a.resume === 'string' ? a.resume.trim() : '';
+		if (!resume)
+			return typeof a.agent === 'string' && a.agent.trim() ? a.agent.trim() : GENERAL_AGENT;
+		for (const run of this.agents.values()) if (run.sessionId === resume) return run.agent;
+		const result = this.events.find(
+			(e) => e.event.type === 'tool_result' && e.event.agentSession === resume,
+		)?.event as { toolCallId: string } | undefined;
+		const call = this.events.find(
+			(e) => e.event.type === 'tool_call' && e.event.toolCallId === result?.toolCallId,
+		)?.event as { args?: { agent?: unknown } } | undefined;
+		const agent = call?.args?.agent;
+		return typeof agent === 'string' && agent.trim() ? agent.trim() : GENERAL_AGENT;
+	}
+
+	/**
+	 * spawn_agent: runs one sub-agent to its end and returns its last message (LIB-FEAT-139). It
+	 * runs as its definition says (LIB-FEAT-268), under the user's permissions, with its own loop
+	 * limits, AGENTS.md deliveries and session; `resume` goes on in the session of an earlier run
+	 * of this conversation. Past `maxSubagents` it waits for a place.
 	 */
 	async runSubagent(
 		callId: string,
 		args: SpawnArgs,
 		signal?: AbortSignal,
 	): Promise<{ text: string; sessionId: string | null }> {
-		const model = this.piModel();
-		if (!model || !this.session) throw new Error('No model is selected.');
+		if (!this.selection || !this.session) throw new Error('No model is selected.');
 		const task = typeof args.task === 'string' ? args.task.trim() : '';
 		if (!task) throw new Error('task must not be empty');
+		const type = this.agentOfCall(args);
+		const def = this.deps.agentDefinition?.(type);
+		if (!def)
+			throw new Error(
+				`No agent named ${type}. Start one that the spawn_agent description lists.`,
+			);
+		const resume =
+			typeof args.resume === 'string' && args.resume.trim() ? args.resume.trim() : null;
+		if (resume) await this.checkResume(resume);
 		const state: SubagentState = {
 			callId,
-			name: agentName(args.name),
+			title: runTitle(args.title, def.name),
+			agent: def.name,
+			...(def.color ? { color: def.color } : {}),
 			task,
 			status: 'waiting',
 			events: [],
 			stream: null,
 			toolStatus: new Map(),
-			sessionId: null,
+			sessionId: resume,
 		};
 		this.agents.set(callId, state);
 		this.emitAgent(state);
@@ -1229,7 +1351,7 @@ export class AgentController {
 			throw error;
 		}
 		try {
-			return await this.driveSubagent(state, model, args.fork_context === true, signal);
+			return await this.driveSubagent(state, def, args.fork_context === true, signal);
 		} catch (error) {
 			state.status = 'failed';
 			const message = signal?.aborted
@@ -1244,43 +1366,131 @@ export class AgentController {
 		}
 	}
 
+	/** Only an agent this conversation started, and not while that agent is still at work. */
+	private async checkResume(id: string): Promise<void> {
+		const summary = await this.deps.sessions.summary(id);
+		if (!summary?.parentId || summary.parentId !== this.session?.id)
+			throw new Error(`No agent with agent_id ${id} in this conversation.`);
+		for (const run of this.agents.values())
+			if (run.sessionId === id && (run.status === 'waiting' || run.status === 'running'))
+				throw new Error(`The agent ${id} is still working. Wait for its answer first.`);
+	}
+
+	/** The model an agent runs on and its thinking level: its definition's, else the main ones. */
+	private agentModel(def: AgentDefinition): { selection: ActiveSelection; level: ThinkingLevel } {
+		let selection = this.selection!;
+		if (def.model) {
+			const found = findModel(this.deps.providers.listSelectable(), def.model);
+			if (!found)
+				throw new Error(
+					`The ${def.name} agent asks for the model ${def.model}, which is not in Settings.`,
+				);
+			selection = found;
+		}
+		if (this.deps.secrets.get(selection.provider.secretId) === null)
+			throw new Error(`No API key for ${selection.provider.name} on this device.`);
+		const levels = selectableThinkingLevels(selection.model);
+		const level =
+			[def.effort, this.thinkingLevel].find((l) => l && levels.includes(l)) ?? 'off';
+		return { selection, level };
+	}
+
+	/**
+	 * An agent's instructions: its own or the Custom system prompt, the vault root AGENTS.md, the
+	 * skills when it can read them, the skills it preloads, and what a sub-agent is.
+	 */
+	private async agentPrompt(
+		def: AgentDefinition,
+		title: string,
+		tools: AgentTool[],
+	): Promise<string> {
+		const s = this.deps.settings();
+		const parts = [
+			this.deps.prompt.buildSystemPrompt({
+				systemPrompt: def.prompt ?? systemPromptOf(s),
+				vaultAgentsMd: await this.deps.prompt.loadVaultAgentsMd(s.useVaultAgentsMd),
+				skillCatalog: tools.some((t) => t.name === 'read') ? this.deps.skillCatalog() : '',
+			}),
+		];
+		const preloaded: string[] = [];
+		for (const name of def.skills ?? []) {
+			const text = await this.deps.skillActivation?.(name);
+			if (text) preloaded.push(text);
+		}
+		if (preloaded.length) parts.push(`# Preloaded skills\n\n${preloaded.join('\n\n')}`);
+		parts.push(subagentSection(title, def.name));
+		return parts.join('\n\n');
+	}
+
 	private async driveSubagent(
 		state: SubagentState,
-		model: PiModel,
+		def: AgentDefinition,
 		fork: boolean,
 		signal?: AbortSignal,
 	): Promise<{ text: string; sessionId: string | null }> {
-		const selection = this.selection!;
-		const session = await this.deps.sessions.create({
-			providerId: selection.provider.id,
-			modelId: selection.model.id,
-			thinkingLevel: this.thinkingLevel,
-			parentId: this.session!.id,
-			parentCallId: state.callId,
-			agentName: state.name,
-		});
-		state.sessionId = session.id;
+		const { selection, level } = this.agentModel(def);
+		const model = toPiModel(selection.provider, selection.model);
+		// A resumed agent goes on from its own log, which the chat shows whole.
+		const prior = state.sessionId
+			? replay(await this.deps.sessions.load(state.sessionId)).filter(
+					(e) => e.event.type !== 'meta',
+				)
+			: [];
+		state.events = [...prior];
+		if (!state.sessionId) {
+			const session = await this.deps.sessions.create({
+				providerId: selection.provider.id,
+				modelId: selection.model.id,
+				thinkingLevel: level,
+				parentId: this.session!.id,
+				parentCallId: state.callId,
+				agentType: def.name,
+				agentTitle: state.title,
+			});
+			state.sessionId = session.id;
+		}
+		const sessionId = state.sessionId;
 		state.status = 'running';
 		await this.logAgent(state, { type: 'user', content: state.task });
-		// The main agent's tools as they are now, bar spawn_agent: one level of agents only.
-		const tools = () => this.exposedTools().filter((t) => t.name !== SPAWN_AGENT_NAME);
-		const prompt = `${await this.systemPrompt()}\n\n${subagentSection(state.name)}`;
+		// Its definition's tools, bar spawn_agent: one level of agents only. A tool it may not
+		// have is not in its list, so the model never sees it.
+		const tools = () =>
+			toolsFor(
+				def,
+				this.exposedTools(),
+				this.deps.permissions.getExposedTools(
+					this.deps.registeredTools?.() ?? this.deps.tools(),
+				),
+				this.deps.readsOnly ?? (() => false),
+			).filter((t) => t.name !== SPAWN_AGENT_NAME);
+		const prompt = await this.agentPrompt(def, state.title, tools());
 		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
-		const forked = fork ? forkMessages(this.agent?.state.messages ?? []) : [];
-		const limits = freshLimits();
+		const history = prior.length
+			? await this.deps.context.project({ events: prior, model })
+			: fork
+				? forkMessages(this.agent?.state.messages ?? [])
+				: [];
+		const limits: LoopLimits = { ...freshLimits(), max: def.maxTurns };
 		const nested = this.deps.nestedAgentsMd?.fork(fork);
 		let requestStart = Date.now();
 		const agent = new Agent({
 			initialState: {
 				model,
-				thinkingLevel: this.thinkingLevel,
+				thinkingLevel: level,
 				tools: tools(),
-				messages: leading ? [leading, ...forked] : forked,
+				messages: leading ? [leading, ...history] : history,
 			},
-			streamFn: this.streamFn(),
+			streamFn: this.streamFor(selection, level),
 			toolExecution: this.deps.settings().toolExecution,
 			beforeToolCall: (ctx, sig) =>
-				this.beforeAgentToolCall(state, ctx.toolCall.id, ctx.toolCall.name, ctx.args, sig),
+				this.beforeAgentToolCall(
+					state,
+					def,
+					ctx.toolCall.id,
+					ctx.toolCall.name,
+					ctx.args,
+					sig,
+				),
 			afterToolCall: (ctx, sig) =>
 				this.afterToolCall(
 					ctx.toolCall.id,
@@ -1357,16 +1567,20 @@ export class AgentController {
 			});
 			return {
 				text: `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`,
-				sessionId: session.id,
+				sessionId,
 			};
 		}
 		state.status = 'done';
-		return { text: text || 'The agent finished without an answer.', sessionId: session.id };
+		return { text: text || 'The agent finished without an answer.', sessionId };
 	}
 
-	/** A sub-agent's call: its permission and approval, which says who asks. */
+	/**
+	 * A sub-agent's call: the user's permission for it, and an approval card that says who asks.
+	 * An agent defined with permissionMode dontAsk is refused instead of asking.
+	 */
 	private async beforeAgentToolCall(
 		state: SubagentState,
+		def: AgentDefinition,
 		toolCallId: string,
 		name: string,
 		args: unknown,
@@ -1377,12 +1591,16 @@ export class AgentController {
 			state.toolStatus.set(toolCallId, status);
 			this.emitAgent(state);
 		};
-		if (name === SPAWN_AGENT_NAME) {
-			set('blocked');
-			return { block: true, reason: 'Sub-agents cannot spawn agents. Do the task yourself.' };
+		if (
+			def.permissionMode === 'dontAsk' &&
+			this.deps.permissions.resolve(name, args) === 'approval_required'
+		) {
+			set('rejected');
+			return {
+				block: true,
+				reason: `The ${def.name} agent may not ask for approval, and this call needs it. Do the task without it.`,
+			};
 		}
-		if (!this.deps.tools().some((t) => t.name === name))
-			return { block: true, reason: `Tool ${name} not found` };
 		const gate = await this.authorize(toolCallId, name, args, signal, set, { agent: state });
 		// The main agent is still running its tools, whatever the card that came and went.
 		if (this.agent && !this.pendingApproval)
@@ -1635,13 +1853,13 @@ export class AgentController {
 		const reverted: string[] = [];
 		const unchanged: { path: string; reason: string }[] = [];
 		for (const { event } of snapshots) {
-			const file = this.deps.app.vault.getFileByPath(event.path);
+			const file = await this.noteAt(event.path);
 			if (!file) {
 				if (event.ref !== null)
 					unchanged.push({ path: event.path, reason: 'The note no longer exists.' });
 				continue;
 			}
-			const current = await this.deps.app.vault.read(file);
+			const current = await file.read();
 			if (contentHash(current) !== event.afterHash) {
 				unchanged.push({
 					path: event.path,
@@ -1650,7 +1868,7 @@ export class AgentController {
 				continue;
 			}
 			if (event.ref === null) {
-				await this.deps.app.fileManager.trashFile(file);
+				await file.trash();
 				reverted.push(event.path);
 				continue;
 			}
@@ -1667,13 +1885,7 @@ export class AgentController {
 				unchanged.push({ path: event.path, reason: 'The snapshot is missing.' });
 				continue;
 			}
-			let applied = false;
-			await this.deps.app.vault.process(file, (data) => {
-				if (contentHash(data) !== event.afterHash) return data;
-				applied = true;
-				return previous;
-			});
-			if (applied) {
+			if (await file.replace(previous, event.afterHash)) {
 				reverted.push(event.path);
 				await this.deps.sessions.deleteSnapshot(sessionId, event.ref);
 			} else {
@@ -1686,6 +1898,8 @@ export class AgentController {
 		await this.deps.sessions.append(sessionId, { type: 'rewind', toEventIndex });
 		await this.reloadEvents();
 		await this.recalculateUsage();
+		// A definition the rewind put back or removed changes the agents that can be started.
+		if (reverted.some((p) => isAgentsPath(p))) await this.deps.agentDefinitionsChanged?.();
 		return { reverted, unchanged, userText: preview.userText };
 	}
 

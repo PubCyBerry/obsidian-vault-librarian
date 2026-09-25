@@ -1,6 +1,6 @@
 import { setIcon } from 'obsidian';
 import type { ToolCardStatus } from '../agent/agent-controller';
-import { isRootAgentsMd } from '../permissions/tool-permission-manager';
+import { alwaysAsksFor } from '../permissions/tool-permission-manager';
 
 export const STATUS_LABELS: Record<ToolCardStatus, string> = {
 	pending: 'Pending',
@@ -330,17 +330,14 @@ export function renderApprovalCard(
 			text: 'Obsidian commands this runs are not undone by rewind.',
 		});
 	const path = typeof args.path === 'string' ? args.path : '';
-	const protectsAgentsMd = (name === 'write' || name === 'edit') && isRootAgentsMd(path);
+	const alwaysAsks = name === 'write' || name === 'edit' ? alwaysAsksFor(path) : null;
 	const buttons = card.createDiv({ cls: 'librarian-approval-buttons' });
 	const approve = buttons.createEl('button', { cls: 'mod-cta', text: 'Approve' });
 	approve.addEventListener('click', handlers.approve);
 	const reject = buttons.createEl('button', { text: 'Reject' });
 	reject.addEventListener('click', handlers.reject);
-	if (protectsAgentsMd) {
-		card.createDiv({
-			cls: 'librarian-approval-note',
-			text: 'Changes to the vault root AGENTS.md always ask first.',
-		});
+	if (alwaysAsks) {
+		card.createDiv({ cls: 'librarian-approval-note', text: alwaysAsks });
 	} else if (!canAlways) {
 		card.createDiv({
 			cls: 'librarian-approval-note',

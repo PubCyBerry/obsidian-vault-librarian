@@ -1,15 +1,16 @@
 import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
 import { ACTIVE_TURN_KEY, AgentController, hasUnfinishedTurn } from './agent/agent-controller';
+import { AgentManager, agentGroup, agentKey } from './agent/agent-definitions';
 import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
-import { createSpawnAgentTool } from './agent/subagent';
+import { createSpawnAgentTool, SPAWN_AGENT_NAME } from './agent/subagent';
 import { ContextManager } from './context/context-manager';
 import { desktopHttp, openInBrowser } from './mcp/loopback';
 import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
 import { clientSecretId, OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
 import {
-	AGENTS_GROUP,
+	READ_ONLY_TOOL_NAMES,
 	SHELL_GROUP,
 	ToolPermissionManager,
 } from './permissions/tool-permission-manager';
@@ -28,6 +29,7 @@ import {
 	skillsSection,
 } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
+import { isAgentsPath } from './tools/path-policy';
 import { createVaultTools, resultBudget, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { DEFAULT_LISTED_TOOLS, type LibrarianSettings, mergeSettings } from './types';
@@ -48,6 +50,8 @@ export default class LibrarianPlugin extends Plugin {
 	transport!: TransportRouter;
 	mcp!: McpManager;
 	skills!: SkillManager;
+	/** Sub-agent definitions, built in and from `.agents/agents` (LIB-FEAT-268). */
+	agentDefs!: AgentManager;
 	registry!: ToolRegistry;
 	controller!: AgentController;
 	private settingTab!: LibrarianSettingTab;
@@ -109,32 +113,47 @@ export default class LibrarianPlugin extends Plugin {
 			},
 		});
 		this.skills = new SkillManager(this.app);
+		this.agentDefs = new AgentManager(this.app);
 		this.permissions.attachExtras(
 			() => [
 				SHELL_GROUP,
-				AGENTS_GROUP,
 				...this.mcp.groups(),
 				...(this.webdavOn() ? [WEBDAV_GROUP] : []),
 				...skillGroups(this.skills.skills),
+				agentGroup(this.agentDefs.agents),
 			],
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
+				// Starting an agent is judged by that agent's own row (LIB-FEAT-268).
+				if (tool === SPAWN_AGENT_NAME) return agentKey(this.controller.agentOfCall(args));
 				if (tool !== 'read') return null;
 				const path = (args as { path?: unknown } | null)?.path;
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
 				return skill ? skillKey(skill.name) : null;
 			},
-			() => this.mcp.readOnlyTools(),
+			// Agents that only read start without asking, as the tools that only read do.
+			() =>
+				new Set([
+					...this.mcp.readOnlyTools(),
+					...this.agentDefs.agents
+						.filter((a) => a.permissionMode === 'plan')
+						.map((a) => agentKey(a.name)),
+				]),
 		);
 		const mutation = {
 			before: (id: string, path: string) => this.controller.beforeMutation(id, path),
-			after: (id: string, path: string) => this.controller.afterMutation(id, path),
+			after: async (id: string, path: string) => {
+				await this.controller.afterMutation(id, path);
+				// Definitions sit outside the vault index, so no vault event says one changed.
+				if (isAgentsPath(path)) await this.agentDefs.scan();
+			},
 		};
 		const vaultDeps: ToolDeps = {
 			app: this.app,
 			settings: () => this.settings,
 			hidden: this.skills.hiddenReader(),
 			mutation,
+			describeAgent: (path) => this.agentDefs.describe(path),
 		};
 		// A fresh client per call picks up changed settings and this device's password, and the
 		// call's signal, so Stop ends it.
@@ -193,19 +212,31 @@ export default class LibrarianPlugin extends Plugin {
 					);
 		const deferredSkills = () =>
 			usableSkills().filter((s) => this.toolDeferredOf(skillKey(s.name)));
-		const spawnAgent = createSpawnAgentTool((id, args, signal) =>
-			this.controller.runSubagent(id, args, signal),
-		);
+		// The agents the model may start: not a blocked one, and none while spawn_agent is blocked.
+		const usableAgents = () =>
+			this.permissions.get(SPAWN_AGENT_NAME) === 'blocked'
+				? []
+				: this.agentDefs.agents.filter(
+						(a) => this.permissions.get(agentKey(a.name)) !== 'blocked',
+					);
 		// Everything registered, with the execution policy from settings applied; the registry
 		// decides which of these the model sees (deferred tools wait for tool_search).
 		this.registry = new ToolRegistry({
 			registered: () => {
 				const hidden = deferredSkills();
+				const agents = usableAgents();
 				// Built fresh each time so descriptions carry the current default limits from settings.
 				return [
 					...createVaultTools(vaultDeps),
 					createShellTool(this.shell),
-					spawnAgent,
+					// With the agents it can start listed in its description.
+					...(agents.length
+						? [
+								createSpawnAgentTool(agents, (id, args, signal) =>
+									this.controller.runSubagent(id, args, signal),
+								),
+							]
+						: []),
 					...webdavTools(),
 					...this.mcp.tools(),
 					// Only while some skill waits to be found, as tool_search for deferred tools.
@@ -247,6 +278,15 @@ export default class LibrarianPlugin extends Plugin {
 						: usable.filter((s) => !listed.includes(s));
 				return skillsSection(listed, deferred);
 			},
+			agentDefinition: (name) => this.agentDefs.get(name),
+			agentDefinitionsChanged: () => this.agentDefs.scan(),
+			registeredTools: () => this.registry.entries().map((e) => e.tool),
+			readsOnly: (name) =>
+				READ_ONLY_TOOL_NAMES.has(name) || this.mcp.readOnlyTools().has(name),
+			skillActivation: async (name) => {
+				const skill = usableSkills().find((s) => s.name === name);
+				return skill ? this.skills.activation(skill) : null;
+			},
 		});
 		this.controller.subscribe((e) => {
 			if (e.type !== 'session') return;
@@ -274,6 +314,7 @@ export default class LibrarianPlugin extends Plugin {
 				.then(() => this.mcp.claimHandoffs())
 				.then(() => this.mcp.connectAll());
 			void this.skills.scan();
+			void this.agentDefs.scan();
 			void this.finishInterruptedTurn();
 		});
 
@@ -296,6 +337,7 @@ export default class LibrarianPlugin extends Plugin {
 		// tab is told here when a server's state or the skill list changes.
 		this.register(this.mcp.subscribe(() => settingTab.refresh()));
 		this.register(this.skills.subscribe(() => settingTab.refresh()));
+		this.register(this.agentDefs.subscribe(() => settingTab.refresh()));
 		// A key that arrives sealed may be the one the chat was waiting for.
 		this.register(
 			this.secrets.subscribe(() => {

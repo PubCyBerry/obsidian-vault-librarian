@@ -68,8 +68,13 @@ function splitFrontmatter(text: string): { yaml: string; body: string } | null {
 	return m ? { yaml: m[1]!, body: text.slice(m[0].length) } : null;
 }
 
-/** Lenient parse: a missing description skips the skill, cosmetic name issues only warn. */
-export function parseSkillMd(text: string, dir: string): { skill?: Skill; error?: string } {
+/**
+ * The frontmatter of a skill or agent file as a mapping, and the body after it. Lenient, since
+ * other tools write these files too: a value with ": " in it is quoted and tried again.
+ */
+export function readFrontmatter(
+	text: string,
+): { fm: Record<string, unknown>; body: string } | { error: string } {
 	const parts = splitFrontmatter(text);
 	if (!parts) return { error: 'No frontmatter' };
 	let fm: unknown;
@@ -82,8 +87,16 @@ export function parseSkillMd(text: string, dir: string): { skill?: Skill; error?
 			return { error: `Invalid frontmatter: ${msg(e)}` };
 		}
 	}
-	if (!fm || typeof fm !== 'object') return { error: 'Frontmatter is not a mapping' };
-	const { name, description } = fm as Record<string, unknown>;
+	if (!fm || typeof fm !== 'object' || Array.isArray(fm))
+		return { error: 'Frontmatter is not a mapping' };
+	return { fm: fm as Record<string, unknown>, body: parts.body };
+}
+
+/** Lenient parse: a missing description skips the skill, cosmetic name issues only warn. */
+export function parseSkillMd(text: string, dir: string): { skill?: Skill; error?: string } {
+	const read = readFrontmatter(text);
+	if ('error' in read) return { error: read.error };
+	const { name, description } = read.fm;
 	if (typeof description !== 'string' || !description.trim())
 		return { error: 'Missing description' };
 	const dirName = dir.slice(dir.lastIndexOf('/') + 1);

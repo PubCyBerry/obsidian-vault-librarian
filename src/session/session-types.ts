@@ -8,10 +8,14 @@ export interface SessionMetadata {
 	thinkingLevel?: ThinkingLevel;
 	createdAt: string;
 	updatedAt: string;
-	/** A sub-agent's session: the conversation that started it, and the spawn_agent call. */
+	/**
+	 * A sub-agent's session: the conversation that started it, the spawn_agent call, the agent
+	 * definition it runs as and the title the main agent gave the run.
+	 */
 	parentId?: string;
 	parentCallId?: string;
-	agentName?: string;
+	agentType?: string;
+	agentTitle?: string;
 }
 
 export interface SessionSummary extends SessionMetadata {
