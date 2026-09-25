@@ -1378,15 +1378,10 @@ export class AgentController {
 
 	/** The model an agent runs on and its thinking level: its definition's, else the main ones. */
 	private agentModel(def: AgentDefinition): { selection: ActiveSelection; level: ThinkingLevel } {
-		let selection = this.selection!;
-		if (def.model) {
-			const found = findModel(this.deps.providers.listSelectable(), def.model);
-			if (!found)
-				throw new Error(
-					`The ${def.name} agent asks for the model ${def.model}, which is not in Settings.`,
-				);
-			selection = found;
-		}
+		// A model Settings lacks falls back to the main one, as the definition's scan warned.
+		const selection =
+			(def.model && findModel(this.deps.providers.listSelectable(), def.model)) ||
+			this.selection!;
 		if (this.deps.secrets.get(selection.provider.secretId) === null)
 			throw new Error(`No API key for ${selection.provider.name} on this device.`);
 		const levels = selectableThinkingLevels(selection.model);

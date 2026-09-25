@@ -53,16 +53,34 @@ export function withoutAgentId(text: string): string {
 	return text.replace(/\n*\[agent_id: [^\]]*\]\s*$/, '');
 }
 
+/**
+ * The first line of Markdown as plain words, for a row's one line: no list mark or heading mark,
+ * no emphasis or code marks, a link as its text.
+ */
+export function plainLine(text: string, max = 120): string {
+	const line = text.split('\n').find((l) => l.trim()) ?? '';
+	const plain = line
+		.replace(/^\s*(?:[-*+]|\d+[.)]|#{1,6}|>)\s+/, '')
+		.replace(
+			/\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g,
+			(_m, target: string, alias?: string) => alias || target,
+		)
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+		.replace(/\*\*|__|`/g, '')
+		.trim();
+	return firstLine(plain, max);
+}
+
 /** What a running agent is doing, from its log and the response on its way. */
 export function agentActivity(state: SubagentState): string {
 	if (state.status === 'waiting') return AGENT_STATUS_LABELS.waiting;
 	const last = state.events[state.events.length - 1]?.event;
 	if (state.status === 'failed')
-		return last?.type === 'error' ? firstLine(last.message, 120) : AGENT_STATUS_LABELS.failed;
+		return last?.type === 'error' ? plainLine(last.message) : AGENT_STATUS_LABELS.failed;
 	if (state.status === 'done' || state.status === 'stopped') {
 		for (let i = state.events.length - 1; i >= 0; i--) {
 			const e = state.events[i]!.event;
-			if (e.type === 'assistant' && e.content.trim()) return firstLine(e.content, 120);
+			if (e.type === 'assistant' && e.content.trim()) return plainLine(e.content);
 		}
 		return AGENT_STATUS_LABELS[state.status];
 	}
@@ -134,7 +152,7 @@ export function storedRow(
 		...(color ? { color } : {}),
 		status,
 		activity: result
-			? firstLine(answer.replace(/^Error:\s*/, ''), 120)
+			? plainLine(answer.replace(/^Error:\s*/, ''))
 			: running
 				? AGENT_STATUS_LABELS.pending
 				: 'It did not run.',

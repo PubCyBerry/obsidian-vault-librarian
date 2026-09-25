@@ -1,5 +1,10 @@
 import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
-import { ACTIVE_TURN_KEY, AgentController, hasUnfinishedTurn } from './agent/agent-controller';
+import {
+	ACTIVE_TURN_KEY,
+	AgentController,
+	findModel,
+	hasUnfinishedTurn,
+} from './agent/agent-controller';
 import { AgentManager, agentGroup, agentKey } from './agent/agent-definitions';
 import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
@@ -113,7 +118,10 @@ export default class LibrarianPlugin extends Plugin {
 			},
 		});
 		this.skills = new SkillManager(this.app);
-		this.agentDefs = new AgentManager(this.app);
+		this.agentDefs = new AgentManager(
+			this.app,
+			(ref) => !!findModel(this.providers.listSelectable(), ref),
+		);
 		this.permissions.attachExtras(
 			() => [
 				SHELL_GROUP,

@@ -51,13 +51,13 @@ export interface SubagentState {
 
 const USE = `Start a sub-agent: another Librarian with a fresh context, which works on one self-contained task with its own tools and returns its final answer as the result of this call. What it reads stays out of your context; only its answer comes back.
 
-Use it when the user asks for sub-agents, or when a task splits into independent parts that each take many reads, such as one summary per note across many notes, or a review of your work with fresh eyes. Call spawn_agent several times in one response to run agents side by side. Do not use it for a question one or two searches answer, and do not hand off the step you need next: do that yourself.
+Use it when the user asks for sub-agents, or when a task splits into independent parts that each take many reads, such as one summary per note across many notes, or a review of your work with fresh eyes. Each call returns only when its agent has finished, so agents started in separate responses run one after another: to run agents side by side, put all their spawn_agent calls in the same response. Do not use it for a question one or two searches answer, and do not hand off the step you need next: do that yourself.
 
 Write the task so it stands on its own: what to find or change, where to look, and the form of the answer, such as "list each open task with its note path and line". A sub-agent cannot ask you or the user anything, cannot start agents of its own and cannot talk to other sub-agents; pass what one found to another in its task. Give agents that change notes different notes to change.
 
 Each result ends with [agent_id: …]. To give that agent a follow-up with everything it did so far, call spawn_agent again with resume set to that id and the follow-up as task.`;
 
-const DEFINITIONS = `Agents are Markdown files under .agents/agents/ in the vault: YAML frontmatter with name and description, and optionally tools and disallowedTools (lists of tool names; a trailing * matches a prefix), model (a model ID, or provider/model), effort, maxTurns, permissionMode (default, plan for read-only, or dontAsk to refuse calls that need approval), skills (preloaded) and color; then the agent's instructions, which replace the Custom system prompt. Read, write and edit them like notes, and delete one with bash rm; changes to them always ask the user.`;
+const DEFINITIONS = `Agents are Markdown files under .agents/agents/ in the vault: YAML frontmatter with name and description, and optionally tools and disallowedTools (lists of tool names; a trailing * matches a prefix), model (the ID of a model in Settings, or provider/model; leave it out to use your model), effort, maxTurns, permissionMode (default, plan for read-only, or dontAsk to refuse calls that need approval), skills (preloaded) and color; then the agent's instructions, which replace the Custom system prompt. Read, write and edit them like notes, and delete one with bash rm; changes to them always ask the user.`;
 
 /** The agents it can start, each by name and what it is for, cut short to keep the list small. */
 function catalog(agents: readonly AgentDefinition[]): string {

@@ -49,7 +49,7 @@ Available capabilities:
 - Use edit for localized changes.
 - When webdav tools are listed, use them for files on the user's WebDAV storage, such as a NAS. webdav_download and webdav_upload copy files between the storage and the vault.
 - Use bash to run a shell command inside the vault when you need to combine steps, filter a large result, or reach the web. Inside it, curl sends an HTTP request and writes the raw response to stdout, and obsidian runs an Obsidian command; pipe output through grep, sed or jq to keep only what you need, and use /tmp to hold something large across calls.
-- When spawn_agent is listed, use it to hand independent parts of a larger task to sub-agents, which work side by side and each return one answer. Keep the note paths they cite when you use their answers.
+- When spawn_agent is listed, use it to hand independent parts of a larger task to sub-agents, which each return one answer. Start all the agents a step needs in one response: each call waits for its agent, so agents started one response at a time run one after another. Keep the note paths they cite when you use their answers.
 
 Search behavior:
 When find, grep or ls is not in your tool list, it is deferred: load it with tool_search before your first search, or search with bash (grep -rn, find, ls) instead.

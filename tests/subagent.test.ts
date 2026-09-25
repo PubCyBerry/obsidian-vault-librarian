@@ -117,7 +117,11 @@ function harness(
 		() => settings,
 		async () => {},
 	);
-	const defs = new AgentManager(app as unknown as App);
+	const providers = new ProviderManager(() => settings);
+	const defs = new AgentManager(
+		app as unknown as App,
+		(ref) => !!findModel(providers.listSelectable(), ref),
+	);
 	permissions.attachExtras(
 		() => [],
 		() => new Set(),
@@ -152,7 +156,7 @@ function harness(
 		sessions,
 		context: new ContextManager(app as unknown as App, () => settings.context),
 		permissions,
-		providers: new ProviderManager(() => settings),
+		providers,
 		transport,
 		prompt: new PromptManager(app as unknown as App),
 		secrets: new SecretStore(app as unknown as App),
@@ -528,6 +532,36 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		expect(h.models.style).toEqual(['small', 'small']);
 		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
 		expect(result!.content).toMatch(/\[Stopped after 2 tool iterations\]/);
+	});
+
+	it('warns about a model Settings lacks and runs that agent on the main model', async () => {
+		const odd =
+			'---\nname: odd\ndescription: Names an agent as its model.\nmodel: general-purpose\n---\n';
+		const h = harness(
+			{
+				main: [
+					{ toolCalls: [spawn('odd one', 'Look.', { agent: 'odd' })] },
+					{ text: 'ok' },
+				],
+				'odd one': [{ text: 'Looked.' }],
+			},
+			{ 'agent:odd': 'always_allow' },
+			{},
+			{ '.agents/agents/odd.md': odd },
+		);
+		await h.defs.scan();
+		expect(h.defs.describe('.agents/agents/odd.md')).toEqual({
+			agent: {
+				name: 'odd',
+				warnings: [
+					'model "general-purpose" is not in Settings, so the agent runs on the main agent\'s model',
+				],
+			},
+		});
+		await h.controller.send('go');
+		expect(h.models['odd one']).toEqual(['m']);
+		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
+		expect(result!.content).toMatch(/^Looked\./);
 	});
 
 	it('a plan agent starts without asking and reads only; dontAsk refuses instead of asking', async () => {

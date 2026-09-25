@@ -225,7 +225,11 @@ export class AgentManager {
 	diagnostics: AgentDiagnostic[] = [];
 	private readonly listeners = new Set<() => void>();
 
-	constructor(private readonly app: App) {}
+	constructor(
+		private readonly app: App,
+		/** Whether Settings has the model a definition names; one it lacks runs on the main model. */
+		private readonly hasModel: (ref: string) => boolean = () => true,
+	) {}
 
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
@@ -266,7 +270,12 @@ export class AgentManager {
 				diagnostics.push({ location, message: `Shadowed by ${clash.location}` });
 				continue;
 			}
-			for (const w of parsed.agent.warnings) diagnostics.push({ location, message: w });
+			const { model, warnings } = parsed.agent;
+			if (model && !this.hasModel(model))
+				warnings.push(
+					`model ${shown(model)} is not in Settings, so the agent runs on the main agent's model`,
+				);
+			for (const w of warnings) diagnostics.push({ location, message: w });
 			found.push(parsed.agent);
 		}
 		this.agents = [
