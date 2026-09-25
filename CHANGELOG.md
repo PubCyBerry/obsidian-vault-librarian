@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.14.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.14.0...2.14.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* ask for citations the chat can link, and link en dash ranges ([6d674bf](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/6d674bf2c44058f205f3b33cf423c704435c5ef8))
+* link a cited note when the citation sits in parentheses or quotes ([082d7b0](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/082d7b070132033d7b6d7f57c504b43354e24710))
+* show a command's output as text in the step popover ([dc77d89](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/dc77d897f6ade73bf16bf66a8ccb2197ac688911))
+
 ## [2.14.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.13.0...2.14.0) (2026-09-25)
 
 
