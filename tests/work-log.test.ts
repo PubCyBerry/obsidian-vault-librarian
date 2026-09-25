@@ -145,5 +145,8 @@ describe('work log (LIB-TEST-253)', () => {
 		expect(readableResult('webdav_ls', ls)).toBe('notes/\na.md\n3 more not listed');
 		expect(readableResult('custom', '{"ok":true}')).toBe('{\n  "ok": true\n}');
 		expect(readableResult('bash', 'plain output')).toBe('plain output');
+		// Output that reaches the popover as one JSON string shows as the text, not escaped.
+		const jq = '{\n  "tag_name": "v1.13.8"\n}\n';
+		expect(readableResult('bash', JSON.stringify(jq))).toBe(jq);
 	});
 });

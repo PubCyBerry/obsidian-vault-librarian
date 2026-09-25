@@ -175,6 +175,8 @@ export function readableResult(name: string, result: string): string {
 	} catch {
 		return result;
 	}
+	// A result that arrives as one JSON string, such as a command's output, reads as its text.
+	if (typeof parsed === 'string') return parsed;
 	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
 		return JSON.stringify(parsed, null, 2);
 	const r = parsed as Record<string, unknown>;
