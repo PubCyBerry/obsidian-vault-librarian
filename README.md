@@ -6,9 +6,9 @@ An agent that lives in your Obsidian vault. Ask in plain language: it searches y
   <img src="docs/media/tour.gif" width="900" alt="Asking what was decided about a project: the agent searches the vault, reads the notes it found and answers with links to the lines it used">
 </p>
 
-<p align="center">
-  <a href="docs/media/tour.mp4"><b>Watch the full tour</b></a> · <a href="#get-started"><b>Get started</b></a>
-</p>
+The full tour: a question and the steps behind its answer, two note changes approved on their cards, and a rewind that takes both back.
+
+https://github.com/user-attachments/assets/55285424-031b-418f-a7f2-c402bc89d1e8
 
 - [What you get](#what-you-get)
 - [Get started](#get-started)
@@ -133,7 +133,7 @@ npm test         # vitest
 
 The agent loop is `@earendil-works/pi-agent-core`; the OpenAI-compatible adapter is `@earendil-works/pi-ai`. Both are pinned. Commits follow Conventional Commits (enforced by commitlint through prek) and releases are cut by release-please.
 
-The media in this README are recorded from the demo vault in [`docs/demo`](docs/demo). After a UI change, `npm run build && node docs/demo/record.mjs` records them again; the script's header lists what it needs.
+The media in this README are recorded from the demo vault in [`docs/demo`](docs/demo). After a UI change, `npm run build && node docs/demo/record.mjs` records them again; the script's header lists what it needs. The tour video at the top is `docs/media/tour.mp4` uploaded to GitHub by dropping it into an issue comment box, since a README plays only videos uploaded that way: upload the new file the same way and replace the address.
 
 Found a bug or want something? [Open an issue](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/new/choose).
 
