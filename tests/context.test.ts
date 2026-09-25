@@ -1,3 +1,4 @@
+import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import {
@@ -12,7 +13,13 @@ import { toPiModel } from '../src/provider/provider-manager';
 import { replay } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
 import { createVaultTools } from '../src/tools/registry';
-import { DEFAULT_SETTINGS, mergeSettings, newModel, newProvider } from '../src/types';
+import {
+	DEFAULT_SETTINGS,
+	mergeSettings,
+	newModel,
+	newProvider,
+	RESPONSES_API,
+} from '../src/types';
 import { FakeApp } from './fake-app';
 import { scriptedStream } from './scripted-stream';
 
@@ -274,6 +281,60 @@ describe("Gemini's signature in the session (LIB-TEST-251)", () => {
 		});
 		const call = (messages[1] as { content: { type: string }[] }).content[0];
 		expect(call).toMatchObject({ type: 'toolCall', id: 'c1', thoughtSignature: 'SIG' });
+	});
+});
+
+describe('earlier thinking on the Responses API (LIB-TEST-249)', () => {
+	const events = [
+		ev('user', { content: 'plan it' }),
+		ev('assistant', { content: 'Done.', thinking: 'First the outline.', toolCalls: [] }),
+		ev('user', { content: 'and then?' }),
+	].map((event, index) => ({ event, index }));
+	const types = (messages: unknown[]) =>
+		(messages[1] as { content: { type: string }[] }).content.map((c) => c.type);
+
+	it('goes back as reasoning_content on Chat Completions', async () => {
+		const { cm } = manager();
+		expect(types(await cm.project({ model: piModel, events }))).toEqual(['thinking', 'text']);
+	});
+
+	it('stays out of a Responses request, which Pi can then build', async () => {
+		const { cm } = manager();
+		const responses = toPiModel(provider, { ...model, api: RESPONSES_API });
+		const messages = await cm.project({ model: responses, events });
+		expect(types(messages)).toEqual(['text']);
+		expect(() =>
+			convertResponsesMessages(responses, { messages }, new Set(['openai'])),
+		).not.toThrow();
+	});
+
+	it('sends a call back without the item id that pairs it with that reasoning', async () => {
+		const { cm } = manager();
+		const responses = toPiModel(provider, { ...model, api: RESPONSES_API });
+		const messages = await cm.project({
+			model: responses,
+			events: [
+				ev('user', { content: 'find x' }),
+				ev('assistant', {
+					content: '',
+					thinking: 'Search first.',
+					toolCalls: [{ id: 'call_1|fc_1', name: 'grep', args: { pattern: 'x' } }],
+				}),
+				ev('tool_result', {
+					toolCallId: 'call_1|fc_1',
+					name: 'grep',
+					ok: true,
+					content: 'a.md:1: x',
+					truncated: false,
+				}),
+			].map((event, index) => ({ event, index })),
+		});
+		const items = convertResponsesMessages(responses, { messages }, new Set(['openai']));
+		const call = items.find((i) => i.type === 'function_call');
+		const output = items.find((i) => i.type === 'function_call_output');
+		expect(call).toMatchObject({ call_id: 'call_1', id: undefined });
+		expect(output).toMatchObject({ call_id: 'call_1' });
+		expect(items.some((i) => i.type === 'reasoning')).toBe(false);
 	});
 });
 

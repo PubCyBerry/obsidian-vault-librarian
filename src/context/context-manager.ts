@@ -19,7 +19,7 @@ import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type { PiModel } from '../provider/provider-manager';
 import type { IndexedEvent, SessionEvent, StoredUsage } from '../session/session-types';
-import type { ContextSettings, ModelConfig } from '../types';
+import { type ContextSettings, type ModelConfig, RESPONSES_API } from '../types';
 
 export interface ContextUsage {
 	usedTokens: number;
@@ -153,6 +153,13 @@ export interface ProjectionInput {
 	excludeLastUser?: boolean;
 }
 
+/**
+ * A call's id as the log replays it. Pi names a Responses API call `call_id|fc_id`, and OpenAI
+ * refuses an fc_ item that comes without the reasoning item it was paired with, which the log
+ * does not keep. Without the item id the call goes back as one from another model does.
+ */
+const replayedCallId = (id: string): string => id.split('|')[0]!;
+
 export class ContextManager {
 	constructor(
 		private readonly app: App,
@@ -221,7 +228,11 @@ export class ContextManager {
 				messages.push(msg);
 			} else if (event.type === 'assistant') {
 				const content: AssistantMessage['content'] = [];
-				if (event.thinking)
+				// Chat Completions takes the text back under reasoning_content. The Responses API
+				// wants its own reasoning item as the signature, which the log does not keep, and
+				// Pi parses whatever is there as JSON: a turn with thinking broke every request
+				// after it. It does without the earlier reasoning instead (see replayedCallId).
+				if (event.thinking && input.model.api !== RESPONSES_API)
 					content.push({
 						type: 'thinking',
 						thinking: event.thinking,
@@ -231,7 +242,7 @@ export class ContextManager {
 				for (const call of event.toolCalls) {
 					const tc: ToolCall = {
 						type: 'toolCall',
-						id: call.id,
+						id: replayedCallId(call.id),
 						name: call.name,
 						arguments: call.args as ToolCall['arguments'],
 						...(call.thoughtSignature
@@ -256,7 +267,7 @@ export class ContextManager {
 				pendingCalls.delete(event.toolCallId);
 				const msg: ToolResultMessage = {
 					role: 'toolResult',
-					toolCallId: event.toolCallId,
+					toolCallId: replayedCallId(event.toolCallId),
 					toolName: event.name,
 					content: [{ type: 'text', text: event.content }],
 					isError: !event.ok,
@@ -269,7 +280,7 @@ export class ContextManager {
 		for (const [id, name] of pendingCalls) {
 			messages.push({
 				role: 'toolResult',
-				toolCallId: id,
+				toolCallId: replayedCallId(id),
 				toolName: name,
 				content: [{ type: 'text', text: 'Approval expired' }],
 				isError: true,
