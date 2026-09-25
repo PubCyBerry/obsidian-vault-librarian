@@ -122,7 +122,8 @@ export async function renderSessionList(
 	open: (session: SessionMetadata) => void | Promise<void>,
 ): Promise<void> {
 	el.empty();
-	const sessions = await plugin.sessions.list();
+	// A sub-agent's session opens from the conversation that started it, not from here.
+	const sessions = (await plugin.sessions.list()).filter((s) => !s.parentId);
 	if (!sessions.length) {
 		el.createDiv({ cls: 'librarian-sessions-empty', text: 'No sessions yet.' });
 		return;

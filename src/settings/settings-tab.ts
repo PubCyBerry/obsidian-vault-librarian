@@ -18,6 +18,12 @@ import {
 	type TextAreaComponent,
 	type TFile,
 } from 'obsidian';
+import {
+	AGENTS_GROUP_ID,
+	type AgentDefinition,
+	agentCapabilities,
+	agentKey,
+} from '../agent/agent-definitions';
 import { DEFAULT_SYSTEM_PROMPT, systemPromptOf } from '../agent/prompt';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId, type McpStatus } from '../mcp/mcp-manager';
@@ -943,6 +949,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			this.webdavPage(),
 			this.deviceSyncPage(),
 			this.skillsPage(),
+			this.agentsPage(),
 			this.permissionsPage(),
 			this.contextPage(),
 			this.sessionsPage(),
@@ -1153,23 +1160,6 @@ export class LibrarianSettingTab extends PluginSettingTab {
 									s.repeatedFailureLimit,
 									async (v) => {
 										s.repeatedFailureLimit = v ?? 3;
-										await this.save();
-									},
-									'3',
-								),
-						},
-						{
-							name: 'Max sub-agents',
-							desc: 'How many sub-agents run at once. Further spawn_agent calls wait for a slot. Keep it small on a phone.',
-							render: (setting) =>
-								numberInput(
-									setting,
-									s.maxSubagents,
-									async (v) => {
-										s.maxSubagents =
-											v === undefined
-												? 3
-												: Math.min(8, Math.max(1, Math.floor(v)));
 										await this.save();
 									},
 									'3',
@@ -1865,6 +1855,111 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		};
 	}
 
+	// Sub-agents
+
+	/**
+	 * How many sub-agents run at once, and every agent the main agent can start, built in or found
+	 * in .agents/agents, with its permission to start (LIB-FEAT-268).
+	 */
+	private agentsPage(): Page {
+		const { agents, diagnostics } = this.plugin.agentDefs;
+		const s = this.plugin.settings;
+		const hooks = listHooks();
+		const sections: Section[] = [
+			{
+				type: 'group',
+				items: [
+					{
+						name: 'Max sub-agents',
+						desc: 'How many sub-agents run at once. Further spawn_agent calls wait for a slot. Keep it small on a phone.',
+						render: (setting) =>
+							numberInput(
+								setting,
+								s.maxSubagents,
+								async (v) => {
+									s.maxSubagents =
+										v === undefined
+											? 3
+											: Math.min(8, Math.max(1, Math.floor(v)));
+									await this.save();
+								},
+								'3',
+							),
+					},
+					this.bulkRow(
+						AGENTS_GROUP_ID,
+						'All agents',
+						'A new agent asks before it starts, unless it only reads. Blocked agents are not offered to the model.',
+						hooks,
+					),
+				],
+			},
+			{
+				type: 'list',
+				heading: 'Agents',
+				extraButtons: [
+					(b) =>
+						b
+							.setIcon('refresh-cw')
+							.setTooltip('Rescan')
+							// The agent manager announces the new list, which redraws the page.
+							.onClick(() => void this.plugin.agentDefs.scan()),
+				],
+				...(agents.length > 5
+					? { search: { placeholder: 'Search agents', match: rowMatches } }
+					: {}),
+				items: agents.map((agent) => this.agentRow(agent, hooks)),
+			},
+		];
+		if (diagnostics.length)
+			sections.push({
+				type: 'group',
+				heading: 'Problems',
+				items: diagnostics.map(
+					(d): Row => ({
+						name: d.location,
+						desc: d.message,
+						render: (setting) => setting.settingEl.addClass('librarian-skill-problem'),
+					}),
+				),
+			});
+		return {
+			name: 'Sub-agents',
+			desc: 'Agents the main agent hands work to, from .agents/agents, and what each may do.',
+			displayValue: `${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}`,
+			status: diagnostics.length ? 'warning' : null,
+			items: sections,
+		};
+	}
+
+	/**
+	 * Laid out as a skill row: the name with the agent icon in its color, the description, what
+	 * its definition lets it do, and where it comes from.
+	 */
+	private agentRow(agent: AgentDefinition, hooks: ListHooks): Row {
+		return {
+			name: agent.name,
+			desc: agent.description,
+			aliases: agent.location ? [agent.location] : [],
+			render: (setting) => {
+				setting.settingEl.addClass('librarian-skill', 'librarian-agent');
+				const icon = createSpan({ cls: 'librarian-skill-icon librarian-agent-icon' });
+				if (agent.color) icon.addClass(`is-${agent.color}`);
+				setIcon(icon, 'bot');
+				setting.nameEl.prepend(icon);
+				const can = agentCapabilities(agent);
+				if (can) setting.descEl.createDiv({ cls: 'librarian-agent-caps', text: can });
+				const where = setting.descEl.createDiv({ cls: 'librarian-skill-path' });
+				setIcon(
+					where.createSpan({ cls: 'librarian-skill-path-icon' }),
+					agent.location ? 'file-text' : 'package',
+				);
+				where.createSpan({ text: agent.location ?? 'Built in' });
+				this.permissionControl(setting, agentKey(agent.name), hooks);
+			},
+		};
+	}
+
 	// Tool permissions
 
 	private permissionsPage(): Page {
@@ -1882,8 +1977,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 			},
 		];
 		for (const group of perms.groups()) {
-			// Skills have their own page.
-			if (group.id === SKILLS_GROUP_ID) continue;
+			// Skills and sub-agents have their own pages.
+			if (group.id === SKILLS_GROUP_ID || group.id === AGENTS_GROUP_ID) continue;
 			const hooks = listHooks();
 			sections.push({
 				type: 'list',
@@ -2219,7 +2314,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 
 	/** Reads the session list and redraws only when it changed, so the redraw's own read stops. */
 	private async loadSessions(): Promise<void> {
-		const list = await this.plugin.sessions.list();
+		// A sub-agent's session opens from the conversation that started it, not from here.
+		const list = (await this.plugin.sessions.list()).filter((s) => !s.parentId);
 		const key = (l: SessionSummary[]) =>
 			l.map((s) => `${s.id} ${s.updatedAt} ${s.title}`).join('\n');
 		if (this.sessionList && key(list) === key(this.sessionList)) return;

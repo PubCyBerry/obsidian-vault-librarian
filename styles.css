@@ -1739,3 +1739,309 @@ body.is-mobile
 		animation: none;
 	}
 }
+
+/* Sub-agents (LIB-FEAT-140). The runs a response started stand in one card on its timeline step,
+   a row each: the agent's icon, the run's title and agent, what it does on a second line, and its
+   state at the end, marked as the chips mark theirs. A row opens the run's conversation. */
+
+.librarian-step:has(> .librarian-agents) {
+	align-items: flex-start;
+}
+
+.librarian-agents {
+	display: flex;
+	flex: 1 1 100%;
+	flex-direction: column;
+	min-width: 0;
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-primary);
+}
+
+.librarian .librarian-agent-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	width: 100%;
+	height: auto;
+	min-height: 44px;
+	padding: var(--size-2-3) var(--size-4-2) var(--size-2-3) var(--size-4-3);
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	text-align: left;
+	cursor: pointer;
+}
+
+.librarian.is-mobile .librarian-agent-row {
+	min-height: 52px;
+}
+
+.librarian .librarian-agent-row + .librarian-agent-row {
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.librarian .librarian-agent-row:hover,
+.librarian .librarian-agent-row:focus-visible {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.librarian-agent-row-icon,
+.librarian-agent-row-mark {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+}
+
+.librarian-agent-row-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.librarian-agent-row-mark svg {
+	width: 14px;
+	height: 14px;
+}
+
+.librarian-agent-row-mark .librarian-spinner {
+	width: 12px;
+	height: 12px;
+}
+
+.librarian-agent-row-text {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.librarian-agent-row-head {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-2-3);
+	min-width: 0;
+}
+
+.librarian-agent-row-title,
+.librarian-agent-row-activity,
+.librarian-agent-heading-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.librarian-agent-row-title {
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+}
+
+/* The agent the run is, as a quiet tag beside its title. */
+.librarian-agent-type {
+	flex: 0 0 auto;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-family: var(--librarian-font-mono);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-agent-type:empty {
+	display: none;
+}
+
+.librarian-agent-row-activity {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.librarian-agent-row.is-pending .librarian-agent-row-mark,
+.librarian-agent-row.is-running .librarian-agent-row-mark {
+	color: var(--text-accent);
+}
+
+.librarian-agent-row.is-waiting .librarian-agent-row-mark {
+	color: var(--text-faint);
+}
+
+.librarian-agent-row.is-asking .librarian-agent-row-mark,
+.librarian-agent-row.is-asking .librarian-agent-row-activity,
+.librarian-agent-row.is-stopped .librarian-agent-row-mark {
+	color: var(--text-warning);
+}
+
+.librarian-agent-row.is-done .librarian-agent-row-mark {
+	color: var(--text-success);
+}
+
+.librarian-agent-row.is-failed .librarian-agent-row-mark {
+	color: var(--text-error);
+}
+
+/* An agent file's color, on its icon only: the rest keeps the theme's text colors. */
+.is-red:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-red);
+}
+
+.is-orange:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-orange);
+}
+
+.is-yellow:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-yellow);
+}
+
+.is-green:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-green);
+}
+
+.is-cyan:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-cyan);
+}
+
+.is-blue:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-blue);
+}
+
+.is-purple:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-purple);
+}
+
+.is-pink:is(.librarian-agent-row-icon, .librarian-agent-icon) {
+	color: var(--color-pink);
+}
+
+/* The agent pane: a run's conversation in place of the chat's, under a head with the way back. */
+.librarian-agent-view {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.librarian-agent-head {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-height: 40px;
+	padding: var(--size-2-2) var(--size-4-3) var(--size-2-2) var(--size-4-1);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.librarian.is-mobile .librarian-agent-head .librarian-agent-back {
+	min-width: 44px;
+	min-height: 44px;
+}
+
+.librarian-agent-heading {
+	display: flex;
+	flex: 1 1 auto;
+	align-items: baseline;
+	gap: var(--size-2-3);
+	min-width: 0;
+}
+
+.librarian-agent-heading-title {
+	font-weight: var(--font-semibold);
+}
+
+.librarian-agent-state {
+	flex: 0 0 auto;
+	padding: 2px var(--size-4-2);
+	border-radius: var(--radius-l);
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+}
+
+.librarian-agent-state:empty {
+	display: none;
+}
+
+.librarian-agent-state.is-pending,
+.librarian-agent-state.is-running {
+	color: var(--text-accent);
+}
+
+.librarian-agent-state.is-asking,
+.librarian-agent-state.is-stopped {
+	color: var(--text-warning);
+}
+
+.librarian-agent-state.is-done {
+	color: var(--text-success);
+}
+
+.librarian-agent-state.is-failed {
+	color: var(--text-error);
+}
+
+.librarian-agent-body {
+	padding-bottom: var(--size-4-3);
+}
+
+/* Who wrote a message on the right, when it is not the user: the main agent in the agent pane. */
+.librarian-msg-asker {
+	align-self: flex-end;
+	margin-bottom: calc(-1 * var(--size-4-2));
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* A sub-agent's approval says who asks and how many wait behind it. */
+.librarian-approval-asker {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-2-3);
+	margin: var(--size-2-2) 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.librarian-approval-asker-icon {
+	display: inline-flex;
+}
+
+.librarian-approval-asker-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+.librarian .librarian-approval-asker-link {
+	height: auto;
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+	color: var(--link-color);
+	font-size: inherit;
+	cursor: pointer;
+}
+
+.librarian .librarian-approval-asker-link:hover {
+	color: var(--link-color-hover);
+	text-decoration: underline;
+}
+
+.librarian-approval-waiting {
+	margin-left: auto;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Settings: what an agent's file lets it do, under its description. */
+.librarian-agent-caps {
+	margin-top: var(--size-2-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}

@@ -20,13 +20,28 @@ import type {
 } from '../agent/agent-controller';
 import { vaultReferenceReader } from '../agent/prompt';
 import { expandReferences } from '../agent/references';
+import { SPAWN_AGENT_NAME, type SubagentState } from '../agent/subagent';
 import { type ContextUsage, cacheHitRatio } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
-import type { IndexedEvent, SessionEvent, SessionMetadata } from '../session/session-types';
+import { replay } from '../session/session-manager';
+import type {
+	IndexedEvent,
+	SessionEvent,
+	SessionMetadata,
+	StoredToolCall,
+} from '../session/session-types';
 import { skillKey } from '../skills/skill-manager';
 import { isBinaryPath } from '../tools/path-policy';
+import {
+	AGENT_STATUS_LABELS,
+	type AgentRowData,
+	liveRow,
+	renderAgentRow,
+	storedRow,
+	updateAgentRow,
+} from './agent-rows';
 import {
 	renderApprovalCard,
 	renderToolDetails,
@@ -73,6 +88,40 @@ const CHIP_ICONS: Record<string, string> = {
 	attached_folder: 'folder',
 	skill_content: 'sparkles',
 };
+
+/** Which runs of a conversation are open or folded, and which steps were already shown. */
+interface Folds {
+	/** Finished runs the user opened. */
+	open: Set<number>;
+	/** The user folded the running run. */
+	runningFolded: boolean;
+	/** The run being worked on as last drawn, to fold it once it finishes. */
+	runningKey: number | null;
+	/** Steps of the running run already shown, so only new ones animate in. */
+	seen: Set<string>;
+}
+
+function newFolds(): Folds {
+	return { open: new Set(), runningFolded: false, runningKey: null, seen: new Set() };
+}
+
+/**
+ * Where a conversation is drawn and how its state is read: the chat's own, or a sub-agent's in
+ * the agent pane (LIB-FEAT-140), which looks the same with the main agent's messages on the right.
+ */
+interface Stage {
+	el: HTMLElement;
+	/** Its last run is still at work. */
+	running: boolean;
+	status(toolCallId: string): ToolCardStatus | undefined;
+	folds: Folds;
+	/** Over each message on the right, who wrote it, when that is not the user. */
+	asker?: string;
+	/** The chat's own conversation offers rewinding to each of its messages. */
+	rewind?: (index: number) => void;
+	/** The answer of the running run is still arriving: plain text until it is whole. */
+	plainAnswer?: boolean;
+}
 
 /** One row of the list above the input: a slash command, a skill name or an @mention target. */
 interface Suggestion {
@@ -203,13 +252,21 @@ export class LibrarianView extends ItemView {
 	private unsubscribe: (() => void) | null = null;
 	/** The popover a timeline step opens (LIB-FEAT-252). */
 	private popover!: StepPopover;
-	/** Finished runs the user opened, and whether the user folded the running one. */
-	private readonly openRuns = new Set<number>();
-	private runningFolded = false;
-	/** The run being worked on as last drawn, to fold it once it finishes. */
-	private runningKey: number | null = null;
-	/** Steps of the running run already shown, so only new ones animate in. */
-	private readonly seenSteps = new Set<string>();
+	/** How the chat's own conversation is folded; the agent pane keeps its own. */
+	private mainFolds = newFolds();
+	/** The agent pane (LIB-FEAT-140): a sub-agent run's conversation in place of the chat's. */
+	private agentEl!: HTMLElement;
+	private agentHeadEl!: HTMLElement;
+	private agentBodyEl!: HTMLElement;
+	/** The spawn_agent call whose run the pane shows; null while the chat shows its own. */
+	private agentCall: string | null = null;
+	private agentFolds = newFolds();
+	/** A finished run read back from its session file, for a pane opened after the run. */
+	private agentStored: { data: AgentRowData; events: IndexedEvent[] } | null = null;
+	private agentTimer: number | null = null;
+	/** The chat's own conversation changed while the pane covered it: drawn again on the way back. */
+	private mainDirty = false;
+	private followAgentBottom = true;
 	/** Each drawn step's popover, by key, to open it again after a redraw. */
 	private popFills = new Map<string, { anchor: HTMLElement; content: () => PopoverContent }>();
 	/** The last saved response as last drawn, to tell when the streaming one has been saved. */
@@ -303,7 +360,10 @@ export class LibrarianView extends ItemView {
 		});
 		this.noticeEl = root.createDiv({ cls: 'librarian-notice is-hidden' });
 		this.messagesEl = root.createDiv({ cls: 'librarian-messages' });
-		this.popover = new StepPopover(root, () => this.messagesEl.getBoundingClientRect());
+		// The popover stays inside whichever conversation shows: the chat's, or the agent pane's.
+		this.popover = new StepPopover(root, () =>
+			(this.agentCall ? this.agentBodyEl : this.messagesEl).getBoundingClientRect(),
+		);
 		this.messagesEl.addEventListener('scroll', () => {
 			const el = this.messagesEl;
 			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -313,40 +373,15 @@ export class LibrarianView extends ItemView {
 			if (!this.popover.contains(e.target)) this.popover.close();
 		});
 		this.registerDomEvent(document, 'keydown', (e) => {
-			if (e.key === 'Escape') this.popover.close();
+			if (e.key !== 'Escape') return;
+			// Escape closes the popover first, then the agent pane when it has the focus.
+			if (this.popover.openKey) this.popover.close();
+			else if (this.agentCall && this.agentEl.contains(document.activeElement))
+				this.closeAgent();
 		});
-		// MarkdownRenderer draws [[links]] but leaves opening them to the view; a new tab keeps
-		// the chat where it is (LIB-FEAT-226).
-		this.messagesEl.addEventListener('click', (e) => {
-			const link = (e.target as HTMLElement).closest('a.internal-link');
-			const target = link?.getAttribute('data-href') ?? link?.getAttribute('href');
-			if (!target) return;
-			e.preventDefault();
-			void this.app.workspace.openLinkText(target, '', 'tab');
-		});
-		// A web link offers its text and its address to copy (LIB-FEAT-244).
-		this.messagesEl.addEventListener('contextmenu', (e) => {
-			const link = (e.target as HTMLElement).closest('a.external-link');
-			const href = link?.getAttribute('href');
-			if (!link || !href) return;
-			e.preventDefault();
-			const copy = (text: string) => void navigator.clipboard.writeText(text);
-			new Menu()
-				.addItem((i) =>
-					i
-						.setTitle('Copy text')
-						.setIcon('copy')
-						.onClick(() => copy(link.textContent ?? '')),
-				)
-				.addItem((i) =>
-					i
-						.setTitle('Copy link')
-						.setIcon('link')
-						.onClick(() => copy(href)),
-				)
-				.showAtMouseEvent(e);
-		});
+		this.watchLinks(this.messagesEl);
 		this.sessionsEl = root.createDiv({ cls: 'librarian-sessions is-hidden' });
+		this.buildAgentPane(root);
 		// Messages sent while the agent works, waiting above the composer (LIB-FEAT-184).
 		this.queueEl = root.createDiv({ cls: 'librarian-queue is-hidden' });
 		this.buildComposer(root);
@@ -1148,12 +1183,11 @@ export class LibrarianView extends ItemView {
 				this.renderState(event.state);
 				break;
 			case 'session':
-				this.openRuns.clear();
-				this.seenSteps.clear();
-				this.runningFolded = false;
-				this.runningKey = null;
+				this.mainFolds = newFolds();
 				this.lastAssistant = -1;
 				this.popover.close();
+				// Another conversation: its agents are not the ones the pane showed.
+				if (this.agentCall) this.closeAgent(false);
 				this.renderModelSelect();
 				break;
 			case 'events':
@@ -1182,6 +1216,9 @@ export class LibrarianView extends ItemView {
 				break;
 			case 'unsent':
 				this.restoreUnsent(event.messages);
+				break;
+			case 'agent':
+				this.onAgent(event.agent);
 				break;
 		}
 	}
@@ -1228,7 +1265,11 @@ export class LibrarianView extends ItemView {
 		this.composerEl.toggleClass('is-hidden', state === 'model-unavailable');
 		this.renderActivity(state);
 		// The last events of a run are drawn while it still runs; once it has ended, it folds.
-		if (this.controller.session && !this.controller.isRunning && this.runningKey !== null)
+		if (
+			this.controller.session &&
+			!this.controller.isRunning &&
+			this.mainFolds.runningKey !== null
+		)
 			this.renderEvents(this.controller.events);
 		this.updateSendEnabled();
 	}
@@ -1315,6 +1356,9 @@ export class LibrarianView extends ItemView {
 		const nonStreaming = provider
 			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
 			: false;
+		// Sub-agents at work: how far they are, which the rows under it tell one by one.
+		const agents = [...this.controller.agents.values()];
+		const busy = agents.filter((a) => a.status === 'waiting' || a.status === 'running').length;
 		const activity =
 			state === 'compacting'
 				? 'Compacting context'
@@ -1323,7 +1367,9 @@ export class LibrarianView extends ItemView {
 						? NO_STREAMING_NOTICE
 						: 'Waiting for the model'
 					: state === 'tool-running'
-						? 'Running tools'
+						? busy
+							? `Running agents, ${agents.length - busy} of ${agents.length} done`
+							: 'Running tools'
 						: state === 'awaiting-approval'
 							? 'Waiting for your approval'
 							: '';
@@ -1345,7 +1391,23 @@ export class LibrarianView extends ItemView {
 		}
 	}
 
+	/** The chat's own conversation, as its stage. */
+	private mainStage(): Stage {
+		return {
+			el: this.messagesEl,
+			running: this.controller.isRunning,
+			status: (id) => this.controller.toolStatusOf(id),
+			folds: this.mainFolds,
+			rewind: (index) => this.confirmRewind(index),
+		};
+	}
+
 	private renderEvents(events: IndexedEvent[]) {
+		// The agent pane covers the chat's own conversation; it is drawn on the way back.
+		if (this.agentCall) {
+			this.mainDirty = true;
+			return;
+		}
 		const atBottom = this.followBottom;
 		this.messagesEl.empty();
 		this.live = null;
@@ -1353,9 +1415,6 @@ export class LibrarianView extends ItemView {
 		this.compactLineEl = null;
 		this.approvalEl = null;
 		this.popFills = new Map();
-		const results = new Map<string, Extract<SessionEvent, { type: 'tool_result' }>>();
-		for (const { event } of events)
-			if (event.type === 'tool_result') results.set(event.toolCallId, event);
 		// The thinking read while it streamed is now the thinking of the response it was saved as.
 		let lastAssistant = -1;
 		for (const { index, event } of events)
@@ -1363,16 +1422,7 @@ export class LibrarianView extends ItemView {
 		if (this.popover.openKey === 'thinking:live' && lastAssistant > this.lastAssistant)
 			this.popover.openKey = `thinking:${lastAssistant}:thinking`;
 		this.lastAssistant = lastAssistant;
-		const runs = groupRuns(events);
-		const running = this.controller.isRunning ? (runs[runs.length - 1]?.key ?? null) : null;
-		const finished =
-			this.runningKey !== null && this.runningKey !== running ? this.runningKey : null;
-		if (running !== this.runningKey) this.runningFolded = false;
-		this.runningKey = running;
-		for (const run of runs) {
-			if (run.user) this.renderUser(run.key, run.user);
-			this.renderRun(run, results, run.key === running, run.key === finished);
-		}
+		this.drawRuns(this.mainStage(), events);
 		if (this.pendingStream) this.renderStream(this.pendingStream);
 		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
 		this.renderActivity(this.controller.state);
@@ -1381,6 +1431,24 @@ export class LibrarianView extends ItemView {
 				this.popFills.get(key) ?? (key === 'thinking:live' ? this.lastThinking() : null),
 		);
 		if (atBottom) this.scrollToBottom(true);
+	}
+
+	/** Every run of a conversation: the message that asked, the work block, the answer. */
+	private drawRuns(stage: Stage, events: IndexedEvent[]) {
+		const results = new Map<string, Extract<SessionEvent, { type: 'tool_result' }>>();
+		for (const { event } of events)
+			if (event.type === 'tool_result') results.set(event.toolCallId, event);
+		const runs = groupRuns(events);
+		const folds = stage.folds;
+		const running = stage.running ? (runs[runs.length - 1]?.key ?? null) : null;
+		const finished =
+			folds.runningKey !== null && folds.runningKey !== running ? folds.runningKey : null;
+		if (running !== folds.runningKey) folds.runningFolded = false;
+		folds.runningKey = running;
+		for (const run of runs) {
+			if (run.user) this.renderUser(run.key, run.user, stage);
+			this.renderRun(run, results, run.key === running, run.key === finished, stage);
+		}
 	}
 
 	/** The newest saved thinking step: where a live thinking popover goes once its stream ends. */
@@ -1402,12 +1470,15 @@ export class LibrarianView extends ItemView {
 		results: Map<string, Extract<SessionEvent, { type: 'tool_result' }>>,
 		running: boolean,
 		justFinished: boolean,
+		stage: Stage,
 	) {
 		const view = viewOf(run);
 		// Before the first message there may be only a model change: nothing to show.
 		if (!run.user && !view.steps.length && !view.errors.length && view.answer === null) return;
 		const hasSteps = view.steps.length > 0;
-		const block = this.messagesEl.createDiv({ cls: 'librarian-work' });
+		const main = stage.el === this.messagesEl;
+		const folds = stage.folds;
+		const block = stage.el.createDiv({ cls: 'librarian-work' });
 		block.toggleClass('is-running', running);
 		const header = block.createDiv({ cls: 'librarian-work-header' });
 		if (running) header.createSpan({ cls: 'librarian-spinner' });
@@ -1419,12 +1490,13 @@ export class LibrarianView extends ItemView {
 		});
 		const chevron = header.createSpan({ cls: 'librarian-work-chevron' });
 		setIcon(chevron, 'chevron-right');
-		if (running) this.runActivityEl = header.createSpan({ cls: 'librarian-work-activity' });
+		if (running && main)
+			this.runActivityEl = header.createSpan({ cls: 'librarian-work-activity' });
 		const body = block.createDiv({ cls: 'librarian-work-body' });
 		const timeline = body.createDiv({ cls: 'librarian-timeline' });
-		for (const step of view.steps) this.renderStep(timeline, step, results, running);
-		const userOpened = this.openRuns.has(run.key);
-		const open = running ? !this.runningFolded : userOpened || justFinished;
+		for (const step of view.steps) this.renderStep(timeline, step, results, running, stage);
+		const userOpened = folds.open.has(run.key);
+		const open = running ? !folds.runningFolded : userOpened || justFinished;
 		block.toggleClass('is-collapsed', !open);
 		// Nothing to unfold: a quick answer, or a run that has not done anything yet.
 		block.toggleClass('is-empty', !hasSteps && !running);
@@ -1436,9 +1508,9 @@ export class LibrarianView extends ItemView {
 				const opening = block.hasClass('is-collapsed');
 				block.toggleClass('is-collapsed', !opening);
 				header.setAttr('aria-expanded', String(opening));
-				if (running) this.runningFolded = !opening;
-				else if (opening) this.openRuns.add(run.key);
-				else this.openRuns.delete(run.key);
+				if (running) folds.runningFolded = !opening;
+				else if (opening) folds.open.add(run.key);
+				else folds.open.delete(run.key);
 				if (!opening) this.popover.close();
 			};
 			header.addEventListener('click', toggle);
@@ -1455,11 +1527,15 @@ export class LibrarianView extends ItemView {
 				header.setAttr('aria-expanded', 'false');
 			});
 		if (view.answer !== null || running) {
-			const answer = this.messagesEl.createDiv({
+			const answer = stage.el.createDiv({
 				cls: 'librarian-msg librarian-msg-assistant',
 			});
-			if (view.answer) this.renderMarkdown(answer.createDiv(), view.answer);
-			if (running)
+			// An answer still arriving in the agent pane is text until it is whole: drawn as
+			// Markdown each time, it would blink while the renderer catches up.
+			if (view.answer && running && stage.plainAnswer)
+				answer.createDiv({ cls: 'librarian-stream-text', text: view.answer });
+			else if (view.answer) this.renderMarkdown(answer.createDiv(), view.answer);
+			if (running && main)
 				this.live = {
 					timeline,
 					answer,
@@ -1472,7 +1548,7 @@ export class LibrarianView extends ItemView {
 					shownText: '',
 				};
 		}
-		for (const message of view.errors) this.renderStoredError(message);
+		for (const message of view.errors) this.renderStoredError(message, stage.el);
 	}
 
 	private renderStep(
@@ -1480,10 +1556,11 @@ export class LibrarianView extends ItemView {
 		step: Step,
 		results: Map<string, Extract<SessionEvent, { type: 'tool_result' }>>,
 		running: boolean,
+		stage: Stage,
 	) {
 		const row = timeline.createDiv({ cls: `librarian-step is-${step.kind}` });
-		if (running && !this.seenSteps.has(step.key)) row.addClass('librarian-step-new');
-		if (running) this.seenSteps.add(step.key);
+		if (running && !stage.folds.seen.has(step.key)) row.addClass('librarian-step-new');
+		if (running) stage.folds.seen.add(step.key);
 		switch (step.kind) {
 			case 'thinking':
 				this.stepButton(row, `thinking:${step.key}`, 'brain', 'Thinking', () => ({
@@ -1505,12 +1582,13 @@ export class LibrarianView extends ItemView {
 					}),
 				);
 				break;
-			case 'tools':
+			case 'tools': {
 				for (const call of step.calls) {
+					if (call.name === SPAWN_AGENT_NAME) continue;
 					const result = results.get(call.id);
 					// A finished run's call with no result was cut off; it did not run.
 					const status =
-						this.controller.toolStatusOf(call.id) ??
+						stage.status(call.id) ??
 						(result ? (result.ok ? 'ok' : 'failed') : running ? 'pending' : 'skipped');
 					const chip = renderChip(row, call, status);
 					this.bindPopover(
@@ -1520,13 +1598,26 @@ export class LibrarianView extends ItemView {
 							toolCallId: call.id,
 							name: call.name,
 							args: call.args,
-							status: this.controller.toolStatusOf(call.id) ?? status,
+							status: stage.status(call.id) ?? status,
 							result: result?.content ?? null,
 							truncated: result?.truncated ?? false,
 						})),
 					);
 				}
+				// Sub-agents stand in a list under the calls beside them: each has a line of its own
+				// to say what it is doing, which a chip has no room for (LIB-FEAT-140).
+				const agents = step.calls.filter((c) => c.name === SPAWN_AGENT_NAME);
+				if (agents.length) {
+					const card = row.createDiv({ cls: 'librarian-agents' });
+					for (const call of agents)
+						renderAgentRow(
+							card,
+							this.agentRowOf(call, results.get(call.id), running),
+							(id) => void this.openAgent(id),
+						);
+				}
 				break;
+			}
 			case 'compaction':
 				row.createSpan({
 					cls: 'librarian-step-note',
@@ -1588,20 +1679,31 @@ export class LibrarianView extends ItemView {
 		});
 	}
 
-	private renderStoredError(message: string) {
-		const block = this.messagesEl.createDiv({ cls: 'librarian-error is-stored' });
+	private renderStoredError(message: string, el = this.messagesEl) {
+		const block = el.createDiv({ cls: 'librarian-error is-stored' });
 		block.createDiv({ text: message });
 	}
 
-	private renderUser(index: number, event: Extract<SessionEvent, { type: 'user' }>) {
-		const wrap = this.messagesEl.createDiv({ cls: 'librarian-msg librarian-msg-user' });
+	/**
+	 * A message on the right: the user's in the chat, the main agent's in the agent pane, which a
+	 * caption above names. Only the chat's own messages rewind.
+	 */
+	private renderUser(
+		index: number,
+		event: Extract<SessionEvent, { type: 'user' }>,
+		stage: Stage = this.mainStage(),
+	) {
+		if (stage.asker) stage.el.createDiv({ cls: 'librarian-msg-asker', text: stage.asker });
+		const wrap = stage.el.createDiv({ cls: 'librarian-msg librarian-msg-user' });
 		this.renderBubble(wrap, event.content, event.images ?? []);
-		const rewind = wrap.createEl('button', {
+		const rewind = stage.rewind;
+		if (!rewind) return;
+		const button = wrap.createEl('button', {
 			cls: 'clickable-icon librarian-rewind',
 			attr: { 'aria-label': 'Rewind to here' },
 		});
-		setIcon(rewind, 'undo-2');
-		rewind.addEventListener('click', () => this.confirmRewind(index));
+		setIcon(button, 'undo-2');
+		button.addEventListener('click', () => rewind(index));
 	}
 
 	/** A user message as the conversation shows it: the typed text, then its chips and images. */
@@ -1710,14 +1812,50 @@ export class LibrarianView extends ItemView {
 			const tools = live.tools;
 			if (!tools) return;
 			const status: ToolCardStatus = this.controller.toolStatusOf(block.id) ?? 'pending';
-			const existing = tools.children[i] as HTMLElement | undefined;
-			if (existing) {
+			// Keyed by the call's place in the response: its id and name may still be arriving.
+			const existing = tools.querySelector<HTMLElement>(`[data-stream-index="${i}"]`);
+			const isAgent = block.name === SPAWN_AGENT_NAME;
+			if (existing && existing.hasClass('librarian-agent-row') === isAgent) {
+				if (isAgent) {
+					existing.dataset.agentCallId = block.id;
+					updateAgentRow(
+						existing,
+						storedRow(
+							{ id: block.id, name: block.name, args: block.arguments },
+							undefined,
+							true,
+						),
+					);
+					return;
+				}
 				existing.dataset.toolCallId = block.id;
 				const name = existing.querySelector('.librarian-chip-name');
 				if (name && block.name) name.textContent = block.name;
 				return;
 			}
+			// A chip whose name turned out to be spawn_agent becomes a row, as the log will show it.
+			existing?.remove();
+			if (isAgent) {
+				const card =
+					tools.querySelector<HTMLElement>('.librarian-agents') ??
+					tools.createDiv({ cls: 'librarian-agents' });
+				const row = renderAgentRow(
+					card,
+					storedRow(
+						{ id: block.id, name: block.name, args: block.arguments },
+						undefined,
+						true,
+					),
+					(id) => void this.openAgent(id),
+				);
+				row.dataset.streamIndex = String(i);
+				return;
+			}
 			const chip = renderChip(tools, { id: block.id, name: block.name }, status);
+			chip.dataset.streamIndex = String(i);
+			// Chips stay ahead of the agents' list, as they are drawn from the log.
+			const card = tools.querySelector('.librarian-agents');
+			if (card) tools.insertBefore(chip, card);
 			this.bindPopover(
 				chip,
 				`call:${block.id || i}`,
@@ -1775,8 +1913,10 @@ export class LibrarianView extends ItemView {
 		this.approvalEl?.remove();
 		this.approvalEl = null;
 		if (!request) return;
+		const agentCall = request.agentCallId;
+		// Wherever the user is looking: the chat, or the agent pane.
 		this.approvalEl = renderApprovalCard(
-			this.messagesEl,
+			this.agentCall ? this.agentBodyEl : this.messagesEl,
 			request.name,
 			request.args,
 			request.existingLength,
@@ -1788,8 +1928,25 @@ export class LibrarianView extends ItemView {
 			request.canAlways,
 			request.permissionKey,
 			request.calledFrom,
+			{
+				waiting: request.waiting,
+				...(agentCall && request.agentTitle
+					? {
+							agent: {
+								title: request.agentTitle,
+								type: request.agentType ?? '',
+								// Already there when the pane shows that agent.
+								open:
+									this.agentCall === agentCall
+										? undefined
+										: () => void this.openAgent(agentCall),
+							},
+						}
+					: {}),
+			},
 		);
-		this.scrollToBottom();
+		if (this.agentCall) this.scrollAgentToBottom();
+		else this.scrollToBottom();
 	}
 
 	private scrollToBottom(force = false) {
@@ -1902,9 +2059,258 @@ export class LibrarianView extends ItemView {
 		).open();
 	}
 
+	/**
+	 * MarkdownRenderer draws [[links]] but leaves opening them to the view; a new tab keeps the chat
+	 * where it is (LIB-FEAT-226). A web link offers its text and its address to copy (LIB-FEAT-244).
+	 */
+	private watchLinks(el: HTMLElement) {
+		el.addEventListener('click', (e) => {
+			const link = (e.target as HTMLElement).closest('a.internal-link');
+			const target = link?.getAttribute('data-href') ?? link?.getAttribute('href');
+			if (!target) return;
+			e.preventDefault();
+			void this.app.workspace.openLinkText(target, '', 'tab');
+		});
+		el.addEventListener('contextmenu', (e) => {
+			const link = (e.target as HTMLElement).closest('a.external-link');
+			const href = link?.getAttribute('href');
+			if (!link || !href) return;
+			e.preventDefault();
+			const copy = (text: string) => void navigator.clipboard.writeText(text);
+			new Menu()
+				.addItem((i) =>
+					i
+						.setTitle('Copy text')
+						.setIcon('copy')
+						.onClick(() => copy(link.textContent ?? '')),
+				)
+				.addItem((i) =>
+					i
+						.setTitle('Copy link')
+						.setIcon('link')
+						.onClick(() => copy(href)),
+				)
+				.showAtMouseEvent(e);
+		});
+	}
+
+	// Agent pane (LIB-FEAT-140)
+
+	/**
+	 * A sub-agent run's conversation, which takes the place of the chat's while it is open: a head
+	 * with the way back, the run's title, its agent and its state, then the conversation as the
+	 * chat draws its own, with the main agent's task on the right.
+	 */
+	private buildAgentPane(root: HTMLElement) {
+		this.agentEl = root.createDiv({ cls: 'librarian-agent-view is-hidden' });
+		this.agentHeadEl = this.agentEl.createDiv({ cls: 'librarian-agent-head' });
+		const back = this.agentHeadEl.createEl('button', {
+			cls: 'clickable-icon librarian-agent-back',
+			attr: { 'aria-label': 'Back to the conversation' },
+		});
+		setIcon(back, 'chevron-left');
+		back.addEventListener('click', () => this.closeAgent());
+		setIcon(this.agentHeadEl.createSpan({ cls: 'librarian-agent-row-icon' }), 'bot');
+		const heading = this.agentHeadEl.createDiv({ cls: 'librarian-agent-heading' });
+		heading.createSpan({ cls: 'librarian-agent-heading-title' });
+		heading.createSpan({ cls: 'librarian-agent-type' });
+		this.agentHeadEl.createSpan({ cls: 'librarian-agent-state' });
+		this.agentBodyEl = this.agentEl.createDiv({
+			cls: 'librarian-messages librarian-agent-body',
+		});
+		this.agentBodyEl.addEventListener('scroll', () => {
+			const el = this.agentBodyEl;
+			this.followAgentBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+			this.popover.reposition();
+		});
+		this.watchLinks(this.agentBodyEl);
+	}
+
+	/** A sub-agent moved on: its rows on the timeline, the run head, and the pane if it shows it. */
+	private onAgent(state: SubagentState) {
+		const data = liveRow(state);
+		this.messagesEl
+			.querySelectorAll<HTMLElement>(
+				`.librarian-agent-row[data-agent-call-id="${CSS.escape(state.callId)}"]`,
+			)
+			.forEach((row) => {
+				updateAgentRow(row, data);
+			});
+		this.renderActivity(this.controller.state);
+		if (this.agentCall !== state.callId || this.agentTimer !== null) return;
+		// Its stream moves as fast as the chat's; one redraw per stretch keeps the pane smooth.
+		this.agentTimer = window.setTimeout(() => {
+			this.agentTimer = null;
+			this.renderAgentPane();
+		}, 150);
+	}
+
+	/** A spawn_agent call's row: from the run in memory while there is one, else from the log. */
+	private agentRowOf(
+		call: StoredToolCall,
+		result: Extract<SessionEvent, { type: 'tool_result' }> | undefined,
+		running: boolean,
+	): AgentRowData {
+		const live = this.controller.agents.get(call.id);
+		if (live) return liveRow(live);
+		const agent = (call.args as { agent?: unknown }).agent;
+		const color =
+			typeof agent === 'string' ? this.plugin.agentDefs.get(agent.trim())?.color : undefined;
+		return storedRow(call, result, running, color);
+	}
+
+	/** Opens a sub-agent run's conversation in place of the chat's. */
+	async openAgent(callId: string) {
+		this.popover.close();
+		if (this.historyMode) await this.toggleHistory();
+		this.agentCall = callId;
+		this.agentFolds = newFolds();
+		this.agentStored = this.controller.agents.has(callId)
+			? null
+			: await this.storedAgent(callId);
+		// A switch while the file was read won the race.
+		if (this.agentCall !== callId) return;
+		this.messagesEl.addClass('is-hidden');
+		this.agentEl.removeClass('is-hidden');
+		this.inputEl.setAttr('placeholder', 'Ask the main agent');
+		this.followAgentBottom = true;
+		this.renderAgentPane();
+		this.agentHeadEl.querySelector<HTMLElement>('.librarian-agent-back')?.focus();
+	}
+
+	/** Back to the chat's own conversation, drawn again if it changed meanwhile. */
+	closeAgent(redraw = true) {
+		if (!this.agentCall) return;
+		this.agentCall = null;
+		this.agentStored = null;
+		if (this.agentTimer !== null) window.clearTimeout(this.agentTimer);
+		this.agentTimer = null;
+		this.popover.close();
+		this.agentBodyEl.empty();
+		this.agentEl.addClass('is-hidden');
+		this.messagesEl.removeClass('is-hidden');
+		this.inputEl.setAttr('placeholder', 'Ask a question');
+		if (!redraw) return;
+		if (this.mainDirty) {
+			this.mainDirty = false;
+			this.renderEvents(this.controller.events);
+		} else this.renderApproval(this.controller.pendingApproval);
+	}
+
+	/** A finished run read back from its session file, which the spawn_agent result names. */
+	private async storedAgent(
+		callId: string,
+	): Promise<{ data: AgentRowData; events: IndexedEvent[] } | null> {
+		const events = this.controller.events;
+		const call = events.find(
+			(e) => e.event.type === 'tool_call' && e.event.toolCallId === callId,
+		)?.event as Extract<SessionEvent, { type: 'tool_call' }> | undefined;
+		if (!call) return null;
+		const result = events.find(
+			(e) => e.event.type === 'tool_result' && e.event.toolCallId === callId,
+		)?.event as Extract<SessionEvent, { type: 'tool_result' }> | undefined;
+		const data = this.agentRowOf(
+			{ id: callId, name: call.name, args: call.args },
+			result,
+			false,
+		);
+		// A failed run has no result naming it, but its session knows the call that started it.
+		const sessionId =
+			result?.agentSession ??
+			(await this.plugin.sessions.list()).find((s) => s.parentCallId === callId)?.id;
+		const stored = sessionId
+			? replay(await this.plugin.sessions.load(sessionId)).filter(
+					(e) => e.event.type !== 'meta',
+				)
+			: [];
+		return { data, events: stored };
+	}
+
+	/** Draws the pane again from the run in memory, or from the file for a finished one. */
+	private renderAgentPane() {
+		const callId = this.agentCall;
+		if (!callId) return;
+		const live = this.controller.agents.get(callId);
+		const data = live ? liveRow(live) : this.agentStored?.data;
+		const head = this.agentHeadEl;
+		head.querySelector('.librarian-agent-row-icon')?.setAttr(
+			'class',
+			`librarian-agent-row-icon${data?.color ? ` is-${data.color}` : ''}`,
+		);
+		head.querySelector('.librarian-agent-heading-title')?.setText(data?.title ?? 'Agent');
+		head.querySelector('.librarian-agent-type')?.setText(data?.agent ?? '');
+		const state = head.querySelector<HTMLElement>('.librarian-agent-state');
+		if (state && data) {
+			state.className = `librarian-agent-state is-${data.status}`;
+			state.setText(AGENT_STATUS_LABELS[data.status]);
+		}
+		const running = live ? live.status === 'waiting' || live.status === 'running' : false;
+		let events = live ? live.events : (this.agentStored?.events ?? []);
+		// The response on its way is drawn as if it were in the log, its answer as plain text.
+		const stream = live?.stream;
+		if (stream) {
+			const last = events[events.length - 1]?.index ?? 0;
+			const text = stream.content
+				.filter((c) => c.type === 'text')
+				.map((c) => (c as { text: string }).text)
+				.join('');
+			const thinking = stream.content
+				.filter((c) => c.type === 'thinking')
+				.map((c) => (c as { thinking: string }).thinking)
+				.join('');
+			const toolCalls = stream.content
+				.filter((c) => c.type === 'toolCall')
+				.map((c) => ({ id: c.id, name: c.name, args: c.arguments }));
+			events = [
+				...events,
+				{
+					index: last + 1,
+					event: {
+						t: new Date().toISOString(),
+						type: 'assistant',
+						content: text,
+						...(thinking ? { thinking } : {}),
+						toolCalls,
+					},
+				},
+			];
+		}
+		const body = this.agentBodyEl;
+		const scroll = body.scrollTop;
+		body.empty();
+		this.approvalEl = null;
+		this.popFills = new Map();
+		if (!events.length)
+			body.createDiv({
+				cls: 'librarian-sessions-empty',
+				text: running ? 'Waiting for a slot.' : 'Its conversation was not saved.',
+			});
+		this.drawRuns(
+			{
+				el: body,
+				running,
+				status: (id) => live?.toolStatus.get(id),
+				folds: this.agentFolds,
+				asker: 'Main agent',
+				plainAnswer: Boolean(stream),
+			},
+			events,
+		);
+		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
+		this.popover.reopen((key) => this.popFills.get(key) ?? null);
+		if (this.followAgentBottom) this.scrollAgentToBottom();
+		else body.scrollTop = scroll;
+	}
+
+	private scrollAgentToBottom() {
+		this.followAgentBottom = true;
+		this.agentBodyEl.scrollTop = this.agentBodyEl.scrollHeight;
+	}
+
 	// History
 
 	async toggleHistory() {
+		if (this.agentCall) this.closeAgent();
 		this.historyMode = !this.historyMode;
 		this.messagesEl.toggleClass('is-hidden', this.historyMode);
 		this.sessionsEl.toggleClass('is-hidden', !this.historyMode);

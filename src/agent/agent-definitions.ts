@@ -154,7 +154,7 @@ export function parseAgentMd(
 	if (fm.effort !== undefined) {
 		if (THINKING_LEVELS.includes(fm.effort as ThinkingLevel))
 			agent.effort = fm.effort as ThinkingLevel;
-		else warnings.push(`effort "${String(fm.effort)}" is not a thinking level`);
+		else warnings.push(`effort ${shown(fm.effort)} is not a thinking level`);
 	}
 	if (fm.maxTurns !== undefined) {
 		const n = Number(fm.maxTurns);
@@ -165,15 +165,34 @@ export function parseAgentMd(
 	if (mode === 'plan' || mode === 'dontAsk') agent.permissionMode = mode;
 	else if (mode !== undefined && mode !== 'default' && mode !== 'manual')
 		warnings.push(
-			`permissionMode "${String(mode)}" cannot raise what Settings allow; it asks as they say`,
+			`permissionMode ${shown(mode)} cannot raise what Settings allow; it asks as they say`,
 		);
 	const skills = list(fm.skills);
 	if (skills) agent.skills = skills;
 	if (fm.color !== undefined) {
 		if (AGENT_COLORS.includes(fm.color as AgentColor)) agent.color = fm.color as AgentColor;
-		else warnings.push(`color "${String(fm.color)}" is not one of ${AGENT_COLORS.join(', ')}`);
+		else warnings.push(`color ${shown(fm.color)} is not one of ${AGENT_COLORS.join(', ')}`);
 	}
 	return { agent };
+}
+
+/** A frontmatter value quoted for a warning, whatever YAML made of it. */
+function shown(value: unknown): string {
+	return JSON.stringify(value) ?? String(value);
+}
+
+/** What a definition lets its agent do, in one line for its settings row; empty when it narrows nothing. */
+export function agentCapabilities(agent: AgentDefinition): string {
+	const parts: string[] = [];
+	if (agent.permissionMode === 'plan') parts.push('Only reads');
+	if (agent.permissionMode === 'dontAsk') parts.push('Never asks for approval');
+	if (agent.tools) parts.push(`Tools: ${agent.tools.join(', ')}`);
+	if (agent.disallowedTools) parts.push(`Without: ${agent.disallowedTools.join(', ')}`);
+	if (agent.model) parts.push(`Model: ${agent.model}`);
+	if (agent.effort) parts.push(`Effort: ${agent.effort}`);
+	if (agent.maxTurns) parts.push(`Up to ${agent.maxTurns} turns with tools`);
+	if (agent.skills?.length) parts.push(`Skills: ${agent.skills.join(', ')}`);
+	return parts.join('. ');
 }
 
 /** `name` as a pattern list matches it: exactly, or by the part before a trailing `*`. */

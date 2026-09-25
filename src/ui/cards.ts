@@ -34,6 +34,7 @@ const TOOL_ICONS: Record<string, string> = {
 	webdav_download: 'download',
 	webdav_upload: 'upload',
 	bash: 'square-terminal',
+	spawn_agent: 'bot',
 };
 
 export function toolIcon(name: string): string {
@@ -303,6 +304,15 @@ export interface ApprovalCardHandlers {
 	always: () => void;
 }
 
+/**
+ * Who asks, when a sub-agent does (LIB-FEAT-140): its run's title and agent, and a way to its
+ * conversation; and how many other approvals wait behind this one.
+ */
+export interface ApprovalAsker {
+	waiting?: number;
+	agent?: { title: string; type: string; open?: () => void };
+}
+
 export function renderApprovalCard(
 	container: HTMLElement,
 	name: string,
@@ -312,18 +322,47 @@ export function renderApprovalCard(
 	canAlways = true,
 	alwaysKey = name,
 	calledFrom?: string,
+	asker: ApprovalAsker = {},
 ): HTMLElement {
 	const card = container.createDiv({ cls: 'librarian-approval' });
 	const title = card.createDiv({ cls: 'librarian-approval-title' });
 	setIcon(title.createSpan(), toolIcon(name));
 	title.createSpan({ text: ` Approve ${name}?` });
+	if (asker.agent || asker.waiting) {
+		const line = card.createDiv({ cls: 'librarian-approval-asker' });
+		const agent = asker.agent;
+		if (agent) {
+			setIcon(line.createSpan({ cls: 'librarian-approval-asker-icon' }), 'bot');
+			const who = `Asked by ${agent.title}${agent.type && agent.type !== agent.title ? ` (${agent.type})` : ''}`;
+			if (agent.open) {
+				const link = line.createEl('button', {
+					cls: 'librarian-approval-asker-link',
+					text: who,
+				});
+				link.addEventListener('click', agent.open);
+			} else line.createSpan({ text: who });
+		}
+		if (asker.waiting)
+			line.createSpan({
+				cls: 'librarian-approval-waiting',
+				text: `${asker.waiting} more waiting`,
+			});
+	}
 	if (calledFrom)
 		card.createDiv({ cls: 'librarian-approval-note', text: `Called from ${calledFrom}` });
 	const body = card.createDiv({ cls: 'librarian-approval-body' });
 	const shape = shapeOf(name);
 	if (isChange(shape, args)) renderChangePreview(body, shape, args, existingLength);
 	else if (name === 'bash') body.createEl('pre', { text: str(args.command) });
-	else body.createEl('pre', { text: shownArgs(name, args) });
+	else if (name === 'spawn_agent') {
+		// What the agent would be asked to do, as the main agent wrote it.
+		const agent = str(args.agent) || 'general-purpose';
+		body.createDiv({
+			cls: 'librarian-change-title',
+			text: `${str(args.title) || agent} (${args.resume ? `resumes ${agent}` : agent})`,
+		});
+		body.createEl('pre', { text: str(args.task) });
+	} else body.createEl('pre', { text: shownArgs(name, args) });
 	if (name === 'bash')
 		body.createDiv({
 			cls: 'librarian-approval-note',

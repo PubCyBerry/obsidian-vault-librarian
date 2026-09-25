@@ -225,7 +225,6 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionSettings = {
 		write: 'approval_required',
 		edit: 'approval_required',
 		bash: 'approval_required',
-		spawn_agent: 'approval_required',
 	},
 };
 

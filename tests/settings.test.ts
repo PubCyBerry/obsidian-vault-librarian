@@ -1,5 +1,6 @@
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
+import { BUILT_IN_AGENTS } from '../src/agent/agent-definitions';
 import { DEFAULT_SYSTEM_PROMPT, systemPromptOf } from '../src/agent/prompt';
 import type LibrarianPlugin from '../src/main';
 import { SHELL_GROUP, ToolPermissionManager } from '../src/permissions/tool-permission-manager';
@@ -54,6 +55,7 @@ function tab(
 		settings,
 		permissions,
 		skills: { skills, diagnostics: [] },
+		agentDefs: { agents: [...BUILT_IN_AGENTS], diagnostics: [] },
 		mcp: { state: () => ({ status: 'disconnected', tools: [] }) },
 		providers: { listSelectable: () => [] },
 		secrets: { get: () => null },
@@ -79,7 +81,7 @@ const page = (pages: Page[], name: string) => pages.find((p) => p.name === name)
 const rows = (p: Page) => p.items.flatMap((s) => s.items ?? []);
 
 describe('settings pages', () => {
-	it('LIB-TEST-207: nine pages in order, each with a one-line description', () => {
+	it('LIB-TEST-207: ten pages in order, each with a one-line description', () => {
 		const pages = tab();
 		expect(pages.map((p) => p.name)).toEqual([
 			'Providers',
@@ -89,6 +91,8 @@ describe('settings pages', () => {
 			// Keys and sign-ins for other devices (LIB-FEAT-233).
 			'Device sync',
 			'Skills',
+			// Agent definitions and their permissions (LIB-FEAT-268).
+			'Sub-agents',
 			'Tool permissions',
 			'Context',
 			'Sessions',
@@ -156,7 +160,20 @@ describe('settings pages', () => {
 			'Custom system prompt',
 			'Use AGENTS.md',
 		]);
-		expect(rows(agent).map((r) => r.name)).toContain('Max sub-agents');
+	});
+
+	it('LIB-TEST-270: the Sub-agents page holds the limit, every agent and its permission', () => {
+		const agents = page(tab(), 'Sub-agents');
+		expect(rows(agents).map((r) => r.name)).toEqual([
+			'Max sub-agents',
+			'All agents',
+			'general-purpose',
+			'explore',
+		]);
+		expect(agents.displayValue).toBe('2 agents');
+		// Its permissions are set here, not under Tool permissions.
+		const permissions = page(tab(), 'Tool permissions');
+		expect(permissions.items.map((s) => s.heading)).not.toContain('Sub-agents');
 	});
 
 	it('LIB-TEST-266: a pre-2.15.0 custom prompt becomes the default with it added, and the default is not stored', () => {
