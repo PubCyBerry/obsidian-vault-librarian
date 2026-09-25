@@ -27,6 +27,16 @@ export function trimToPath(candidate: string, exists: (path: string) => boolean)
 	return (words[words.length - 1] ?? candidate.trim()).replace(OPENERS, '');
 }
 
+/** A path with `%20` and the like decoded, as a model sometimes writes it; else the text as is. */
+export function decodedPath(text: string): string {
+	if (!text.includes('%')) return text;
+	try {
+		return decodeURIComponent(text);
+	} catch {
+		return text;
+	}
+}
+
 export interface SourceRef {
 	path: string;
 	start: number;
@@ -41,6 +51,8 @@ export function linkSources(
 	open: SourceOpener,
 	exists: (path: string) => boolean,
 ): void {
+	// Written as a URL would be, Q4%20roadmap.md is the note Q4 roadmap.md.
+	const found = (path: string) => exists(path) || exists(decodedPath(path));
 	const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 	const nodes: Text[] = [];
 	for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
@@ -52,8 +64,9 @@ export function linkSources(
 		let last = 0;
 		for (let m = SOURCE_PATTERN.exec(text); m; m = SOURCE_PATTERN.exec(text)) {
 			const [whole, captured, startText, endText] = m;
-			const path = trimToPath(captured!, exists);
-			const linkStart = m.index + captured!.lastIndexOf(path);
+			const shown = trimToPath(captured!, found);
+			const path = exists(shown) ? shown : decodedPath(shown);
+			const linkStart = m.index + captured!.lastIndexOf(shown);
 			frag.append(text.slice(last, linkStart));
 			const start = Number(startText);
 			const end = endText ? Number(endText) : start;

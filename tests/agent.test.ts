@@ -428,6 +428,23 @@ describe('stream cut retry (LIB-TEST-130)', () => {
 		expect(plain.requests).toHaveLength(1);
 		expect((await sessionEvents(plain)).filter((e) => e.type === 'error')).toHaveLength(1);
 	}, 10000);
+
+	it('a 401 sent without a key says the key is missing, after the server’s words', async () => {
+		const denied =
+			'OpenAI API error (401): {"message":"Missing bearer or basic authentication in header"}';
+		const h = harness([{ stopReason: 'error', errorMessage: denied }]);
+		h.app.secrets.set('vault-librarian-p', '');
+		await h.controller.send('hello');
+		const shown = h.events.find((e) => e.type === 'error') as { message: string };
+		expect(shown.message.startsWith(denied)).toBe(true);
+		expect(shown.message).toMatch(/No API key is saved for .+ on this device/);
+		// With a key saved the 401 is the server's alone: the key itself was refused.
+		const keyed = harness([{ stopReason: 'error', errorMessage: denied }]);
+		await keyed.controller.send('hello');
+		expect((keyed.events.find((e) => e.type === 'error') as { message: string }).message).toBe(
+			denied,
+		);
+	});
 });
 
 describe('guards', () => {

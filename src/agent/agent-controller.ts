@@ -909,7 +909,7 @@ export class AgentController {
 				if (!this.stopRequested)
 					this.emit({
 						type: 'notice',
-						message: `Could not compact the context: ${rewriteProviderError(messageOf(error))}`,
+						message: `Could not compact the context: ${rewriteProviderError(messageOf(error), this.keyless())}`,
 					});
 				return 'failed';
 			}
@@ -934,7 +934,17 @@ export class AgentController {
 	private async failRequest(sessionId: string, message: string): Promise<void> {
 		this.runFailed = true;
 		await this.deps.sessions.append(sessionId, { type: 'error', stage: 'provider', message });
-		this.emit({ type: 'error', message: rewriteProviderError(message) });
+		this.emit({ type: 'error', message: rewriteProviderError(message, this.keyless()) });
+	}
+
+	/**
+	 * The provider's name when its key on this device is empty. The key banner saves an empty key
+	 * for a server that needs none, and clearing a key leaves it empty too.
+	 */
+	private keyless(selection = this.selection): string | undefined {
+		return selection && this.deps.secrets.get(selection.provider.secretId) === ''
+			? selection.provider.name
+			: undefined;
 	}
 
 	// Pi hooks
@@ -1572,7 +1582,13 @@ export class AgentController {
 		const last = [...agent.state.messages]
 			.reverse()
 			.find((m): m is AssistantMessage => m.role === 'assistant');
-		if (last?.stopReason === 'error') throw new Error(last.errorMessage ?? 'Request failed');
+		if (last?.stopReason === 'error')
+			throw new Error(
+				rewriteProviderError(
+					last.errorMessage ?? 'Request failed',
+					this.keyless(selection),
+				),
+			);
 		const text = textOf(last?.content ?? []).trim();
 		if (limits.stopReason) {
 			state.status = 'stopped';
@@ -2039,12 +2055,18 @@ export function assistantEvent(m: AssistantMessage) {
 	};
 }
 
-export function rewriteProviderError(message: string): string {
+/**
+ * A provider error as the chat shows it. `keyless` names the provider when its key on this device
+ * is empty, which sends no key at all: a 401 then says why, after the server's own words.
+ */
+export function rewriteProviderError(message: string, keyless?: string): string {
 	if (
 		/tool(s|_choice)?\b.*(not supported|unsupported|does not support|invalid)/i.test(message) ||
 		/does not support tools/i.test(message)
 	) {
 		return 'This endpoint rejected tool calling. Check the provider settings.';
 	}
+	if (keyless && /\b401\b/.test(message))
+		return `${message}\n\nNo API key is saved for ${keyless} on this device, so the request went without one. Add the key under Providers in Settings.`;
 	return message;
 }
