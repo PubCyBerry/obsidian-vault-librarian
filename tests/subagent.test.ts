@@ -25,6 +25,7 @@ import { SessionManager } from '../src/session/session-manager';
 import { SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
+import { storedRow } from '../src/ui/agent-rows';
 import { FakeApp } from './fake-app';
 import { type ScriptedTurn, scriptedStream } from './scripted-stream';
 
@@ -730,5 +731,29 @@ describe('sub-agent parts', () => {
 		expect(findModel(options, 'nvidia/big:free')).toBe(options[0]);
 		expect(findModel(options, 'small one')).toBe(options[1]);
 		expect(findModel(options, 'missing')).toBeUndefined();
+	});
+
+	it('a row from the log: waiting for approval, a resume under its own agent, the answer plain', () => {
+		const call = { id: 'c1', name: SPAWN_AGENT_NAME, args: { title: 'Look', resume: 'x' } };
+		expect(storedRow(call, undefined, true, { asking: true })).toMatchObject({
+			status: 'asking',
+			activity: 'Waiting for your approval',
+			agent: 'general-purpose',
+		});
+		expect(storedRow(call, undefined, true, { agent: 'explore' })).toMatchObject({
+			status: 'pending',
+			agent: 'explore',
+		});
+		const done = storedRow(
+			call,
+			{
+				ok: true,
+				content: '- **Found** in [[notes/a|a]]\n\n[agent_id: s1]',
+				agentSession: 's1',
+			},
+			false,
+		);
+		expect(done).toMatchObject({ status: 'done', activity: 'Found in a', sessionId: 's1' });
+		expect(storedRow(call, undefined, false).status).toBe('failed');
 	});
 });

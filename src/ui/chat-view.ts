@@ -1820,7 +1820,7 @@ export class LibrarianView extends ItemView {
 					existing.dataset.agentCallId = block.id;
 					updateAgentRow(
 						existing,
-						storedRow(
+						this.agentRowOf(
 							{ id: block.id, name: block.name, args: block.arguments },
 							undefined,
 							true,
@@ -1841,7 +1841,7 @@ export class LibrarianView extends ItemView {
 					tools.createDiv({ cls: 'librarian-agents' });
 				const row = renderAgentRow(
 					card,
-					storedRow(
+					this.agentRowOf(
 						{ id: block.id, name: block.name, args: block.arguments },
 						undefined,
 						true,
@@ -1906,6 +1906,26 @@ export class LibrarianView extends ItemView {
 			.forEach((chip) => {
 				setChipStatus(chip, status);
 			});
+		// A spawn_agent call waiting for its approval, before its agent runs and reports itself.
+		if (!this.controller.agents.has(toolCallId))
+			this.messagesEl
+				.querySelectorAll<HTMLElement>(
+					`.librarian-agent-row[data-agent-call-id="${CSS.escape(toolCallId)}"]`,
+				)
+				.forEach((row) => {
+					const call = this.controller.events
+						.map((e) => e.event)
+						.find((e) => e.type === 'tool_call' && e.toolCallId === toolCallId);
+					if (call?.type !== 'tool_call') return;
+					updateAgentRow(
+						row,
+						this.agentRowOf(
+							{ id: toolCallId, name: call.name, args: call.args },
+							undefined,
+							true,
+						),
+					);
+				});
 		if (this.popover.openKey === `call:${toolCallId}`) this.popover.refresh();
 	}
 
@@ -1918,7 +1938,10 @@ export class LibrarianView extends ItemView {
 		this.approvalEl = renderApprovalCard(
 			this.agentCall ? this.agentBodyEl : this.messagesEl,
 			request.name,
-			request.args,
+			// A resume may leave agent out: the card names the agent it goes on with.
+			request.name === SPAWN_AGENT_NAME
+				? { ...request.args, agent: this.controller.agentOfCall(request.args) }
+				: request.args,
 			request.existingLength,
 			{
 				approve: () => request.resolve('approve'),
@@ -2153,10 +2176,12 @@ export class LibrarianView extends ItemView {
 	): AgentRowData {
 		const live = this.controller.agents.get(call.id);
 		if (live) return liveRow(live);
-		const agent = (call.args as { agent?: unknown }).agent;
-		const color =
-			typeof agent === 'string' ? this.plugin.agentDefs.get(agent.trim())?.color : undefined;
-		return storedRow(call, result, running, color);
+		const agent = this.controller.agentOfCall(call.args);
+		return storedRow(call, result, running, {
+			agent,
+			color: this.plugin.agentDefs.get(agent)?.color,
+			asking: this.controller.toolStatusOf(call.id) === 'awaiting-approval',
+		});
 	}
 
 	/** Opens a sub-agent run's conversation in place of the chat's. */

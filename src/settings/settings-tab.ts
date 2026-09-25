@@ -102,8 +102,6 @@ function groupNote(groupId: string): string {
 		return 'bash runs commands inside the plugin, curl and obsidian among them. A new install asks first.';
 	if (groupId === 'webdav')
 		return 'They reach the WebDAV storage. A new install lists and reads without asking and asks before any change.';
-	if (groupId === 'agents')
-		return 'spawn_agent starts a sub-agent with the same tools and permissions, which hands back one answer. A new install asks first.';
 	return 'Tools of this server, their results marked untrusted. A new install runs the ones that only read without asking.';
 }
 

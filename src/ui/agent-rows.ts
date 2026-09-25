@@ -124,16 +124,25 @@ export function liveRow(state: SubagentState): AgentRowData {
 	};
 }
 
-/** A row from the log: the call's arguments and, once there, its result. */
+/**
+ * A row from the log: the call's arguments and, once there, its result. `agent` is the one the
+ * call starts, which a resume names only through its agent_id; `asking` is a call still waiting
+ * for the user's approval to start.
+ */
 export function storedRow(
 	call: StoredToolCall,
 	result: { ok: boolean; content: string; agentSession?: string } | undefined,
 	running: boolean,
-	color?: AgentColor,
+	{
+		agent: named,
+		color,
+		asking = false,
+	}: { agent?: string; color?: AgentColor; asking?: boolean } = {},
 ): AgentRowData {
 	const args = call.args as { title?: unknown; agent?: unknown };
 	const agent =
-		typeof args.agent === 'string' && args.agent.trim() ? args.agent.trim() : GENERAL_AGENT;
+		named ??
+		(typeof args.agent === 'string' && args.agent.trim() ? args.agent.trim() : GENERAL_AGENT);
 	const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : agent;
 	const answer = result ? withoutAgentId(result.content) : '';
 	const status: AgentRowStatus = result
@@ -143,7 +152,9 @@ export function storedRow(
 				? 'stopped'
 				: 'done'
 		: running
-			? 'pending'
+			? asking
+				? 'asking'
+				: 'pending'
 			: 'failed';
 	return {
 		callId: call.id,
@@ -154,7 +165,7 @@ export function storedRow(
 		activity: result
 			? plainLine(answer.replace(/^Error:\s*/, ''))
 			: running
-				? AGENT_STATUS_LABELS.pending
+				? AGENT_STATUS_LABELS[status]
 				: 'It did not run.',
 		sessionId: result?.agentSession ?? null,
 	};
@@ -192,9 +203,11 @@ export function updateAgentRow(row: HTMLElement, data: AgentRowData): void {
 	row.querySelector('.librarian-agent-type')?.setText(data.agent);
 	const activity = row.querySelector<HTMLElement>('.librarian-agent-row-activity');
 	if (activity && activity.textContent !== data.activity) activity.setText(data.activity);
+	// The line often says the state itself, such as Waiting for your approval: read it once.
+	const label = AGENT_STATUS_LABELS[data.status];
 	row.setAttr(
 		'aria-label',
-		`${data.title}, ${data.agent}: ${AGENT_STATUS_LABELS[data.status]}. ${data.activity}`,
+		`${data.title}, ${data.agent}: ${label}${data.activity && data.activity !== label ? `. ${data.activity}` : ''}`,
 	);
 	const mark = row.querySelector<HTMLElement>('.librarian-agent-row-mark');
 	if (!mark || mark.dataset.status === data.status) return;
