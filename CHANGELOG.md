@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.16.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.16.0...2.16.1) (2026-09-25)
+
+
+### chore
+
+* list refactors in the changelog and release the split as 2.16.1 ([16e0f70](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/16e0f708335d35fd758dd029afba1d4553cbccc7))
+
+
+### Code Refactoring
+
+* **agent:** move sub-agent runs, the approval queue and retry state out of the controller ([d90be1b](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/d90be1b2b29b47f0495fc6b911906822f2578a89))
+* **settings:** move the editor modals out of settings-tab.ts ([b7180c8](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/b7180c83dfc1a50ee043811d01c3309d263685d3))
+* **ui:** split the chat view into ConversationPane and Composer ([7dcac81](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7dcac817146fee7628ade33015ca2de76828f1d1))
+
 ## [2.16.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.15.0...2.16.0) (2026-09-25)
 
 
