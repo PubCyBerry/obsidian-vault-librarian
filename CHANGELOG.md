@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.16.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.15.0...2.16.0) (2026-09-25)
+
+
+### Features
+
+* stream a note into its timeline chip and draw text as Markdown while it arrives ([94444aa](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/94444aaea25981f2c06cfe3350ce9a0764530b7f))
+
+
+### Bug Fixes
+
+* draw the agent pane again only when its log or state changes ([caae095](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/caae095857bd23b2fa07eff18b8776efcdd967b0))
+* keep a spinner turning when the chat or the agent pane is drawn again ([4f6bd11](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/4f6bd11f5efc351c9b6eb4f7e9afbb3be146e49a))
+
 ## [2.15.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.14.1...2.15.0) (2026-09-25)
 
 
