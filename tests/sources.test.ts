@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { trimToPath } from '../src/ui/sources';
+import { SOURCE_PATTERN, trimToPath } from '../src/ui/sources';
 
 const notes = new Set(['Meetings/2026-09-15 Design review.md', 'notes.md', '(Archive)/old.md']);
 const exists = (path: string) => notes.has(path);
@@ -21,5 +21,10 @@ describe('source links (LIB-TEST-264)', () => {
 
 	it('falls back to the last word, without its opening bracket, when no part is a note', () => {
 		expect(trimToPath('(missing note.md', exists)).toBe('note.md');
+	});
+
+	it('reads a line range written with an en dash, as models often typeset it', () => {
+		const [match] = 'Meetings/2026-09-15 Design review.md:11–18'.matchAll(SOURCE_PATTERN);
+		expect(match?.slice(1)).toEqual(['Meetings/2026-09-15 Design review.md', '11', '18']);
 	});
 });

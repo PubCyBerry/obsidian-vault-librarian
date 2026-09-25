@@ -1,11 +1,12 @@
 import { type App, MarkdownView, Notice, TFile } from 'obsidian';
 
 /**
- * `path/to/note.md:12-20` inside rendered text. One lazy run over a single character class keeps
- * matching linear; the run may swallow words before the path, so the path is trimmed to the
- * longest trailing part that resolves to a note.
+ * `path/to/note.md:12-20` inside rendered text, with the en dash models often typeset in the range
+ * too. One lazy run over a single character class keeps matching linear; the run may swallow
+ * words before the path, so the path is trimmed to the longest trailing part that resolves to a
+ * note.
  */
-const SOURCE_PATTERN = /([^\n:`[\]|]+?\.md):(\d+)(?:-(\d+))?/g;
+export const SOURCE_PATTERN = /([^\n:`[\]|]+?\.md):(\d+)(?:[-–](\d+))?/g;
 
 /** A bracket or quote a citation often opens with, as in `(Meetings/Review.md:3)`. */
 const OPENERS = /^[("'“‘<{]+/;

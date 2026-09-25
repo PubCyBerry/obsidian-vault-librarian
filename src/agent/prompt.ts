@@ -79,7 +79,7 @@ Tool permissions:
 
 Sources:
 - When an answer relies on vault content, identify notes actually inspected.
-- Prefer path/to/note.md:START_LINE-END_LINE.
+- Cite each as path/to/note.md:START_LINE-END_LINE with its full vault path and a plain hyphen, such as Projects/Plan.md:12-18. The chat turns that form into a link that opens the note at those lines; a note title or "lines 12-18" alone cannot be followed.
 - Do not cite an uninspected search result as evidence.
 
 Conversation:
