@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.14.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.13.0...2.14.0) (2026-09-25)
+
+
+### Features
+
+* add a command that opens the chat in the right sidebar ([434de96](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/434de96a4a33df97e7ac9c77b4fd127c40f5946b))
+
+
+### Bug Fixes
+
+* give the conversation room at the top and the timeline chips more space around them ([434de96](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/434de96a4a33df97e7ac9c77b4fd127c40f5946b))
+* keep the streamed text fade-in, without the blur, when the system asks for reduced motion ([434de96](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/434de96a4a33df97e7ac9c77b4fd127c40f5946b))
+* show a spinner on the thinking step while the thinking still grows ([434de96](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/434de96a4a33df97e7ac9c77b4fd127c40f5946b))
+
 ## [2.13.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.12.1...2.13.0) (2026-09-24)
 
 
