@@ -681,8 +681,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 	// Device sync
 
 	/**
-	 * The sync passphrase. With it the fixed secrets travel sealed in the settings, and a desktop
-	 * can hand MCP sign-ins to a phone or tablet (LIB-FEAT-233, LIB-FEAT-234).
+	 * The sync passphrase. With it the fixed secrets travel sealed in the settings, and the MCP
+	 * sign-ins in files of their own (LIB-FEAT-233, LIB-FEAT-289).
 	 */
 	private deviceSyncPage(): Page {
 		const secrets = this.plugin.secrets;
@@ -747,7 +747,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						},
 						{
 							name: 'Sign-ins',
-							desc: 'A sign-in to an MCP server stays on the device that made it. On desktop, Sign in for a mobile device on a server makes one more for a phone or tablet, which takes it when it opens with the same passphrase.',
+							desc: 'A sign-in to an MCP server made on one device reaches your other devices with the same passphrase through the sync, even where a server lets no phone sign in. A device that has a working sign-in of its own keeps it. Signing out ends the sign-in on the devices that share it.',
 							aliases: ['OAuth', 'Mobile', 'Phone', 'Tablet'],
 							render: () => {},
 						},
