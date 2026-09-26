@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.18.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.17.0...2.18.0) (2026-09-26)
+
+
+### Features
+
+* add, edit and delete skills on the Skills settings page ([1c0539f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1c0539f7307952464453b1e510eaa79894afa1e0))
+* let the agent make, change and delete skills, asking before every change ([1c0539f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1c0539f7307952464453b1e510eaa79894afa1e0))
+
+
+### Bug Fixes
+
+* let the shell remove vault folders, and say when a change it asked for was refused ([1ab49e4](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1ab49e4da4805e7f01c607684e1d46ff47deba60))
+
 ## [2.17.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.16.1...2.17.0) (2026-09-26)
 
 
