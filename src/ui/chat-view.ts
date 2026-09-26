@@ -522,9 +522,16 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		const waiting = this.plugin.mcp.needingSignIn();
 		this.mcpBannerEl.toggleClass('is-hidden', waiting.length === 0);
 		this.mcpBannerEl.empty();
+		// A phone may be waiting for a sign-in made on a computer, not for one of its own.
+		const bySync = this.plugin.mcp.signInArrivesBySync();
 		for (const server of waiting) {
 			const row = this.mcpBannerEl.createDiv({ cls: 'librarian-key-banner-row' });
-			row.createSpan({ text: `Sign in to "${server.name}" to use its tools.` });
+			row.createSpan({
+				text:
+					bySync && server.auth === 'oauth'
+						? `"${server.name}" needs a sign-in. One made on your computer comes here with the sync.`
+						: `Sign in to "${server.name}" to use its tools.`,
+			});
 			const button = row.createEl('button', { cls: 'mod-cta' });
 			// One width for every row's button, whichever it says.
 			steadyLabel(

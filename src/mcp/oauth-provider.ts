@@ -29,6 +29,20 @@ export interface StoredOAuth {
 	client?: OAuthClientInformationMixed;
 	tokens?: OAuthTokens;
 	verifier?: string;
+	/** When the tokens were made or refreshed, in ms: the newest copy of a sign-in wins. */
+	at?: number;
+	/** The device that made them, this one or the one whose shared sign-in it took (LIB-FEAT-289). */
+	from?: string;
+	/**
+	 * Which sign-in the tokens belong to: made at a sign-in and kept through its refreshes, on
+	 * every device that shares it. Devices follow only the copies of their own sign-in.
+	 */
+	grant?: string;
+}
+
+/** The same sign-in: a refresh can hand back tokens this device already holds. */
+function sameTokens(a: OAuthTokens | undefined, b: OAuthTokens): boolean {
+	return !!a && a.access_token === b.access_token && a.refresh_token === b.refresh_token;
 }
 
 export interface OAuthProviderDeps {
@@ -58,6 +72,10 @@ export interface OAuthProviderDeps {
 	 * browser's answer would no longer be recognized, so none may start.
 	 */
 	busy?: () => boolean;
+	/** This device's id, written with the tokens it makes. */
+	deviceId?: () => string;
+	/** Told of each new set of tokens this device made, to share it with the others. */
+	onTokensSaved?: (stored: StoredOAuth) => void;
 }
 
 export const SIGN_IN_WAITING =
@@ -65,7 +83,8 @@ export const SIGN_IN_WAITING =
 
 /**
  * OAuth 2.1 client state for one MCP server. Client registration, tokens and the PKCE verifier
- * live in SecretStorage on this device only, like provider API keys.
+ * live in SecretStorage on this device, like provider API keys; with a sync passphrase the
+ * sign-in is also shared with the other devices (`SharedSignIns`, LIB-FEAT-289).
  */
 export class ObsidianOAuthProvider implements OAuthClientProvider {
 	constructor(private readonly deps: OAuthProviderDeps) {}
@@ -108,7 +127,29 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	saveTokens(tokens: OAuthTokens): void {
-		this.write({ ...this.read(), tokens });
+		const stored = this.read();
+		// A refresh answered with a sign-in another device shared keeps it as it came.
+		if (sameTokens(stored.tokens, tokens)) return;
+		const next: StoredOAuth = {
+			...stored,
+			tokens,
+			at: Date.now(),
+			from: this.deps.deviceId?.(),
+			// A refresh keeps the sign-in it refreshes; tokens where there were none start one.
+			grant: (stored.tokens && stored.grant) || crypto.randomUUID(),
+		};
+		this.write(next);
+		this.deps.onTokensSaved?.(next);
+	}
+
+	/** What this device holds for the server now. */
+	current(): StoredOAuth {
+		return this.read();
+	}
+
+	/** Holds another sign-in instead, such as the newer one another device shared. */
+	replace(stored: StoredOAuth): void {
+		this.write(stored);
 	}
 
 	redirectToAuthorization(url: URL): void {

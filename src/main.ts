@@ -15,6 +15,7 @@ import { ContextManager } from './context/context-manager';
 import { desktopHttp, openInBrowser } from './mcp/loopback';
 import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
 import { clientSecretId, OAUTH_PROTOCOL_ACTION, serverIdFromState } from './mcp/oauth-provider';
+import { adapterSignInFiles, SharedSignIns } from './mcp/shared-signin';
 import {
 	READ_ONLY_TOOL_NAMES,
 	SHELL_GROUP,
@@ -133,6 +134,16 @@ export default class LibrarianPlugin extends Plugin {
 						[...this.takenHandoffs(), nonce].slice(-50),
 					),
 			},
+			// One sign-in for every device: each writes its copy in its own file (LIB-FEAT-289).
+			shared: new SharedSignIns({
+				files: adapterSignInFiles(
+					this.app.vault.adapter,
+					`${this.app.vault.configDir}/plugins/${this.manifest.id}/signins`,
+				),
+				seal: (text) => this.secrets.seal(text),
+				unseal: (sealed) => this.secrets.unseal(sealed),
+				deviceId: () => this.deviceId(),
+			}),
 		});
 		this.skills = new SkillManager(this.app);
 		this.agentDefs = new AgentManager(
@@ -353,7 +364,11 @@ export default class LibrarianPlugin extends Plugin {
 		this.registerDomEvent(document, 'visibilitychange', () => {
 			noteVisibility();
 			for (const runtime of this.hub.runtimes) runtime.onVisibilityChange();
+			// Back in the app, the sync may have brought a sign-in another device shared.
+			if (document.visibilityState === 'visible') void this.mcp.retryShared();
 		});
+		// And while the app stays open, as the sync runs on its own schedule.
+		this.registerInterval(window.setInterval(() => void this.mcp.retryShared(), 120_000));
 		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
 			const id = serverIdFromState(params.state);
 			if (!id) return;
@@ -435,6 +450,9 @@ export default class LibrarianPlugin extends Plugin {
 			this.secrets.subscribe(() => {
 				settingTab.refresh();
 				void this.refreshReadiness();
+				// A new passphrase may open the sign-ins the other devices shared.
+				this.mcp.sharedChanged();
+				void this.mcp.retryShared();
 			}),
 		);
 

@@ -712,7 +712,7 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		expect(manager.signedIn('srv')).toBe(true);
 	});
 
-	it('LIB-TEST-236: a desktop signs in for a phone, which takes a grant of its own', async () => {
+	it('LIB-TEST-236: a sign-in an older desktop sealed for a phone is still taken', async () => {
 		globalThis.fetch = fakeServer('registers');
 		(globalThis as { window?: unknown }).window ??= globalThis;
 		// One settings object stands for the data file the vault's sync carries between devices.
@@ -762,20 +762,23 @@ describe('servers that will not register this app (LIB-TEST-214)', () => {
 		await desktop.secrets.unlock();
 		await phone.secrets.unlock();
 
-		// The browser answers the loopback the way the authorization server would redirect it.
-		const signingIn = desktop.manager.signInForDevice('srv');
-		while (!desktop.opened.length) await new Promise((r) => setTimeout(r, 10));
-		const asked = new URL(desktop.opened[0]!).searchParams;
-		const back = new URL(asked.get('redirect_uri')!);
-		back.searchParams.set('code', 'the-code');
-		back.searchParams.set('state', asked.get('state')!);
-		expect((await realFetch(back)).status).toBe(200);
-		await signingIn;
-
-		const handoff = settings.oauthHandoffs?.srv;
-		expect(handoff).toMatchObject({ from: 'desk', sealed: expect.stringMatching(/^enc1\./) });
-		// The desktop's own sign-in is untouched: the grant for the phone lived in memory.
-		expect(desktop.app.secretStorage.getSecret(oauthSecretId('srv'))).toBeNull();
+		// Before 2.19 a desktop sealed a grant of its own for the phone into the settings; one that
+		// waits there when a device updates is still taken (LIB-FEAT-289 replaced the button).
+		const sealed = await desktop.secrets.seal(
+			JSON.stringify({
+				client: { client_id: 'c1' },
+				tokens: { access_token: 'a', token_type: 'Bearer', refresh_token: 'r' },
+			}),
+		);
+		settings.oauthHandoffs = {
+			srv: {
+				from: 'desk',
+				nonce: 'n1',
+				sealed: sealed!,
+				createdAt: new Date().toISOString(),
+			},
+		};
+		const handoff = settings.oauthHandoffs.srv;
 		// The desktop never takes back what it made.
 		await desktop.manager.claimHandoffs();
 		expect(settings.oauthHandoffs?.srv).toBeDefined();

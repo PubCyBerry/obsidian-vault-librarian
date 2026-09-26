@@ -1,13 +1,9 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
-import {
-	auth,
-	extractWWWAuthenticateParams,
-	UnauthorizedError,
-} from '@modelcontextprotocol/sdk/client/auth.js';
+import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientInformationMixed } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { LATEST_PROTOCOL_VERSION, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
 import type { SecretStore } from '../storage/secret-store';
@@ -22,6 +18,7 @@ import {
 	oauthSecretId,
 	type StoredOAuth,
 } from './oauth-provider';
+import type { SharedSignIn, SharedSignIns } from './shared-signin';
 
 /** A call the server marks read-only or idempotent can be sent again without doing anything twice. */
 export function repeatable(tool: Pick<Tool, 'annotations'>): boolean {
@@ -169,10 +166,27 @@ export interface McpManagerDeps {
 	notice: (message: string) => void;
 	/** Node's http on desktop, for a loopback sign-in; null or absent on phones. */
 	loopback?: () => HttpModule | null;
-	/** This device's id, so a device never takes back the sign-in it made for another. */
+	/** This device's id, written with the sign-ins it makes and shares. */
 	deviceId?: () => string;
 	/** Hand-overs this device already took, by nonce: sync may bring a taken one back. */
 	taken?: { has(nonce: string): boolean; add(nonce: string): void };
+	/** The sign-ins every device shares through the vault's sync (LIB-FEAT-289). */
+	shared?: SharedSignIns;
+}
+
+/** A token endpoint's answer, made here from a sign-in another device shared. */
+function tokenResponse(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { 'content-type': 'application/json' },
+	});
+}
+
+/** Seconds the access token of a sign-in has left, from when it was made; 0 when unknown. */
+function secondsLeft(stored: StoredOAuth): number {
+	const lifetime = stored.tokens?.expires_in;
+	if (stored.at === undefined || lifetime === undefined) return 0;
+	return Math.floor((stored.at + lifetime * 1000 - Date.now()) / 1000);
 }
 
 export function apiKeySecretId(serverId: string): string {
@@ -327,6 +341,8 @@ export class McpManager {
 			this.setState(id, { status: 'disabled', tools: [] });
 			return;
 		}
+		// A newer sign-in another device shared goes in first: made there, or refreshed there.
+		const taken = server.auth === 'oauth' ? await this.adoptShared(id) : null;
 		let apiKey: string | null = null;
 		if (server.auth === 'apiKey') {
 			apiKey = this.deps.secrets.get(apiKeySecretId(id));
@@ -357,15 +373,28 @@ export class McpManager {
 			this.pendingAuth.delete(id);
 			this.rejected.delete(id);
 			this.setState(id, { status: 'ready', tools });
+			if (server.auth === 'oauth') await this.shareOwn(id);
 		} catch (error) {
 			if (error instanceof UnauthorizedError) {
+				// Refused tokens this device held may have been replaced on another device, whose
+				// newer sign-in may have arrived meanwhile: that one is tried once.
+				if (this.rejected.has(id) && (await this.adoptShared(id)) === 'adopted') {
+					this.rejected.delete(id);
+					await this.connect(id);
+					return;
+				}
 				// The transport keeps the PKCE state; finishAuth must run on this same instance.
 				this.pendingAuth.set(id, transport);
 				this.setState(id, {
 					status: 'needs-sign-in',
-					message: this.rejected.has(id)
-						? 'The server rejected the saved sign-in. Sign in again.'
-						: 'Sign in to use this server.',
+					message:
+						taken === 'signed-out'
+							? 'Signed out on another device. Sign in again.'
+							: this.rejected.has(id)
+								? 'The server rejected the saved sign-in. Sign in again.'
+								: this.signInArrivesBySync()
+									? 'Sign in here, or on your computer: its sign-in comes here with the sync.'
+									: 'Sign in to use this server.',
 					authorizationUrl: this.state(id).authorizationUrl,
 					tools: [],
 				});
@@ -494,7 +523,22 @@ export class McpManager {
 		await this.connect(id);
 	}
 
+	/**
+	 * Signs out on this device and on the others that share its sign-in: they find this device's
+	 * sign-out newer than their copy of that sign-in and drop it (LIB-FEAT-289).
+	 */
 	async signOut(id: string): Promise<void> {
+		const grant =
+			this.server(id)?.auth === 'oauth' ? this.oauthProvider(id).current().grant : undefined;
+		await this.signOutHere(id);
+		if (!grant || !this.canShare()) return;
+		const at = Date.now();
+		// Remembered, so an older copy of any sign-in is not taken back in.
+		this.oauthProvider(id).replace({ at, from: this.deps.deviceId?.(), grant });
+		await this.deps.shared?.shareSignOut(id, at, grant);
+	}
+
+	private async signOutHere(id: string): Promise<void> {
 		this.endSignIn(id);
 		await this.disconnect(id);
 		this.deps.secrets.clear(oauthSecretId(id));
@@ -506,7 +550,8 @@ export class McpManager {
 	}
 
 	async remove(id: string): Promise<void> {
-		await this.signOut(id);
+		await this.signOutHere(id);
+		await this.deps.shared?.forget(id);
 		this.deps.secrets.clear(clientSecretId(id));
 		this.states.delete(id);
 		const settings = this.deps.settings();
@@ -521,93 +566,6 @@ export class McpManager {
 	/** A sign-in this or another device made for a phone or tablet is waiting to be taken. */
 	handoffPending(id: string): boolean {
 		return !!this.deps.settings().oauthHandoffs?.[id];
-	}
-
-	/**
-	 * Signs in once more on this desktop, for a phone or tablet. The new grant is its own: kept in
-	 * memory, never in this device's storage, then sealed with the sync passphrase into the
-	 * settings for the other device to take. Each device then refreshes only its own grant, so
-	 * neither undoes the other when the server replaces refresh tokens (LIB-ADR-031).
-	 */
-	async signInForDevice(id: string): Promise<void> {
-		const server = this.server(id);
-		const http = this.deps.loopback?.();
-		if (!server || server.auth !== 'oauth' || !http) return;
-		if (this.deps.secrets.state !== 'on') {
-			this.deps.notice(
-				'Set a sync passphrase under Device sync first. The phone or tablet needs the same one.',
-			);
-			return;
-		}
-		let grant: StoredOAuth = {};
-		let state: string | undefined;
-		let answer: (result: LoopbackResult) => void = () => {};
-		const answered = new Promise<LoopbackResult>((resolve) => {
-			answer = resolve;
-		});
-		const loopback = await listenForRedirect(http, {
-			accept: (s) => s !== null && s === state,
-			onResult: (result) => answer(result),
-			path: this.configuredClient(id) ? '/' : '/callback',
-		});
-		const provider = new ObsidianOAuthProvider({
-			serverId: id,
-			secrets: this.deps.secrets,
-			configuredClient: () => this.configuredClient(id),
-			interactive: () => true,
-			open: this.deps.open,
-			redirectUrl: () => loopback.redirectUrl,
-			onState: (s) => {
-				state = s;
-			},
-			onAuthorizationUrl: () => {},
-			storage: {
-				read: () => ({ ...grant }),
-				write: (stored) => {
-					grant = stored;
-				},
-			},
-		});
-		const fetchFn = this.fetchFor(id);
-		try {
-			const options = {
-				serverUrl: new URL(server.url),
-				fetchFn,
-				...(await this.authHints(server.url, fetchFn)),
-			};
-			if ((await auth(provider, options)) !== 'REDIRECT')
-				throw new Error('The server did not ask for a sign-in.');
-			const result = await answered;
-			if ('error' in result) throw new Error(result.error);
-			await auth(provider, { ...options, authorizationCode: result.code });
-			const sealed = grant.tokens
-				? await this.deps.secrets.seal(
-						JSON.stringify({ client: grant.client, tokens: grant.tokens }),
-					)
-				: null;
-			if (!sealed) throw new Error('No sign-in came back.');
-			const settings = this.deps.settings();
-			settings.oauthHandoffs = {
-				...settings.oauthHandoffs,
-				[id]: {
-					from: this.deps.deviceId?.() ?? '',
-					nonce: crypto.randomUUID(),
-					sealed,
-					createdAt: new Date().toISOString(),
-				},
-			};
-			await this.deps.save();
-			this.emit();
-			this.deps.notice(
-				`A sign-in to ${server.name} is ready. Open Obsidian on your phone or tablet to take it.`,
-			);
-		} catch (error) {
-			const blocked = this.signInBlocked(id, error);
-			const reason = blocked ?? errorText(error);
-			this.deps.notice(`Sign-in for a mobile device failed: ${reason}`);
-		} finally {
-			loopback.close();
-		}
 	}
 
 	/**
@@ -645,35 +603,102 @@ export class McpManager {
 		this.emit();
 	}
 
-	/** What the server says about signing in to an unsigned request, as the transport learns it. */
-	private async authHints(
-		url: string,
-		fetchFn: (url: string | URL, init?: RequestInit) => Promise<Response>,
-	): Promise<{ resourceMetadataUrl?: URL; scope?: string }> {
-		try {
-			const response = await fetchFn(url, {
-				method: 'POST',
-				headers: {
-					'content-type': 'application/json',
-					accept: 'application/json, text/event-stream',
-				},
-				body: JSON.stringify({
-					jsonrpc: '2.0',
-					id: 0,
-					method: 'initialize',
-					params: {
-						protocolVersion: LATEST_PROTOCOL_VERSION,
-						capabilities: {},
-						clientInfo: { name: 'Vault Librarian', version: this.deps.clientVersion },
-					},
-				}),
-			});
-			if (response.status !== 401) return {};
-			const { resourceMetadataUrl, scope } = extractWWWAuthenticateParams(response);
-			return { resourceMetadataUrl, scope };
-		} catch {
-			return {};
+	/** Whether sign-ins travel between devices: sealing needs this device's sync passphrase. */
+	private canShare(): boolean {
+		return !!this.deps.shared && this.deps.secrets.state === 'on';
+	}
+
+	/** The passphrase changed: shared sign-ins it could not open are tried again. */
+	sharedChanged(): void {
+		this.deps.shared?.reset();
+	}
+
+	/** A device that cannot sign in through 127.0.0.1 gets the sign-ins made on a computer. */
+	signInArrivesBySync(): boolean {
+		return this.canShare() && !this.deps.loopback?.();
+	}
+
+	/**
+	 * Takes a sign-in another device shared (LIB-FEAT-289). A device holding a sign-in follows
+	 * only the newer copies of that one, so a sign-in it made or took and still works is never
+	 * swapped for another; a newer sign-out of it ends it here too. A device holding none takes
+	 * the newest live one, newer than its own last sign-out. Says which happened, if either.
+	 */
+	private async adoptShared(id: string): Promise<'adopted' | 'signed-out' | null> {
+		if (this.server(id)?.auth !== 'oauth' || !this.canShare() || this.signIns.has(id))
+			return null;
+		const all = (await this.deps.shared?.latest(id)) ?? [];
+		const provider = this.oauthProvider(id);
+		const own = provider.current();
+		const since = own.at ?? 0;
+		let next: SharedSignIn | undefined;
+		if (own.tokens) {
+			next = all.find((s) => s.grant === own.grant && s.at > since);
+			if (!next) return null;
+			if (!next.stored) {
+				provider.replace({
+					client: own.client,
+					at: next.at,
+					from: next.device,
+					grant: next.grant,
+				});
+				return 'signed-out';
+			}
+		} else {
+			next = all.filter((s) => s.stored && s.at > since).sort((a, b) => b.at - a.at)[0];
+			if (!next?.stored) return null;
 		}
+		provider.replace({
+			client: next.stored.client ?? own.client,
+			tokens: next.stored.tokens,
+			at: next.at,
+			from: next.device,
+			grant: next.grant,
+		});
+		// Following another device's refresh goes unsaid; a sign-in arriving where there was none does not.
+		if (!own.tokens)
+			this.deps.notice(
+				`Signed in to ${this.server(id)?.name ?? id} with the sign-in from another device.`,
+			);
+		return 'adopted';
+	}
+
+	/**
+	 * Shares a sign-in this device made once it works, when no copy of it is out yet: one made
+	 * before its sync passphrase, or before sharing began, which gets its sign-in id here. One
+	 * taken from another device is that device's to share until this one refreshes it.
+	 */
+	private async shareOwn(id: string): Promise<void> {
+		if (!this.canShare()) return;
+		const provider = this.oauthProvider(id);
+		const own = provider.current();
+		const me = this.deps.deviceId?.();
+		if (!own.tokens || (own.from !== undefined && own.from !== me)) return;
+		const stored: StoredOAuth = {
+			...own,
+			at: own.at ?? Date.now(),
+			from: me,
+			grant: own.grant ?? crypto.randomUUID(),
+		};
+		if (own.at === undefined || own.grant === undefined) provider.replace(stored);
+		const copy = (await this.deps.shared?.latest(id))?.find((s) => s.grant === stored.grant);
+		if (copy && stored.at !== undefined && copy.at >= stored.at) return;
+		await this.deps.shared?.share(id, stored);
+	}
+
+	/**
+	 * Servers waiting for a sign-in try again with what the other devices shared since, as when
+	 * the app comes back or the sync has run.
+	 */
+	async retryShared(): Promise<void> {
+		if (!this.canShare()) return;
+		await Promise.all(
+			this.servers()
+				.filter((s) => s.enabled && this.state(s.id).status === 'needs-sign-in')
+				.map(async (s) => {
+					if ((await this.adoptShared(s.id)) === 'adopted') await this.connect(s.id);
+				}),
+		);
 	}
 
 	/** One permission group per connected server. */
@@ -821,6 +846,10 @@ export class McpManager {
 				const current = this.state(id);
 				this.states.set(id, { ...current, authorizationUrl: url });
 			},
+			deviceId: this.deps.deviceId,
+			onTokensSaved: (stored) => {
+				if (this.canShare()) void this.deps.shared?.share(id, stored);
+			},
 		});
 	}
 
@@ -844,9 +873,31 @@ export class McpManager {
 					this.refusedRegistration.set(id, response.status);
 				return response;
 			}
-			const body = init?.body instanceof URLSearchParams ? init.body : null;
-			if (init?.method !== 'POST' || body?.get('grant_type') !== 'refresh_token')
+			let body = init?.body instanceof URLSearchParams ? init.body : null;
+			if (init?.method !== 'POST' || !body || body.get('grant_type') !== 'refresh_token')
 				return send(url, init);
+			// The refresh token in the request may be one another device already replaced: with
+			// Outline, sending it again ends the sign-in on every device. A newer sign-in shared
+			// meanwhile is taken first (LIB-FEAT-289).
+			if ((await this.adoptShared(id)) === 'signed-out')
+				return tokenResponse(
+					{ error: 'invalid_grant', error_description: 'Signed out on another device.' },
+					400,
+				);
+			// The request is always answered from the newest sign-in this device holds: one it
+			// took just now, or one a call running alongside refreshed. While its access token
+			// lasts, that is the answer; otherwise its refresh token is the one sent.
+			const own = this.server(id)?.auth === 'oauth' ? this.oauthProvider(id).current() : {};
+			const holding = own.tokens?.refresh_token;
+			if (own.tokens && holding && body.get('refresh_token') !== holding) {
+				const left = secondsLeft(own);
+				if (left > 60) return tokenResponse({ ...own.tokens, expires_in: left });
+				body = new URLSearchParams(body);
+				body.set('refresh_token', holding);
+				const clientId = own.client?.client_id;
+				if (clientId && body.has('client_id')) body.set('client_id', clientId);
+				init = { ...init, body };
+			}
 			const key = `${String(url)}\n${body.toString()}`;
 			let shared = this.refreshes.get(key);
 			if (!shared) {

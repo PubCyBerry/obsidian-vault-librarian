@@ -629,23 +629,6 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						});
 					});
 				}
-				// Only a desktop can sign in through 127.0.0.1, so only it makes sign-ins for the
-				// others; rows without one keep its room so the icons line up (LIB-FEAT-234).
-				if (Platform.isDesktopApp)
-					setting.addExtraButton((b) => {
-						if (server.auth !== 'oauth') {
-							b.extraSettingsEl.addClass('librarian-mcp-spacer');
-							b.extraSettingsEl.setAttr('aria-hidden', 'true');
-							b.extraSettingsEl.removeAttribute('tabindex');
-							return;
-						}
-						b.setIcon('smartphone')
-							.setTooltip('Sign in for a mobile device')
-							.onClick(async () => {
-								await mcp.signInForDevice(server.id);
-								this.refresh();
-							});
-					});
 				setting
 					.addExtraButton((b) =>
 						b
