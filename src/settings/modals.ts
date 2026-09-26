@@ -12,6 +12,13 @@ import { apiKeySecretId } from '../mcp/mcp-manager';
 import { clientSecretId } from '../mcp/oauth-provider';
 import { modelFromServer } from '../provider/model-catalog';
 import { type ServerModel, testConnection } from '../provider/transport';
+import {
+	MAX_DESCRIPTION,
+	type Skill,
+	type SkillManager,
+	skillBody,
+	skillNameProblem,
+} from '../skills/skill-manager';
 import { isValidSecretId, type SecretStore } from '../storage/secret-store';
 import {
 	COMPLETIONS_API,
@@ -177,6 +184,116 @@ export class McpServerEditorModal extends Modal {
 		if (this.draft.auth === 'oauth' && this.typed.clientSecret && !this.draft.oauthClientId)
 			return invalid(clientId, 'A client secret needs its client ID.');
 		await this.onSaved({ ...this.draft, name: trimmed }, this.typed);
+		this.close();
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+/**
+ * Adds a skill to the root skills folder, or edits one where it is (LIB-FEAT-282): its name, what
+ * it is for and its instructions. A skill's name is its folder's, so an existing one keeps it.
+ */
+export class SkillEditorModal extends Modal {
+	private name = '';
+	private description = '';
+	private body = '';
+	/** The SKILL.md as it was read, so a change made meanwhile is not written over. */
+	private original = '';
+
+	constructor(
+		app: App,
+		private readonly skills: SkillManager,
+		private readonly existing: Skill | null,
+		private readonly onSaved: () => Promise<void>,
+	) {
+		super(app);
+		this.description = existing?.description ?? '';
+	}
+
+	onOpen() {
+		void this.render();
+	}
+
+	private async render() {
+		const skill = this.existing;
+		if (skill) {
+			try {
+				this.original = await this.app.vault.adapter.read(skill.location);
+			} catch {
+				new Notice(`Could not read ${skill.location}. Rescan the skills.`);
+				this.close();
+				return;
+			}
+			this.body = skillBody(this.original);
+		}
+		this.modalEl.addClass('librarian-modal');
+		this.titleEl.setText(skill ? `Edit skill ${skill.name}` : 'Add skill');
+		const el = this.contentEl;
+		const name: Setting = new Setting(el)
+			.setName('Name')
+			.setDesc(
+				skill
+					? skill.location
+					: 'Lowercase letters, digits and hyphens. The folder of the skill takes this name.',
+			)
+			.addText((t) =>
+				skill
+					? t.setValue(skill.name).setDisabled(true)
+					: t.setPlaceholder('meeting-notes').onChange((v) => {
+							this.name = v.trim();
+							clearError(name);
+						}),
+			);
+		const description: Setting = new Setting(el)
+			.setName('Description')
+			.setDesc('What the skill does and when to use it. The model picks skills by this.')
+			.addTextArea((t) =>
+				t.setValue(this.description).onChange((v) => {
+					this.description = v;
+					clearError(description);
+				}),
+			);
+		description.settingEl.addClass('librarian-prompt-setting', 'librarian-short-text');
+		const instructions: Setting = new Setting(el)
+			.setName('Instructions')
+			.setDesc(
+				'What the model follows once it reads the skill. Paths in them are relative to the folder of the skill.',
+			)
+			.addTextArea((t) =>
+				t.setValue(this.body).onChange((v) => {
+					this.body = v;
+					clearError(instructions);
+				}),
+			);
+		instructions.settingEl.addClass('librarian-prompt-setting');
+		const buttons = modalButtons(el, () => this.close());
+		buttons
+			.createEl('button', { cls: 'mod-cta', text: 'Save' })
+			.addEventListener('click', () => void this.save(name, description, instructions));
+	}
+
+	private async save(name: Setting, description: Setting, instructions: Setting) {
+		const nameProblem = this.existing ? null : skillNameProblem(this.name);
+		if (nameProblem) return invalid(name, nameProblem);
+		const text = this.description.trim();
+		if (!text) return invalid(description, 'Description is required.');
+		if (text.length > MAX_DESCRIPTION)
+			return invalid(
+				description,
+				`Description is longer than ${MAX_DESCRIPTION} characters.`,
+			);
+		try {
+			if (this.existing)
+				await this.skills.update(this.existing, text, this.body, this.original);
+			else await this.skills.create(this.name, text, this.body);
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			return invalid(this.existing ? instructions : name, message);
+		}
+		await this.onSaved();
 		this.close();
 	}
 

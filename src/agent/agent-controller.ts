@@ -27,7 +27,7 @@ import type {
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
 import { withFileMutationQueue } from '../tools/mutation-queue';
-import { isAgentsPath, isBinaryPath } from '../tools/path-policy';
+import { isBinaryPath, isWritableHiddenPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
 import { appIsHidden, noteVisibility, whenVisible } from '../visibility';
@@ -145,8 +145,8 @@ export interface ControllerDeps {
 	readsOnly?: (name: string) => boolean;
 	/** The instructions of a skill an agent preloads, or null when it cannot be used. */
 	skillActivation?: (name: string) => Promise<string | null>;
-	/** A rewind changed a definition file: read the definitions again. */
-	agentDefinitionsChanged?: () => Promise<unknown>;
+	/** A rewind changed sub-agent definitions or skill files: read them again (LIB-FEAT-283). */
+	hiddenFilesChanged?: (paths: string[]) => Promise<unknown>;
 	/** Places for sub-agents, one set for every session on the device (LIB-FEAT-274). */
 	agentSlots?: Slots;
 }
@@ -1031,7 +1031,8 @@ export class AgentController {
 
 	/**
 	 * A file as snapshots and rewind see it: through the vault index, or through the adapter for a
-	 * sub-agent definition, which the index does not hold (LIB-FEAT-268). Null when there is none.
+	 * sub-agent definition or a skill file, which the index does not hold (LIB-FEAT-268,
+	 * LIB-FEAT-283). Null when there is none.
 	 */
 	private async noteAt(path: string): Promise<{
 		path: string;
@@ -1058,7 +1059,7 @@ export class AgentController {
 				},
 			};
 		const adapter = vault.adapter;
-		if (!isAgentsPath(path) || (await adapter.stat(path))?.type !== 'file') return null;
+		if (!isWritableHiddenPath(path) || (await adapter.stat(path))?.type !== 'file') return null;
 		return {
 			path,
 			read: () => adapter.read(path),
@@ -1107,11 +1108,11 @@ export class AgentController {
 		});
 	}
 
-	/** Makes a removed note again: a definition through the adapter, any other through the vault. */
+	/** Makes a removed note again: a hidden file through the adapter, any other through the vault. */
 	private async restoreRemoved(path: string, text: string): Promise<void> {
 		const { vault } = this.deps.app;
 		const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-		if (isAgentsPath(path)) {
+		if (isWritableHiddenPath(path)) {
 			if (folder && !(await vault.adapter.exists(folder))) await vault.adapter.mkdir(folder);
 			await vault.adapter.write(path, text);
 			return;
@@ -1426,8 +1427,9 @@ export class AgentController {
 		await this.deps.sessions.append(sessionId, { type: 'rewind', toEventIndex });
 		await this.reloadEvents();
 		await this.recalculateUsage();
-		// A definition the rewind put back or removed changes the agents that can be started.
-		if (reverted.some((p) => isAgentsPath(p))) await this.deps.agentDefinitionsChanged?.();
+		// A definition or a skill the rewind put back or removed changes what the model is offered.
+		const hidden = reverted.filter(isWritableHiddenPath);
+		if (hidden.length) await this.deps.hiddenFilesChanged?.(hidden);
 		return { reverted, unchanged, userText: preview.userText };
 	}
 

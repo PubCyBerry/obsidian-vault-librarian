@@ -3,7 +3,13 @@ import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
 import { withFileMutationQueue } from './mutation-queue';
-import { checkPath, isAgentsPath, isBinaryPath, isHiddenPath, isReadOnlyPath } from './path-policy';
+import {
+	checkPath,
+	isBinaryPath,
+	isHiddenPath,
+	isReadOnlyPath,
+	isWritableHiddenPath,
+} from './path-policy';
 
 /** Opens files the vault index does not list (skill folders). Null means "not one of mine". */
 export interface HiddenReader {
@@ -21,8 +27,11 @@ export interface ToolDeps {
 	settings: () => LibrarianSettings;
 	hidden?: HiddenReader;
 	mutation?: MutationHooks;
-	/** What an agent definition file now defines, or why nothing, after a write or edit to it. */
-	describeAgent?: (path: string) => Record<string, unknown> | null;
+	/**
+	 * What a sub-agent definition or a SKILL.md now defines, or why nothing, after a write or edit
+	 * to it; null for any other file.
+	 */
+	describe?: (path: string) => Record<string, unknown> | null;
 }
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
@@ -172,7 +181,7 @@ export function rejectHiddenWrite(app: App, path: string): void {
 }
 
 /** Folders on the way to a path the vault index does not hold, made through the adapter. */
-async function ensureHiddenFolder(app: App, path: string): Promise<void> {
+export async function ensureHiddenFolder(app: App, path: string): Promise<void> {
 	let current = '';
 	for (const part of path.split('/').filter(Boolean)) {
 		current = current ? `${current}/${part}` : part;
@@ -181,10 +190,10 @@ async function ensureHiddenFolder(app: App, path: string): Promise<void> {
 }
 
 /**
- * write for an agent definition (LIB-FEAT-268), which lives outside the vault index, so through
- * the adapter. The rewind snapshot is taken the same way as for a note.
+ * write for a sub-agent definition or a skill file (LIB-FEAT-268, LIB-FEAT-283), which live
+ * outside the vault index, so through the adapter. The rewind snapshot is taken as for a note.
  */
-async function writeAgentFile(
+async function writeHiddenFile(
 	deps: ToolDeps,
 	id: string,
 	path: string,
@@ -204,8 +213,8 @@ async function writeAgentFile(
 	return stat ? 'overwritten' : 'created';
 }
 
-/** edit for an agent definition, through the adapter; one exact match unless replace_all. */
-async function editAgentFile(
+/** edit for a definition or a skill file, through the adapter; one exact match unless replace_all. */
+async function editHiddenFile(
 	deps: ToolDeps,
 	id: string,
 	path: string,
@@ -609,8 +618,8 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
-				if (isAgentsPath(path)) {
-					const operation = await writeAgentFile(
+				if (isWritableHiddenPath(path)) {
+					const operation = await writeHiddenFile(
 						deps,
 						id,
 						path,
@@ -621,7 +630,7 @@ export function createWriteTool(deps: ToolDeps): AgentTool {
 						path,
 						operation,
 						characters: params.content.length,
-						...deps.describeAgent?.(path),
+						...deps.describe?.(path),
 					});
 				}
 				await deps.mutation?.before(id, path);
@@ -670,9 +679,9 @@ export function createEditTool(deps: ToolDeps): AgentTool {
 			rejectHiddenWrite(deps.app, path);
 			return withFileMutationQueue(path, async () => {
 				throwIfAborted(signal);
-				if (isAgentsPath(path)) {
-					const replacements = await editAgentFile(deps, id, path, params);
-					return ok({ path, replacements, changed: true, ...deps.describeAgent?.(path) });
+				if (isWritableHiddenPath(path)) {
+					const replacements = await editHiddenFile(deps, id, path, params);
+					return ok({ path, replacements, changed: true, ...deps.describe?.(path) });
 				}
 				const file = vaultFile(deps.app, path);
 				await deps.mutation?.before(id, path);

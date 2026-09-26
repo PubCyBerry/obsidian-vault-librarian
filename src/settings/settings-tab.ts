@@ -46,6 +46,7 @@ import {
 	McpServerEditorModal,
 	numberInput,
 	ProviderEditorModal,
+	SkillEditorModal,
 } from './modals';
 
 const PERMISSIONS: ToolPermission[] = ['always_allow', 'approval_required', 'blocked'];
@@ -994,6 +995,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 		sections.push({
 			type: 'list',
 			heading: 'Found skills',
+			addItem: { name: 'Add skill', action: () => this.editSkill(null) },
 			extraButtons: [
 				(b) =>
 					b
@@ -1006,7 +1008,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				? { search: { placeholder: 'Search skills', match: rowMatches } }
 				: {}),
 			emptyState:
-				'No skills found. A skill is a folder with a SKILL.md, inside a folder named .agents/skills at the vault root or in any folder. Rescan after adding one.',
+				'No skills yet. Add one here, or put a folder with a SKILL.md inside a folder named .agents/skills at the vault root or in any folder, then rescan.',
 			items: skills.map((skill) => this.skillRow(skill, hooks)),
 		});
 		if (diagnostics.length)
@@ -1055,8 +1057,44 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				}
 				if (this.showAdvanced) this.listingSelect(setting, key);
 				this.permissionControl(setting, key, hooks);
+				setting
+					.addExtraButton((b) =>
+						b
+							.setIcon('pencil')
+							.setTooltip('Edit')
+							.onClick(() => this.editSkill(skill)),
+					)
+					.addExtraButton((b) =>
+						b
+							.setIcon('trash-2')
+							.setTooltip('Delete')
+							.onClick(() => this.deleteSkill(skill)),
+					);
 			},
 		};
+	}
+
+	/** The skill editor; the scan it ends with redraws the page (LIB-FEAT-282). */
+	private editSkill(skill: Skill | null) {
+		new SkillEditorModal(this.app, this.plugin.skills, skill, () =>
+			this.plugin.recalculateUsage(),
+		).open();
+	}
+
+	private deleteSkill(skill: Skill) {
+		new ConfirmModal(
+			this.app,
+			`Delete skill ${skill.name}?`,
+			(el) =>
+				el.createEl('p', {
+					text: `Its folder ${skill.dir} and the files in it move to the trash.`,
+				}),
+			'Delete',
+			async () => {
+				await this.plugin.skills.remove(skill);
+				await this.plugin.recalculateUsage();
+			},
+		).open();
 	}
 
 	// Sub-agents

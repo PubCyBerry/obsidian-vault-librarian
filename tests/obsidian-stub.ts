@@ -54,7 +54,7 @@ export class Notice {
 export function parseYaml(yaml: string): unknown {
 	const out: Record<string, unknown> = {};
 	let nested: Record<string, unknown> | null = null;
-	for (const raw of yaml.split('\n')) {
+	for (const raw of yaml.split(/\r?\n/)) {
 		if (!raw.trim() || raw.trim().startsWith('#')) continue;
 		const indented = /^\s+/.test(raw);
 		const m = /^\s*([^:]+):\s*(.*)$/.exec(raw);

@@ -43,24 +43,31 @@ export class FakeVault {
 		},
 		append: async (p: string, data: string) =>
 			this.setText(normalizePath(p), (this.texts.get(normalizePath(p)) ?? '') + data),
+		/** Files only: on a folder Obsidian's desktop adapter fails as unlink does. */
 		remove: async (p: string) => {
-			this.texts.delete(normalizePath(p));
-			this.binaries.delete(normalizePath(p));
+			const key = normalizePath(p);
+			if (this.folders.has(key))
+				throw new Error(`EPERM: operation not permitted, unlink '${key}'`);
+			this.texts.delete(key);
+			this.binaries.delete(key);
 		},
-		/** The system trash is gone as far as the vault goes. */
+		/** The system trash is gone as far as the vault goes; a folder goes with what it holds. */
 		trashSystem: async (p: string) => {
-			this.texts.delete(normalizePath(p));
-			this.binaries.delete(normalizePath(p));
+			this.removeTree(normalizePath(p));
 			return true;
 		},
 		trashLocal: async (p: string) => {
-			this.texts.delete(normalizePath(p));
-			this.binaries.delete(normalizePath(p));
+			this.removeTree(normalizePath(p));
 		},
-		rmdir: async (p: string) => {
-			const prefix = `${normalizePath(p)}/`;
-			for (const k of [...this.texts.keys()]) if (k.startsWith(prefix)) this.texts.delete(k);
-			this.folders.delete(normalizePath(p));
+		rmdir: async (p: string, recursive = false) => {
+			const key = normalizePath(p);
+			const inside = (k: string) => k.startsWith(`${key}/`);
+			if (
+				!recursive &&
+				[...this.texts.keys(), ...this.binaries.keys(), ...this.folders].some(inside)
+			)
+				throw new Error(`ENOTEMPTY: directory not empty, rmdir '${key}'`);
+			this.removeTree(key);
 		},
 		list: async (p: string) => {
 			const prefix = normalizePath(p) ? `${normalizePath(p)}/` : '';
@@ -94,6 +101,14 @@ export class FakeVault {
 
 	private has(key: string) {
 		return this.texts.has(key) || this.binaries.has(key) || this.folders.has(key);
+	}
+
+	/** A file, or a folder and everything in it. */
+	private removeTree(key: string) {
+		const gone = (k: string) => k === key || k.startsWith(`${key}/`);
+		for (const k of [...this.texts.keys()]) if (gone(k)) this.texts.delete(k);
+		for (const k of [...this.binaries.keys()]) if (gone(k)) this.binaries.delete(k);
+		for (const k of [...this.folders]) if (gone(k)) this.folders.delete(k);
 	}
 
 	private setText(key: string, data: string) {

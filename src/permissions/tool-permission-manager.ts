@@ -1,5 +1,5 @@
 import { normalizePath } from 'obsidian';
-import { isAgentsPath } from '../tools/path-policy';
+import { isAgentsPath, isSkillsPath } from '../tools/path-policy';
 import type { LibrarianSettings, ToolPermission } from '../types';
 
 export interface ToolGroup {
@@ -65,14 +65,14 @@ export function isRootAgentsMd(path: string): boolean {
 }
 
 /**
- * Why a change to this path always asks, whatever its tool's row says: the vault root AGENTS.md
- * and the sub-agent definitions steer every later turn. Null for any other path.
+ * Why a change to this path always asks, whatever its tool's row says: the vault root AGENTS.md,
+ * the sub-agent definitions and the skills steer later turns. Null for any other path.
  */
 export function alwaysAsksFor(path: string): string | null {
 	if (isRootAgentsMd(path)) return 'Changes to the vault root AGENTS.md always ask first.';
-	return isAgentsPath(segmentsOf(path).join('/'))
-		? 'Changes to sub-agent definitions always ask first.'
-		: null;
+	const normalized = segmentsOf(path).join('/');
+	if (isAgentsPath(normalized)) return 'Changes to sub-agent definitions always ask first.';
+	return isSkillsPath(normalized) ? 'Changes to skills always ask first.' : null;
 }
 
 export class ToolPermissionManager {

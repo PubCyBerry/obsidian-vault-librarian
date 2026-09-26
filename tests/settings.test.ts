@@ -196,9 +196,12 @@ describe('settings pages', () => {
 		expect(list.items).toEqual([]);
 		expect(String(list.emptyState)).toContain('OpenAI-compatible');
 		expect(page(pages, 'MCP servers').items[0]!.addItem?.name).toBe('Add server');
-		// Without skills the Skills page is the empty list and its Rescan button.
+		// Without skills the Skills page is the empty list, its Rescan button and Add skill.
 		const skills = page(pages, 'Skills');
 		expect(skills.items).toHaveLength(1);
 		expect(String(skills.items[0]!.emptyState)).toContain('.agents/skills');
+		// A skill is made here too (LIB-TEST-284).
+		expect(skills.items[0]!.addItem?.name).toBe('Add skill');
+		expect(String(skills.items[0]!.emptyState)).toMatch(/^No skills yet\. Add one here/);
 	});
 });

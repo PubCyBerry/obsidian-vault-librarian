@@ -12,17 +12,39 @@ export function isHiddenPath(path: string, configDir: string): boolean {
 	);
 }
 
-/** Sub-agent definitions (LIB-FEAT-268): the one hidden folder the agent may write in. */
+/** Sub-agent definitions (LIB-FEAT-268), one of the two hidden places the agent may write in. */
 export const AGENTS_DIR = '.agents/agents';
+
+/** Folder that holds skills, at the vault root and in any folder up to SKILLS_DEPTH deep. */
+export const SKILLS_DIR = '.agents/skills';
+/** How deep the folder holding a SKILLS_DIR may be; the vault root is 0 (LIB-FEAT-120). */
+export const SKILLS_DEPTH = 3;
 
 /** A path inside the agent definitions folder, the folder itself, or `.agents` on the way to it. */
 export function isAgentsPath(path: string): boolean {
 	return path === '.agents' || path === AGENTS_DIR || path.startsWith(`${AGENTS_DIR}/`);
 }
 
-/** Hidden and not the agent definitions folder: read-only for the agent. */
+/**
+ * A path in a skills folder (LIB-FEAT-283): a SKILLS_DIR where the scan finds skills, anything
+ * under it, or the `.agents` on the way to it. The folders before it may not be hidden.
+ */
+export function isSkillsPath(path: string): boolean {
+	const segments = path.split('/');
+	const at = segments.indexOf('.agents');
+	if (at < 0 || at > SKILLS_DEPTH || segments.slice(0, at).some((s) => s.startsWith('.')))
+		return false;
+	return segments.length === at + 1 || segments[at + 1] === 'skills';
+}
+
+/** Hidden places the agent may write in: the sub-agent definitions and the skills. */
+export function isWritableHiddenPath(path: string): boolean {
+	return isAgentsPath(path) || isSkillsPath(path);
+}
+
+/** Hidden and not a place the agent may write in: read-only for the agent. */
 export function isReadOnlyPath(path: string, configDir: string): boolean {
-	return isHiddenPath(path, configDir) && !isAgentsPath(path);
+	return isHiddenPath(path, configDir) && !isWritableHiddenPath(path);
 }
 
 /** Files that are not text: read and grep skip them, mentions attach them by path or as images. */

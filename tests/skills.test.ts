@@ -1,17 +1,22 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PromptManager } from '../src/agent/prompt';
-import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
+import { alwaysAsksFor, ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import {
 	catalogOf,
 	createSkillSearchTool,
 	parseSkillMd,
+	SKILLS_AUTHORING,
 	type Skill,
 	SkillManager,
 	skillGroups,
 	skillKey,
+	skillNameProblem,
 	skillsSection,
+	skillText,
+	withDescription,
 } from '../src/skills/skill-manager';
+import { isReadOnlyPath, isSkillsPath } from '../src/tools/path-policy';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings } from '../src/types';
 import { FakeApp } from './fake-app';
@@ -160,7 +165,9 @@ describe('skills (LIB-TEST-123)', () => {
 		const mixed = skillsSection([pdf], [meeting]);
 		expect(mixed).toContain('<name>pdf-processing</name>');
 		expect(mixed).toContain('known by name only: meeting-notes.');
-		expect(skillsSection([], [])).toBe('');
+		// With no skill to use, the section still says how to make one (LIB-TEST-284).
+		expect(skillsSection([], [])).toBe(SKILLS_AUTHORING);
+		expect(mixed.endsWith(SKILLS_AUTHORING)).toBe(true);
 
 		const search = createSkillSearchTool(skills.skills);
 		expect(search.description).toContain('- .agents/skills: 1 skill');
@@ -194,5 +201,167 @@ describe('skills (LIB-TEST-123)', () => {
 		expect(text).toContain('Skill directory: .agents/skills/pdf-processing');
 		expect(text).toContain('<file>references/REFERENCE.md</file>');
 		expect(text.endsWith('</skill_content>')).toBe(true);
+	});
+});
+
+describe('skill files made and changed (LIB-TEST-284)', () => {
+	it('opens the skills folders where the scan looks to writing, and asks for every change', () => {
+		for (const path of [
+			'.agents/skills/x/SKILL.md',
+			'.agents/skills',
+			'.agents',
+			'a/b/c/.agents/skills/x/references/r.md',
+			'a/.agents',
+		])
+			expect([path, isSkillsPath(path), isReadOnlyPath(path, '.obsidian')]).toEqual([
+				path,
+				true,
+				false,
+			]);
+		for (const path of [
+			'a/b/c/d/.agents/skills/x/SKILL.md',
+			'.obsidian/.agents/skills/x/SKILL.md',
+			'.agents/other/x.md',
+			'a/.agents/other',
+		])
+			expect([path, isSkillsPath(path), isReadOnlyPath(path, '.obsidian')]).toEqual([
+				path,
+				false,
+				true,
+			]);
+		expect(alwaysAsksFor('./.agents/skills/x/SKILL.md')).toBe(
+			'Changes to skills always ask first.',
+		);
+		expect(alwaysAsksFor('a/.agents/skills/x/scripts/run.sh')).toBe(
+			'Changes to skills always ask first.',
+		);
+		expect(alwaysAsksFor('.agents/agents/x.md')).toBe(
+			'Changes to sub-agent definitions always ask first.',
+		);
+		expect(alwaysAsksFor('notes/SKILL.md')).toBeNull();
+		const settings = mergeSettings({});
+		settings.toolPermissions.byTool.write = 'always_allow';
+		const perms = new ToolPermissionManager(
+			() => settings,
+			async () => undefined,
+		);
+		expect(perms.resolve('write', { path: '.agents/skills/x/SKILL.md' })).toBe(
+			'approval_required',
+		);
+		expect(perms.resolve('write', { path: 'notes/x.md' })).toBe('always_allow');
+	});
+
+	it('checks a new name by the Agent Skills rules', () => {
+		expect(skillNameProblem('tidy-notes')).toBeNull();
+		expect(skillNameProblem('')).toBe('Name is required.');
+		for (const bad of ['Tidy', 'tidy--notes', '-tidy', 'tidy notes', 'tidy_notes'])
+			expect(skillNameProblem(bad)).toBe('Use lowercase letters, digits and single hyphens.');
+		expect(skillNameProblem('a'.repeat(65))).toBe('Name is longer than 64 characters.');
+	});
+
+	it('creates a skill in the root folder that reads back the same, and refuses a taken name', async () => {
+		const description = 'Tidies notes: headings, lists and "quotes". Use when asked to tidy.';
+		await skills.create('tidy-notes', description, '  # Tidy\n\nDo it.\n\n');
+		const made = app.vault.text('.agents/skills/tidy-notes/SKILL.md')!;
+		expect(made).toBe(skillText('tidy-notes', description, '# Tidy\n\nDo it.'));
+		expect(made).toBe(
+			`---\nname: tidy-notes\ndescription: ${JSON.stringify(description)}\n---\n\n# Tidy\n\nDo it.\n`,
+		);
+		expect(skills.get('tidy-notes')).toMatchObject({ description, warnings: [] });
+		await expect(skills.create('tidy-notes', 'again', '')).rejects.toThrow('already exists');
+		// A name used by a skill in a folder is taken too.
+		await expect(skills.create('meeting-notes', 'again', '')).rejects.toThrow('already exists');
+		expect(skillText('bare', 'Bare.', '   ')).toBe(
+			'---\nname: bare\ndescription: "Bare."\n---\n',
+		);
+	});
+
+	it('updates the description and the instructions and keeps every other line of the frontmatter', async () => {
+		const location = '.agents/skills/pdf-processing/SKILL.md';
+		const original = app.vault.text(location)!;
+		const pdf = skills.get('pdf-processing')!;
+		await skills.update(pdf, 'Reads PDFs: text and tables.', 'New steps.', original);
+		expect(app.vault.text(location)).toBe(
+			'---\nname: pdf-processing\ndescription: "Reads PDFs: text and tables."\nmetadata:\n  version: "1.0"\n---\n\nNew steps.\n',
+		);
+		expect(skills.get('pdf-processing')!.description).toBe('Reads PDFs: text and tables.');
+		// Unchanged description: the frontmatter stays byte for byte, comments included.
+		const commented = '---\n# keep me\nname: pdf-processing\ndescription: Same.\n---\nOld.\n';
+		app.vault.seed(location, commented);
+		await skills.scan();
+		await skills.update(skills.get('pdf-processing')!, 'Same.', 'Body.', commented);
+		expect(app.vault.text(location)).toBe(
+			'---\n# keep me\nname: pdf-processing\ndescription: Same.\n---\n\nBody.\n',
+		);
+		// A file changed since the editor read it is left alone.
+		await expect(
+			skills.update(skills.get('pdf-processing')!, 'Other.', 'x', commented),
+		).rejects.toThrow('changed while it was open');
+		// Windows line ends stay Windows line ends.
+		const crlf =
+			'---\r\nname: pdf-processing\r\ndescription: Old.\r\nlicense: MIT\r\n---\r\nA\r\n';
+		app.vault.seed(location, crlf);
+		await skills.scan();
+		await skills.update(skills.get('pdf-processing')!, 'New.', 'B', crlf);
+		expect(app.vault.text(location)).toBe(
+			'---\r\nname: pdf-processing\r\ndescription: "New."\r\nlicense: MIT\r\n---\r\n\r\nB\r\n',
+		);
+	});
+
+	it('replaces a folded description with the lines it runs on', () => {
+		const yaml =
+			'name: x\ndescription: >-\n  line one\n\n  line two\nlicense: MIT\nmetadata:\n  a: b';
+		expect(withDescription(yaml, 'One line.')).toBe(
+			'name: x\ndescription: "One line."\nlicense: MIT\nmetadata:\n  a: b',
+		);
+		expect(withDescription('name: x', 'Added.')).toBe('name: x\ndescription: "Added."');
+	});
+
+	it('moves a deleted skill folder, references too, to the trash', async () => {
+		await skills.remove(skills.get('pdf-processing')!);
+		expect(app.vault.text('.agents/skills/pdf-processing/SKILL.md')).toBeUndefined();
+		expect(
+			app.vault.text('.agents/skills/pdf-processing/references/REFERENCE.md'),
+		).toBeUndefined();
+		expect(await app.vault.adapter.exists('.agents/skills/pdf-processing')).toBe(false);
+		// The copy in a folder that it shadowed now counts.
+		expect(skills.get('pdf-processing')!.location).toBe(
+			'10-projects/alpha/.agents/skills/pdf-processing/SKILL.md',
+		);
+	});
+
+	it('describes what a written file in a skills folder makes, or why nothing', async () => {
+		app.vault.seed(
+			'.agents/skills/good/SKILL.md',
+			'---\nname: Good\ndescription: Fine.\n---\n',
+		);
+		app.vault.seed('.agents/skills/nodesc/SKILL.md', '---\nname: nodesc\n---\n');
+		await skills.scan();
+		expect(skills.describe('.agents/skills/good/SKILL.md')).toEqual({
+			skill: {
+				name: 'Good',
+				warnings: [
+					'Name "Good" is not lowercase letters, digits and single hyphens',
+					'Name "Good" differs from the folder name',
+				],
+			},
+		});
+		expect(skills.describe('.agents/skills/pdf-processing/SKILL.md')).toEqual({
+			skill: { name: 'pdf-processing' },
+		});
+		expect(skills.describe('.agents/skills/nodesc/SKILL.md')).toEqual({
+			skillProblem: 'Missing description',
+		});
+		expect(skills.describe('10-projects/alpha/.agents/skills/pdf-processing/SKILL.md')).toEqual(
+			{
+				skillProblem: 'Shadowed by .agents/skills/pdf-processing/SKILL.md',
+			},
+		);
+		expect(skills.describe('10-projects/alpha/.agents/skills/loose.md')).toEqual({
+			skillProblem:
+				'A skill is a folder: write 10-projects/alpha/.agents/skills/<name>/SKILL.md',
+		});
+		expect(skills.describe('.agents/skills/pdf-processing/references/REFERENCE.md')).toBeNull();
+		expect(skills.describe('notes/SKILL.md')).toBeNull();
 	});
 });

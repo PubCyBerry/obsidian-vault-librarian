@@ -28,7 +28,9 @@ import {
 import { ProviderManager } from '../src/provider/provider-manager';
 import type { TransportRouter } from '../src/provider/transport';
 import { SessionManager } from '../src/session/session-manager';
+import { SkillManager } from '../src/skills/skill-manager';
 import { SecretStore } from '../src/storage/secret-store';
+import { isAgentsPath, isSkillsPath } from '../src/tools/path-policy';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
 import { storedRow } from '../src/ui/agent-rows';
@@ -131,6 +133,12 @@ function harness(
 		app as unknown as App,
 		(ref) => !!findModel(providers.listSelectable(), ref),
 	);
+	const skills = new SkillManager(app as unknown as App);
+	// As main.ts does: the hidden files a change touched are read again.
+	const rescan = async (paths: readonly string[]) => {
+		if (paths.some(isAgentsPath)) await defs.scan();
+		if (paths.some(isSkillsPath)) await skills.scan();
+	};
 	permissions.attachExtras(
 		() => [],
 		() => new Set(),
@@ -153,10 +161,10 @@ function harness(
 				before: (id, p) => controller.beforeMutation(id, p),
 				after: async (id, p) => {
 					await controller.afterMutation(id, p);
-					if (p.startsWith('.agents/')) await defs.scan();
+					await rescan([p]);
 				},
 			},
-			describeAgent: (p) => defs.describe(p),
+			describe: (p) => defs.describe(p) ?? skills.describe(p),
 		});
 	const controller: AgentController = new AgentController({
 		app: app as unknown as App,
@@ -183,7 +191,7 @@ function harness(
 		}),
 		agentDefinition: (name) => defs.get(name),
 		readsOnly: (name) => READ_ONLY_TOOL_NAMES.has(name),
-		agentDefinitionsChanged: () => defs.scan(),
+		hiddenFilesChanged: rescan,
 		agentSlots,
 	});
 	const events: ControllerEvent[] = [];
@@ -199,6 +207,7 @@ function harness(
 		app,
 		controller,
 		defs,
+		skills,
 		events,
 		requests,
 		models,
@@ -736,6 +745,94 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		expect(rewound!.reverted).toContain(file);
 		expect(h.app.vault.text(file)).toBeUndefined();
 		expect(h.defs.get('helper')).toBeUndefined();
+	});
+});
+
+describe('skills the agent makes (LIB-TEST-284)', () => {
+	it('writes, fixes and rewinds a skill, asks every time, and each result says what it made', async () => {
+		const file = '.agents/skills/tidy/SKILL.md';
+		const h = harness(
+			{
+				main: [
+					{
+						toolCalls: [
+							{
+								name: 'write',
+								args: { path: file, content: '---\nname: tidy\n---\nTidy notes.' },
+							},
+						],
+					},
+					{
+						toolCalls: [
+							{
+								name: 'edit',
+								args: {
+									path: file,
+									old_text: 'name: tidy\n',
+									new_text: 'name: tidy\ndescription: Tidies notes.\n',
+								},
+							},
+						],
+					},
+					{ text: 'Made the tidy skill.' },
+				],
+			},
+			{ write: 'always_allow', edit: 'always_allow' },
+		);
+		const asked: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'approval' && e.request) {
+				asked.push(e.request.name);
+				queueMicrotask(() => e.request!.resolve('approve'));
+			}
+		});
+		await h.controller.send('make a skill');
+		expect(asked).toEqual(['write', 'edit']);
+		const results = await h.toolResults();
+		// The first try lacked a description; the result said so, and the fix names the skill.
+		expect(JSON.parse(results[0]!.content)).toMatchObject({
+			operation: 'created',
+			skillProblem: 'Missing description',
+		});
+		expect(JSON.parse(results[1]!.content)).toMatchObject({ skill: { name: 'tidy' } });
+		expect(h.skills.get('tidy')!.description).toBe('Tidies notes.');
+		const user = h.controller.events.find((e) => e.event.type === 'user')!;
+		const rewound = await h.controller.rewind(user.index);
+		expect(rewound!.reverted).toContain(file);
+		expect(h.app.vault.text(file)).toBeUndefined();
+		expect(h.skills.get('tidy')).toBeUndefined();
+	});
+
+	it('rewind puts back a skill whose files the shell removed', async () => {
+		const skill = '---\nname: old\ndescription: Old one.\n---\nSteps.';
+		const h = harness(
+			{ main: [{ text: 'ok' }] },
+			{},
+			{},
+			{ '.agents/skills/old/SKILL.md': skill, '.agents/skills/old/references/r.md': 'ref' },
+		);
+		await h.skills.scan();
+		await h.controller.send('go');
+		const user = h.controller.events.find((e) => e.event.type === 'user')!;
+		// What rm -r does to each file: the gate's snapshot, the removal, the snapshot closed.
+		for (const [id, path] of [
+			['rm1', '.agents/skills/old/SKILL.md'],
+			['rm2', '.agents/skills/old/references/r.md'],
+		] as const) {
+			await h.controller.beforeMutation(id, path);
+			await h.app.vault.adapter.remove(path);
+			await h.controller.afterMutation(id, path);
+		}
+		await h.skills.scan();
+		expect(h.skills.get('old')).toBeUndefined();
+		await h.controller.reloadEvents();
+		const rewound = await h.controller.rewind(user.index);
+		expect(rewound!.reverted.sort()).toEqual([
+			'.agents/skills/old/SKILL.md',
+			'.agents/skills/old/references/r.md',
+		]);
+		expect(h.app.vault.text('.agents/skills/old/references/r.md')).toBe('ref');
+		expect(h.skills.get('old')!.description).toBe('Old one.');
 	});
 });
 

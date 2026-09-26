@@ -35,7 +35,7 @@ import {
 	skillsSection,
 } from './skills/skill-manager';
 import { SecretStore } from './storage/secret-store';
-import { isAgentsPath } from './tools/path-policy';
+import { isAgentsPath, isSkillsPath } from './tools/path-policy';
 import { createVaultTools, resultBudget, type ToolDeps } from './tools/registry';
 import { ToolRegistry } from './tools/tool-registry';
 import { DEFAULT_LISTED_TOOLS, type LibrarianSettings, mergeSettings } from './types';
@@ -215,6 +215,11 @@ export default class LibrarianPlugin extends Plugin {
 		const context = new ContextManager(this.app, () => this.settings.context);
 		// One set of places for every session's sub-agents: Max sub-agents counts the device.
 		const agentSlots = new Slots(() => this.settings.maxSubagents);
+		// Definitions and skills sit outside the vault index, so no vault event says one changed.
+		const rescanHidden = async (paths: readonly string[]) => {
+			if (paths.some(isAgentsPath)) await this.agentDefs.scan();
+			if (paths.some(isSkillsPath)) await this.skills.scan();
+		};
 
 		/**
 		 * One session's runtime (LIB-FEAT-274): its own shell, its own tools (what tool_search turns
@@ -227,8 +232,7 @@ export default class LibrarianPlugin extends Plugin {
 				before: (id: string, path: string) => controller.beforeMutation(id, path),
 				after: async (id: string, path: string) => {
 					await controller.afterMutation(id, path);
-					// Definitions sit outside the vault index, so no vault event says one changed.
-					if (isAgentsPath(path)) await this.agentDefs.scan();
+					await rescanHidden([path]);
 				},
 			};
 			const vaultDeps: ToolDeps = {
@@ -236,7 +240,7 @@ export default class LibrarianPlugin extends Plugin {
 				settings: () => this.settings,
 				hidden,
 				mutation,
-				describeAgent: (path) => this.agentDefs.describe(path),
+				describe: (path) => this.agentDefs.describe(path) ?? this.skills.describe(path),
 			};
 			const shell = new ShellSession({
 				app: this.app,
@@ -322,7 +326,7 @@ export default class LibrarianPlugin extends Plugin {
 					return skillsSection(listed, deferred);
 				},
 				agentDefinition: (name) => this.agentDefs.get(name),
-				agentDefinitionsChanged: () => this.agentDefs.scan(),
+				hiddenFilesChanged: rescanHidden,
 				registeredTools: () => registry.entries().map((e) => e.tool),
 				readsOnly: (name) =>
 					READ_ONLY_TOOL_NAMES.has(name) || this.mcp.readOnlyTools().has(name),

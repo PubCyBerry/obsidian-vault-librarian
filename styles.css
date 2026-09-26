@@ -1198,6 +1198,14 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	margin-left: auto;
 }
 
+/* A skill row's permission, edit and delete stay on one line; only past 60% of the row, as with
+   the listing choice shown on a narrow window, do they wrap (LIB-FEAT-282). An agent row, which
+   has only its permission, is never that wide. */
+.setting-item.librarian-skill .setting-item-control {
+	flex-shrink: 0;
+	max-width: 60%;
+}
+
 /* Obsidian fits a dropdown to the chosen value, so Set all read Mixed in one group and Ask first in
    the next at two widths. Sized for the longest choice, every one of them has the same width. */
 .setting-item.librarian-bulk-row select.dropdown {
@@ -1242,6 +1250,11 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	width: 100%;
 	min-height: 8lh;
 	resize: vertical;
+}
+
+/* A skill's description is a few lines, its instructions a page (LIB-FEAT-282). */
+.setting-item.librarian-prompt-setting.librarian-short-text textarea {
+	min-height: 3lh;
 }
 
 .librarian-setting-warning {
@@ -1456,6 +1469,11 @@ body.is-phone .modal .setting-group .setting-item.librarian-mcp-server .setting-
 body.is-phone .modal .setting-group .setting-item.librarian-bulk-row .setting-item-control {
 	flex: 1 1 100%;
 	justify-content: flex-start;
+}
+
+/* A skill row's controls have the line under the name to themselves (LIB-FEAT-282). */
+body.is-phone .modal .setting-group .setting-item.librarian-skill .setting-item-control {
+	max-width: none;
 }
 
 /* On that line the dropdown fills the width, as Obsidian's own dropdowns do on a phone. */
