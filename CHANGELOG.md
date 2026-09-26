@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.18.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.18.0...2.18.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* fade in every kind of streamed text, not only the answer and the thinking ([1153a92](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/1153a922e26de47d11f7071f5c425f5ff04d1536))
+* keep a session that is sent to again in the Active group of the session list ([58cc8f3](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/58cc8f33ddfda307041cf16d41e6a1ca2dcdabdb))
+
 ## [2.18.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.17.0...2.18.0) (2026-09-26)
 
 
