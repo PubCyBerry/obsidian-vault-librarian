@@ -67,6 +67,7 @@ Each tool can be **Always allow**, **Ask first** or **Blocked**, one at a time o
 - **WebDAV storage.** Connect a NAS or any WebDAV server. The agent lists, reads, writes, moves and deletes files there, and copies files between the storage and the vault byte for byte.
 - **Send while it works.** Messages you send during a run wait above the composer and go one at a time. **Send now** puts one in before the next tool call.
 - **Sessions.** Every conversation is an append-only JSONL file, so it syncs with the vault and survives sync conflicts as a separate copy. Reopen, rename and delete them from the history.
+- **Several sessions at once.** Start a new session or open another one while the agent works: the one at work keeps running. The head of the chat names the session it shows and counts the others that run or wait for you, a banner tells you when one of them asks for approval, and the history lists them on top with Stop. On desktop, open more chats as tabs; each keeps its session.
 - **Context you can see.** The ring next to the send button shows how full the context window is, as the server reported it for the last response; hover or tap it for the numbers and the cache hit rate. Before the window fills, the conversation is compacted into a handoff summary that keeps your recent messages word for word, and the session file keeps the full record.
 - **Images.** Paste a screenshot or attach a vault image when the model accepts images.
 - **Set up once for every device.** A sync passphrase seals API keys, the WebDAV password and client secrets into the plugin's data file, so each device enters only the passphrase. **Export** and **Import** move all settings as one JSON file.
@@ -106,8 +107,9 @@ OpenAI-compatible servers differ in the details. The provider and model editors 
 | Open chat | Opens the chat, in the right sidebar unless **Open chat in** says otherwise (full screen on phones) |
 | Open chat in right sidebar | Opens the chat in the right sidebar |
 | Open chat in main area | Opens the chat as a tab |
-| New session | Starts a new conversation |
-| Open session history | Lists past conversations |
+| Open chat in new tab | Opens one more chat as a tab, on a new session |
+| New session | Starts a new conversation; one at work keeps running |
+| Open session history | Lists conversations, the ones at work on top |
 | Compact context | Compacts the current conversation into a summary now |
 | Add active note to prompt | Attaches the note you are viewing to your next message |
 
