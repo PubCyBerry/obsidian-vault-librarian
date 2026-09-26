@@ -28,6 +28,15 @@ then `__streaming.start('note')` measures the note chip and the answer drawn as 
 `__streaming.start('agents')` measures the agent pane's spinner while a sub-agent streams. Results land in
 `window.__streaming.results`; put the plugin's settings file back afterwards.
 
+`sessions.js` and `tabs.js` run several sessions at once against `scripted-provider.mjs`, with the same
+Scripted provider and `ls` set to Ask first (put the settings file back afterwards, and delete the
+sessions they leave). `__sessions.start()` sends session A, moves the chat to a new session B while A
+waits for its approval, follows the banner back to A, lets A finish unseen and checks the session
+list's Active group, the head's badge, the Notice, a draft kept across the switch and Stop on an Active
+row (LIB-TEST-279). `__tabs.start()` opens a second chat in a new tab, shows one session and its
+approval card in both, restores a chat from its saved state, closes a chat while its session runs and
+closes the last one (LIB-TEST-280). Each leaves its checks in `window.__sessions` or `window.__tabs`.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:
