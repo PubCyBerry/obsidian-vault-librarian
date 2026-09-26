@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.17.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.16.1...2.17.0) (2026-09-26)
+
+
+### Features
+
+* open more chats in tabs, each keeping its session across restarts ([f556372](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f55637258a8aa58788dfc2aa554e009b229f78ec))
+* run each session on its own, so opening another never stops one at work ([f556372](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f55637258a8aa58788dfc2aa554e009b229f78ec))
+* say when a session out of sight waits for approval, finishes or fails ([f556372](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f55637258a8aa58788dfc2aa554e009b229f78ec))
+* show the session in a head line, badge the others and list them in an Active group ([f556372](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f55637258a8aa58788dfc2aa554e009b229f78ec))
+
 ## [2.16.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.16.0...2.16.1) (2026-09-25)
 
 
