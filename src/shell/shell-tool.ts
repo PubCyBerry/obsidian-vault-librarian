@@ -139,7 +139,10 @@ export class ShellSession {
 			await this.closeSnapshots();
 		}
 		if (signal?.aborted) throw new Error(STOPPED);
-		const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+		const said = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+		// rm -f and `|| true` swallow a refused change; say it, so it is not taken for done.
+		const unsaid = this.filesystem().refusals.filter((r) => !said.includes(r));
+		const output = said + unsaid.map((r) => `bash: not changed: ${r}\n`).join('');
 		const head = result.exitCode === 0 ? '' : `Exit code: ${result.exitCode}\n`;
 		return head + (await this.fit(bash, output));
 	}

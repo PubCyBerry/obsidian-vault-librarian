@@ -78,6 +78,11 @@ export class VaultFs implements IFileSystem {
 	private readonly dirs = new Set<string>(['/', '/tmp', VAULT_ROOT]);
 	/** Vault paths already approved during the command now running. */
 	private approved = new Set<string>();
+	/**
+	 * Why changes the command now running asked for did not happen. A command may swallow the
+	 * error, as `rm -f` does, and the model must still learn that nothing changed.
+	 */
+	refusals: string[] = [];
 
 	constructor(
 		private readonly app: App,
@@ -91,6 +96,12 @@ export class VaultFs implements IFileSystem {
 	 */
 	beginCommand(): void {
 		this.approved = new Set();
+		this.refusals = [];
+	}
+
+	private refuse(message: string): Error {
+		this.refusals.push(message);
+		return new Error(message);
 	}
 
 	/** The vault-relative path, or null when the path is outside the vault. */
@@ -110,12 +121,16 @@ export class VaultFs implements IFileSystem {
 			await write();
 			return;
 		}
-		if (isReadOnlyPath(rel, this.app.vault.configDir)) throw new Error(READ_ONLY(rel));
+		if (isReadOnlyPath(rel, this.app.vault.configDir)) throw this.refuse(READ_ONLY(rel));
 		if (this.approved.has(rel)) {
 			await write();
 			return;
 		}
-		await this.gate(rel, content);
+		try {
+			await this.gate(rel, content);
+		} catch (error) {
+			throw this.refuse(error instanceof Error ? error.message : String(error));
+		}
 		this.approved.add(rel);
 		await write();
 	}
@@ -240,15 +255,60 @@ export class VaultFs implements IFileSystem {
 		});
 	}
 
-	async rm(path: string): Promise<void> {
+	async rm(path: string, options?: { recursive?: boolean }): Promise<void> {
+		const full = normalizeShellPath(path);
+		const rel = this.rel(full);
+		if (rel === '' || full === '/') throw this.refuse(`refusing to remove '${full}'`);
+		const folder =
+			rel === null
+				? this.dirs.has(full)
+				: (await this.app.vault.adapter.stat(rel))?.type === 'folder';
+		if (folder) {
+			await this.rmFolder(full, rel, options?.recursive === true);
+			return;
+		}
 		await this.change(path, null, async () => {
-			const rel = this.rel(path);
-			if (rel === null) {
-				const full = normalizeShellPath(path);
-				this.mem.delete(full);
-				this.dirs.delete(full);
-			} else await this.app.vault.adapter.remove(rel);
+			if (rel === null) this.mem.delete(full);
+			else await this.app.vault.adapter.remove(rel);
 		});
+	}
+
+	/**
+	 * `rm -r` and `rmdir`. The adapter cannot remove a folder the way it removes a file, so each file
+	 * goes first, asking and keeping its rewind snapshot as a removed note does; the emptied
+	 * folders follow without a question of their own.
+	 */
+	private async rmFolder(full: string, rel: string | null, recursive: boolean): Promise<void> {
+		const files = await this.filesIn(full);
+		if (files.length && !recursive)
+			throw new Error(`ENOTEMPTY: directory not empty, '${full}'`);
+		// A read-only folder, or a read-only file inside, stops the removal before anything goes.
+		const { configDir } = this.app.vault;
+		const locked = [rel, ...files.map((f) => this.rel(f))].find(
+			(r) => r && isReadOnlyPath(r, configDir),
+		);
+		if (locked) throw this.refuse(READ_ONLY(locked));
+		for (const file of files) await this.rm(file);
+		if (rel === null) {
+			for (const dir of [...this.dirs])
+				if (dir === full || dir.startsWith(`${full}/`)) this.dirs.delete(dir);
+			return;
+		}
+		await this.app.vault.adapter.rmdir(rel, recursive);
+	}
+
+	/** Every file under a folder, as shell paths. */
+	private async filesIn(full: string): Promise<string[]> {
+		const rel = this.rel(full);
+		if (rel === null) return [...this.mem.keys()].filter((key) => key.startsWith(`${full}/`));
+		const out: string[] = [];
+		const pending = [rel];
+		while (pending.length) {
+			const listed = await this.app.vault.adapter.list(pending.pop()!);
+			out.push(...listed.files.map((f) => `${VAULT_ROOT}/${f}`));
+			pending.push(...listed.folders);
+		}
+		return out;
 	}
 
 	async cp(src: string, dest: string): Promise<void> {

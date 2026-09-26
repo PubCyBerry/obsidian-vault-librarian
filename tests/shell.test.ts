@@ -378,6 +378,48 @@ describe('the bash tool result (LIB-TEST-267)', () => {
 		}
 	});
 
+	it('LIB-TEST-284: rm -r takes a folder file by file, each asked and snapshotted', async () => {
+		const { run, app, asked, snapshots } = shell();
+		app.vault.seed('.agents/skills/tidy/SKILL.md', 'skill');
+		app.vault.seed('.agents/skills/tidy/references/style.md', 'style');
+		expect(await run('rm -r .agents/skills/tidy')).toBe('');
+		expect(asked.map((a) => a.args)).toEqual([
+			{ path: '.agents/skills/tidy/SKILL.md', removed: true },
+			{ path: '.agents/skills/tidy/references/style.md', removed: true },
+		]);
+		expect(snapshots.sort()).toEqual([
+			'.agents/skills/tidy/SKILL.md',
+			'.agents/skills/tidy/references/style.md',
+		]);
+		expect(await app.vault.adapter.exists('.agents/skills/tidy')).toBe(false);
+		expect(await app.vault.adapter.exists('.agents/skills')).toBe(true);
+		// A folder of notes goes the same way; an empty one with rmdir.
+		expect(await run('rm -r notes && mkdir empty && rmdir empty')).toBe('');
+		expect(app.vault.text('notes/a.md')).toBeUndefined();
+		expect(await app.vault.adapter.exists('empty')).toBe(false);
+	});
+
+	it('LIB-TEST-284: rm -r stops before anything goes when a file inside is read-only or refused', async () => {
+		const refusing = shell({
+			refuse: (a) => (a.args.path === 'notes/b.md' ? 'rejected' : null),
+		});
+		refusing.app.vault.seed('notes/.hidden/x.md', 'x');
+		expect(await refusing.run('rm -r notes')).toMatch(/read-only: notes\/\.hidden\/x\.md/i);
+		expect(refusing.app.vault.text('notes/a.md')).toBe('alpha\nbeta');
+		expect(refusing.asked).toEqual([]);
+		// A refused approval leaves that note; -f swallows the error, so the result says it.
+		expect(await refusing.run('rm -f notes/b.md')).toBe('bash: not changed: rejected\n');
+		expect(refusing.app.vault.text('notes/b.md')).toBe('gamma');
+		expect(await refusing.run('rm notes/b.md')).toBe(
+			"Exit code: 1\nrm: cannot remove 'notes/b.md': rejected\n",
+		);
+		for (const target of ['/vault', '.', '/'])
+			expect(await refusing.run(`rm -rf ${target}`)).toMatch(
+				/not changed: refusing to remove/,
+			);
+		expect(refusing.app.vault.text('notes/b.md')).toBe('gamma');
+	});
+
 	it('runs the commands of agents working side by side one after another', async () => {
 		const { run } = shell();
 		const order: string[] = [];
