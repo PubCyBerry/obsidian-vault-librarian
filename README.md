@@ -62,7 +62,7 @@ Each tool can be **Always allow**, **Ask first** or **Blocked**, one at a time o
 
 ### And more
 
-- **Skills.** Each `.agents/skills/<name>/SKILL.md` ([Agent Skills](https://agentskills.io) format), at the vault root or in any folder, is a skill. The model finds one with `skill_search` when a task calls for it, or you run it with `/skill <name>`.
+- **Skills.** Each `.agents/skills/<name>/SKILL.md` ([Agent Skills](https://agentskills.io) format), at the vault root or in any folder, is a skill. The model finds one with `skill_search` when a task calls for it, or you run it with `/skill <name>`. Add, edit and delete skills on the **Skills** settings page, or ask the agent to write one; every change the agent makes to a skill asks you first.
 - **MCP servers.** Add remote MCP servers and sign in with OAuth or an API key. Tools that only read run on their own; every other tool asks first, and results are marked untrusted.
 - **WebDAV storage.** Connect a NAS or any WebDAV server. The agent lists, reads, writes, moves and deletes files there, and copies files between the storage and the vault byte for byte.
 - **Send while it works.** Messages you send during a run wait above the composer and go one at a time. **Send now** puts one in before the next tool call.
