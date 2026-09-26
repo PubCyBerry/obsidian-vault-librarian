@@ -37,6 +37,14 @@ row (LIB-TEST-279). `__tabs.start()` opens a second chat in a new tab, shows one
 approval card in both, restores a chat from its saved state, closes a chat while its session runs and
 closes the last one (LIB-TEST-280). Each leaves its checks in `window.__sessions` or `window.__tabs`.
 
+`skills.js` makes, changes and deletes skills (LIB-TEST-285). `__skillCrud.start('settings')` works the Skills
+settings page in Obsidian 1.13's settings window: a name the rules refuse and a taken one, Add skill, Edit that
+keeps the frontmatter lines the editor does not show, a file changed while the editor is open, and Delete.
+`__skillCrud.start('agent')` needs `scripted-provider.mjs`: the agent writes and edits a skill and removes it with
+`rm -rf`, every card asking without Always allow, and a rewind brings it back. `__skillCrud.start('model')` asks
+the model in the settings, in plain Korean, to make, change and delete a skill. Results land in
+`window.__skillCrud.results`; put the settings file back afterwards and delete the sessions they leave.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:

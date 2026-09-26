@@ -4,9 +4,11 @@
 //
 //   node tests/e2e/scripted-provider.mjs [port]
 //
-// A request whose last message contains "agents" starts one explore sub-agent; any other request
-// writes a note, lists the vault root, then answers in Markdown with a heading, a list, code and a
-// table. The sub-agent thinks, writes a note, lists Projects, then answers in a list.
+// A request whose last message contains "agents" starts one explore sub-agent; "make a skill"
+// writes the tidy-notes skill and then edits its description; "delete the skill" removes its folder
+// with bash (LIB-TEST-285). Any other request writes a note, lists the vault root, then answers in
+// Markdown with a heading, a list, code and a table. The sub-agent thinks, writes a note, lists
+// Projects, then answers in a list.
 import http from 'node:http';
 
 const port = Number(process.argv[2] ?? 18765);
@@ -40,6 +42,18 @@ const AGENT_ANSWER = `The projects under \`Projects\` are:
 
 Each has a hub note named after its folder.`;
 
+const SKILL = '.agents/skills/tidy-notes/SKILL.md';
+const SKILL_TEXT = `---
+name: tidy-notes
+description: Tidies notes.
+---
+
+# Tidy a note
+
+1. Make the headings sentence case.
+2. Turn runs of short lines into a list.
+`;
+
 /** A message's text, whether it came as a string or as parts. */
 const textOf = (content) =>
 	Array.isArray(content)
@@ -64,6 +78,37 @@ function script(messages) {
 					calls: [{ name: 'ls', args: { path: 'Projects' } }],
 				}
 			: { text: AGENT_ANSWER, slow: 60 };
+	if (asked.includes('make a skill'))
+		return [
+			{
+				text: 'Writing the skill.',
+				calls: [{ name: 'write', args: { path: SKILL, content: SKILL_TEXT } }],
+			},
+			{
+				text: 'Now a description the model can pick it by.',
+				calls: [
+					{
+						name: 'edit',
+						args: {
+							path: SKILL,
+							old_text: 'description: Tidies notes.',
+							new_text:
+								'description: Tidies a note, its headings and lists. Use when asked to tidy or clean up a note.',
+						},
+					},
+				],
+			},
+			{ text: 'The tidy-notes skill is ready.' },
+		][Math.min(results, 2)];
+	if (asked.includes('delete the skill'))
+		return results === 0
+			? {
+					text: 'Removing its folder.',
+					calls: [
+						{ name: 'bash', args: { command: 'rm -rf .agents/skills/tidy-notes' } },
+					],
+				}
+			: { text: 'The tidy-notes skill is gone.' };
 	if (asked.includes('agents'))
 		return results === 0
 			? {
