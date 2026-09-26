@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.19.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.18.1...2.19.0) (2026-09-26)
+
+
+### Features
+
+* share one MCP sign-in across devices, so a sign-in on a computer reaches the phones ([4568ebb](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/4568ebbcd89a98c76d8fc4690c5b022a1222e71f))
+
+
+### Bug Fixes
+
+* keep a desktop sign-in started again while the one before it still finishes ([f38c579](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f38c5795184a3602934f1ec419a7f39999529a7d))
+* say on the Device sync page that MCP sign-ins reach the other devices through the sync ([cf3a186](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/cf3a186a254d65c7f69635c1c0d017a8b62d2a2b))
+
 ## [2.18.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.18.0...2.18.1) (2026-09-26)
 
 
