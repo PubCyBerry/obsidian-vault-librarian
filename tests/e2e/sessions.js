@@ -4,8 +4,9 @@
 //   __sessions.start()   session A asks for a folder listing (ls set to Ask first), the chat moves
 //                        to a new session B while A waits for its approval, B answers, the banner
 //                        opens A, A is approved and finishes unseen while B shows, the session list
-//                        marks it, a draft survives the switch, and Stop on an Active row stops
-//                        only that session
+//                        marks it, a draft survives the switch, Stop on an Active row stops only
+//                        that session, and that stopped session, opened from Recent and sent to
+//                        again, is in Active as the session the chat shows
 //
 // Set window.__e2eOut to a folder for the screenshots. It adds a provider named Scripted (base URL
 // http://127.0.0.1:18765/v1) and sets ls to Ask first; put the settings file back afterwards.
@@ -279,6 +280,47 @@
 			'a stopped session is not marked',
 			!hub.entries().some((e) => e.sessionId === again.session.id),
 		);
+		$('.librarian-session-switch', chat()).click();
+
+		// The stopped A sits in Recent. Opened from there and sent to again, it is at work: in
+		// Active, marked as the session this chat shows, and no longer in Recent.
+		$('.librarian-session-switch', chat()).click();
+		const recentA = await until(
+			() =>
+				$$('.librarian-session-row:not(.is-active) .librarian-session-main', chat()).find(
+					(el) => el.textContent.includes(A),
+				),
+			'A in Recent',
+		);
+		recentA.click();
+		await until(() => view().runtime.session?.id === a.session.id, 'A shown again');
+		await sleep(300);
+		await ask('And once more.');
+		await until(() => view().runtime.pendingApproval, 'A to ask once more', 30000);
+		const resumed = view().runtime;
+		$('.librarian-session-switch', chat()).click();
+		await until(
+			() => !$('.librarian-sessions', chat()).classList.contains('is-hidden'),
+			'the list',
+		);
+		await sleep(400);
+		const activeRows = $$('.librarian-sessions-active .librarian-session-row', chat());
+		check(
+			'the session sent to again is in Active, marked current',
+			activeRows.some(
+				(row) => row.textContent.includes(A) && row.classList.contains('is-current'),
+			),
+			activeRows.map((row) => `${row.className}: ${row.textContent}`),
+		);
+		check(
+			'and not in Recent',
+			!$$('.librarian-session-row:not(.is-active)', chat()).some((row) =>
+				row.textContent.includes(A),
+			),
+		);
+		await shot('active-current', chat());
+		resumed.stop();
+		await until(() => !resumed.isRunning, 'A to stop again', 20000);
 		$('.librarian-session-switch', chat()).click();
 		seen.disconnect();
 		results.sessions = [a.session.id, b.session.id];

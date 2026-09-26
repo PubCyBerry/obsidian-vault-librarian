@@ -141,16 +141,19 @@ export interface SessionListOptions {
 /**
  * The sessions that need a look: a mark of their state, the title, what they do or how they
  * ended, and Stop while they run. A row opens its session without stopping any (LIB-FEAT-275).
+ * `current`, the session the chat shows, is drawn in the accent color as in Recent.
  */
 export function renderActiveRows(
 	el: HTMLElement,
 	entries: readonly SessionEntry[],
 	open: (id: string) => void | Promise<void>,
 	stop?: (entry: SessionEntry) => void,
+	current: string | null = null,
 ): void {
 	el.empty();
 	for (const entry of entries) {
 		const row = el.createDiv({ cls: `librarian-session-row is-active is-${entry.activity}` });
+		if (entry.sessionId === current) row.addClass('is-current');
 		const mark = row.createSpan({ cls: `librarian-session-mark is-${entry.activity}` });
 		if (entry.activity === 'running') renderSpinner(mark);
 		else if (entry.activity === 'asking') setIcon(mark, 'hand');
@@ -204,6 +207,7 @@ export async function renderSessionList(
 			active,
 			open,
 			opts.stop,
+			opts.current ?? null,
 		);
 		el.createDiv({ cls: 'librarian-sessions-group', text: 'Recent' });
 	}

@@ -8,7 +8,7 @@ import {
 	type WorkspaceLeaf,
 } from 'obsidian';
 import type { AgentController, ApprovalRequest, ControllerEvent } from '../agent/agent-controller';
-import type { ComposerDraft, SessionEntry, SessionViewer } from '../agent/session-hub';
+import type { ComposerDraft, SessionViewer } from '../agent/session-hub';
 import { SPAWN_AGENT_NAME, type SubagentState } from '../agent/subagent';
 import type LibrarianPlugin from '../main';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
@@ -874,14 +874,12 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		if (this.historyMode) await this.renderSessions();
 	}
 
-	/** Sessions that run, ask or ended unseen, bar the one this chat shows. */
-	private activeEntries(): SessionEntry[] {
-		const shown = this.runtime.session?.id;
-		return this.plugin.hub.entries().filter((e) => e.sessionId !== shown);
-	}
-
+	/**
+	 * The list with every session that runs, asks or ended unseen in its Active group, the one
+	 * this chat shows among them while it runs or asks: at work, it is not Recent (LIB-FEAT-275).
+	 */
 	private async renderSessions() {
-		const active = this.activeEntries();
+		const active = this.plugin.hub.entries();
 		this.activeKey = active.map((e) => e.sessionId).join('\n');
 		await renderSessionList(this.sessionsEl, this.plugin, (id) => this.openSession(id), {
 			current: this.runtime.session?.id ?? null,
@@ -890,9 +888,9 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		});
 	}
 
-	/** The Active rows again; when another session joined or left them, the whole list. */
+	/** The Active rows again; when a session joined or left them, the whole list. */
 	private renderActive() {
-		const active = this.activeEntries();
+		const active = this.plugin.hub.entries();
 		const key = active.map((e) => e.sessionId).join('\n');
 		const box = this.sessionsEl.querySelector<HTMLElement>('.librarian-sessions-active');
 		if (key !== this.activeKey) {
@@ -905,6 +903,7 @@ export class LibrarianView extends ItemView implements SessionViewer {
 				active,
 				(id) => this.openSession(id),
 				(entry) => entry.runtime?.stop(),
+				this.runtime.session?.id ?? null,
 			);
 	}
 
