@@ -24,9 +24,11 @@ and `skill_search` on its own, and leaves the calls of each in `window.__batch`.
 `scripted-provider.mjs` is an OpenAI-compatible server that streams scripted responses slowly, so the chat's
 streaming can be watched without a model or a key: `node tests/e2e/scripted-provider.mjs` listens on
 `http://127.0.0.1:18765/v1`. `streaming.js` adds it as the `Scripted` provider (the OpenAI key slot, left empty),
-then `__streaming.start('note')` measures the note chip and the answer drawn as Markdown while they stream, and
-`__streaming.start('agents')` measures the agent pane's spinner while a sub-agent streams. Results land in
-`window.__streaming.results`; put the plugin's settings file back afterwards.
+then `__streaming.start('note')` measures the note chip and the answer drawn as Markdown while they stream,
+`__streaming.start('agents')` measures the agent pane's spinner while a sub-agent streams, and
+`__streaming.start('command')` opens the popovers of an `ls` call and a `bash` call while their
+arguments stream and checks that only what arrived fades in, through the result (LIB-TEST-288).
+Results land in `window.__streaming.results`; put the plugin's settings file back afterwards.
 
 `sessions.js` and `tabs.js` run several sessions at once against `scripted-provider.mjs`, with the same
 Scripted provider and `ls` set to Ask first (put the settings file back afterwards, and delete the

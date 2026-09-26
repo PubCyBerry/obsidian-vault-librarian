@@ -5,7 +5,13 @@
 //                                 first word, grows, is kept when it is saved, and the answer is
 //                                 Markdown while it streams
 //   __streaming.start('agents')   an explore sub-agent: its pane's spinner keeps turning and the
-//                                 pane is not drawn anew while the agent's answer streams
+//                                 pane is not drawn anew while the agent's answer streams, and
+//                                 its row's line fades in what it says next
+//   __streaming.start('command')  a bash call and an ls call whose arguments stream (LIB-TEST-288):
+//                                 the bash popover opened while its command arrives fades in only
+//                                 what arrived, as does its summary and the run's activity; the ls
+//                                 chip comes in as a new step does; the chip keeps its open mark
+//                                 through its status changes; the result fades in when it comes
 //
 // Set window.__e2eOut to a folder for the screenshots. The first step adds a provider named
 // Scripted (base URL http://127.0.0.1:18765/v1, the OpenAI key slot) and picks it; put the
@@ -119,6 +125,8 @@
 		async note() {
 			await setup();
 			const c = plugin().controller;
+			// The vault may ask before a call reads it.
+			const approve = setInterval(() => c.pendingApproval?.resolve('approve'), 200);
 			const samples = [];
 			let lastChip = null;
 			let chipIds = 0;
@@ -163,6 +171,7 @@
 			await until(() => !c.isRunning && c.state === 'idle', 'the run to end', 60000);
 			await sleep(800);
 			clearInterval(watch);
+			clearInterval(approve);
 			await shot('answer-done', $('.librarian-messages', chat()));
 			// Where the chip's text went down between two samples while the chip stayed.
 			const drops = samples.filter(
@@ -238,6 +247,8 @@
 					status: c.agents.get(row.dataset.agentCallId)?.status,
 					streaming: !!c.agents.get(row.dataset.agentCallId)?.stream,
 					chip: $$('.librarian-message', body).at(-1)?.textContent.length ?? 0,
+					// The row on the chat's timeline, under the pane, as its line changes.
+					rowFading: $$('.librarian-agent-row-activity .librarian-reveal', chat()).length,
 				});
 				if (samples.length === 40) await shot('agent-pane-streaming', chat());
 				if (c.agents.get(row.dataset.agentCallId)?.status === 'done') break;
@@ -274,12 +285,113 @@
 				// A restart shows as a step far off the clock.
 				offClock: steps.filter((s) => s.off > 40).slice(0, 10),
 				sameWhileStreaming: streaming.every((s) => s.same),
+				rowFaded: samples.some((s) => s.rowFading > 0),
 				steps: steps.slice(0, 40),
 			};
 			$('.librarian-agent-back', chat()).click();
 			await until(() => !c.isRunning && c.state === 'idle', 'the run to end', 60000);
 			clearInterval(approve);
 			results.agents.answer = $$('.librarian-msg-assistant', chat()).at(-1)?.textContent;
+		},
+
+		/**
+		 * An ls call and then a bash call whose arguments stream: the ls popover is open while its
+		 * path arrives, then the bash one while its command does, until the run ends.
+		 */
+		async command() {
+			await setup();
+			const c = plugin().controller;
+			const approve = setInterval(() => c.pendingApproval?.resolve('approve'), 200);
+			const named = (name) =>
+				$$('.librarian-step.is-tools .librarian-chip', chat()).find(
+					(el) => $('.librarian-chip-name', el)?.textContent === name,
+				);
+			await ask('Please run a command to list the project notes.');
+			(await until(() => named('ls'), 'the ls chip', 30000)).click();
+			const samples = [];
+			const pops = [];
+			let joined = null;
+			const t0 = performance.now();
+			while (performance.now() - t0 < 30000) {
+				const bashChip = named('bash');
+				if (bashChip && joined === null) {
+					joined = bashChip.classList.contains('librarian-step-new');
+					bashChip.click();
+				}
+				const pop = $('.librarian-step-pop');
+				if (pop && !pops.includes(pop)) pops.push(pop);
+				const body = pop && $('.librarian-step-pop-body', pop);
+				const fading = body ? $$('.librarian-reveal', body) : [];
+				// The open chip: after the log is drawn again it is another element.
+				const open = $('.librarian-chip.is-open', chat());
+				samples.push({
+					t: Math.round(performance.now() - t0),
+					pop: pops.indexOf(pop),
+					title: pop
+						? $('.librarian-step-pop-title', pop)?.firstElementChild?.textContent
+						: null,
+					live: pop
+						? !$(
+								'.librarian-step-pop-title .librarian-spinner',
+								pop,
+							)?.classList.contains('is-hidden')
+						: false,
+					text: body?.textContent.length ?? 0,
+					fading: fading.length,
+					fadingText: fading.reduce((n, el) => n + el.textContent.length, 0),
+					subtitle: pop ? $('.librarian-step-pop-subtitle', pop)?.textContent : null,
+					subtitleFading: pop
+						? $$('.librarian-step-pop-subtitle .librarian-reveal', pop).length
+						: 0,
+					activityFading: $$('.librarian-work-activity .librarian-reveal', chat()).length,
+					open: !!open,
+					status: open
+						? ([...open.classList].find(
+								(x) => x.startsWith('is-') && x !== 'is-open',
+							) ?? null)
+						: null,
+					resultFading: fading.some((el) => /Result/.test(el.textContent)),
+				});
+				if (samples.length === 12) await shot('command-ls-streaming', chat());
+				if (bashChip && samples.filter((s) => s.title === 'bash').length === 6)
+					await shot('command-bash-streaming', chat());
+				if (!c.isRunning && c.state === 'idle') break;
+				await sleep(40);
+			}
+			clearInterval(approve);
+			await shot('command-done', chat());
+			const ls = samples.filter((s) => s.title === 'ls');
+			const bash = samples.filter((s) => s.title === 'bash');
+			const bashLive = bash.filter((s) => s.live);
+			const lengths = [...new Set(bashLive.map((s) => s.text))];
+			const statuses = [...new Set(bash.map((s) => s.status).filter(Boolean))];
+			results.command = {
+				samples: samples.length,
+				lsSubtitles: [...new Set(ls.map((s) => s.subtitle))],
+				lengths,
+				statuses,
+				joined,
+				popovers: pops.length,
+				checks: {
+					'the ls summary fades in as its path arrives': ls.some(
+						(s) => s.subtitleFading > 0,
+					),
+					'the bash chip comes in as a new step does': joined === true,
+					'the command grows in the open popover': lengths.length >= 3,
+					'only what arrived fades in, not the whole command': bashLive.some(
+						(s) => s.fading > 0 && s.fadingText < s.text * 0.6,
+					),
+					"the run's activity fades in when it changes": samples.some(
+						(s) => s.activityFading > 0,
+					),
+					'the chip keeps its open mark through its status changes':
+						statuses.length >= 2 && samples.every((s) => s.pop < 0 || s.open),
+					'the popover is not made again when the log is drawn again':
+						new Set(bash.map((s) => s.pop)).size === 1,
+					'the result fades in when it comes': bash.some((s) => s.resultFading),
+				},
+				timeline: samples.filter((_, i) => i % 4 === 0).slice(0, 60),
+			};
 		},
 	};
 

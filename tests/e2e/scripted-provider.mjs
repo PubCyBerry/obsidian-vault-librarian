@@ -6,9 +6,10 @@
 //
 // A request whose last message contains "agents" starts one explore sub-agent; "make a skill"
 // writes the tidy-notes skill and then edits its description; "delete the skill" removes its folder
-// with bash (LIB-TEST-285). Any other request writes a note, lists the vault root, then answers in
-// Markdown with a heading, a list, code and a table. The sub-agent thinks, writes a note, lists
-// Projects, then answers in a list.
+// with bash (LIB-TEST-285); "run a command" streams the arguments of an ls call and then of a bash
+// call a few characters at a time (LIB-TEST-288). Any other request writes a note, lists the vault
+// root, then answers in Markdown with a heading, a list, code and a table. The sub-agent thinks,
+// writes a note, lists Projects, then answers in a list.
 import http from 'node:http';
 
 const port = Number(process.argv[2] ?? 18765);
@@ -109,6 +110,20 @@ function script(messages) {
 					],
 				}
 			: { text: 'The tidy-notes skill is gone.' };
+	if (asked.includes('run a command'))
+		return results === 0
+			? {
+					text: 'Listing the project notes.',
+					slowArgs: 50,
+					calls: [
+						{ name: 'ls', args: { path: 'Projects' }, slow: 150 },
+						{
+							name: 'bash',
+							args: { command: 'find Projects -name "*.md" | sort | head -20' },
+						},
+					],
+				}
+			: { text: 'Each project keeps its notes in its own folder.' };
 	if (asked.includes('agents'))
 		return results === 0
 			? {
@@ -157,18 +172,25 @@ async function stream(res, body) {
 		chunk({ content: plan.text.slice(i, i + 4) });
 		await sleep(plan.slow ?? 45);
 	}
-	(plan.calls ?? []).forEach((call, index) => {
+	for (const [index, call] of (plan.calls ?? []).entries()) {
+		const args = JSON.stringify(call.args);
+		const id = `call_${Date.now()}_${index}`;
+		// With slowArgs, the arguments come a few characters at a time, as a model writes them.
 		chunk({
 			tool_calls: [
 				{
 					index,
-					id: `call_${Date.now()}_${index}`,
+					id,
 					type: 'function',
-					function: { name: call.name, arguments: JSON.stringify(call.args) },
+					function: { name: call.name, arguments: plan.slowArgs ? '' : args },
 				},
 			],
 		});
-	});
+		for (let i = 0; plan.slowArgs && i < args.length; i += 5) {
+			await sleep(call.slow ?? plan.slowArgs);
+			chunk({ tool_calls: [{ index, function: { arguments: args.slice(i, i + 5) } }] });
+		}
+	}
 	chunk({}, plan.calls ? 'tool_calls' : 'stop');
 	res.write(
 		`data: ${JSON.stringify({ id: 'scripted', object: 'chat.completion.chunk', created: 0, model: 'scripted', choices: [], usage: { prompt_tokens: 1200, completion_tokens: 300, total_tokens: 1500 } })}\n\n`,
