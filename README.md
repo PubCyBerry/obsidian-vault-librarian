@@ -70,7 +70,7 @@ Each tool can be **Always allow**, **Ask first** or **Blocked**, one at a time o
 - **Several sessions at once.** Start a new session or open another one while the agent works: the one at work keeps running. The head of the chat names the session it shows and counts the others that run or wait for you, a banner tells you when one of them asks for approval, and the history lists them on top with Stop. On desktop, open more chats as tabs; each keeps its session.
 - **Context you can see.** The ring next to the send button shows how full the context window is, as the server reported it for the last response; hover or tap it for the numbers and the cache hit rate. Before the window fills, the conversation is compacted into a handoff summary that keeps your recent messages word for word, and the session file keeps the full record.
 - **Images.** Paste a screenshot or attach a vault image when the model accepts images.
-- **Set up once for every device.** A sync passphrase seals API keys, the WebDAV password and client secrets into the plugin's data file, so each device enters only the passphrase. **Export** and **Import** move all settings as one JSON file.
+- **Set up once for every device.** A sync passphrase seals API keys, the WebDAV password and client secrets into the plugin's data file, so each device enters only the passphrase. Sign in to an MCP server on a computer, and your phone connects with that sign-in once the sync brings it, even where the server lets no phone sign in. **Export** and **Import** move all settings as one JSON file.
 - **A short tool list.** The model sees `ls`, `find`, `grep`, `read`, `write`, `edit` and `bash` upfront. Other tools, such as the active note, WebDAV and MCP tools, load through `tool_search` when a task needs them, so their schemas stay out of every request.
 
 The screens above come from a demo vault ([`docs/demo`](docs/demo)) with GPT-6 Luna; the phone is Obsidian's mobile layout.
@@ -90,7 +90,7 @@ The screens above come from a demo vault ([`docs/demo`](docs/demo)) with GPT-6 L
 
    <img src="docs/media/window.png" width="900" alt="Obsidian with a project note open and the chat in the right sidebar, showing an answer with citations">
 
-API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key, and nothing is sent until it is set. With a sync passphrase under **Device sync**, keys also enter `data.json`, but only sealed (PBKDF2-SHA256 with 600,000 iterations and AES-256-GCM, the same format Google Calendar Tasks Sync uses), so a device without the passphrase cannot read them. Keys never enter the session files.
+API keys are stored with Obsidian's `SecretStorage`, which is per device. On a new device the chat shows a banner asking for the key, and nothing is sent until it is set. With a sync passphrase under **Device sync**, keys also enter `data.json`, but only sealed (PBKDF2-SHA256 with 600,000 iterations and AES-256-GCM, the same format Google Calendar Tasks Sync uses), so a device without the passphrase cannot read them. MCP sign-ins travel sealed the same way, each device writing its own file under `signins` in the plugin folder, and a device that has a working sign-in keeps its own. Keys never enter the session files.
 
 ### Streaming and CORS
 
