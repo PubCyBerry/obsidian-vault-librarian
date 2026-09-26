@@ -13,7 +13,7 @@ import {
 } from './cards';
 import { ATTACHED_BLOCK } from './mentions';
 import { linkSources, openSource } from './sources';
-import { StreamingMarkdown } from './stream-text';
+import { appendStreamDelta, StreamingMarkdown } from './stream-text';
 import {
 	formatDuration,
 	groupRuns,
@@ -130,7 +130,9 @@ export class ConversationPane {
 	/** Auto-scroll follows new content only while the user is reading at the bottom. */
 	followBottom = true;
 	/** What the agent is doing, in the running run's header. */
-	activityEl: HTMLElement | null = null;
+	private activityEl: HTMLElement | null = null;
+	/** Its words as last set, for the header a redraw makes anew. */
+	private activity = '';
 	/** Each drawn step's popover, by key, to open it again after a redraw. */
 	private popFills = new Map<string, { anchor: HTMLElement; content: () => PopoverContent }>();
 	/** The last saved response as last drawn, to tell when the streaming one has been saved. */
@@ -157,6 +159,21 @@ export class ConversationPane {
 	reset(): void {
 		this.folds = newFolds();
 		this.lastAssistant = -1;
+		this.activity = '';
+	}
+
+	/**
+	 * What the agent is doing now, in the running run's header. A header drawn anew shows it at
+	 * once; words that change after fade in, as streamed text does (LIB-FEAT-099).
+	 */
+	setActivity(text: string): void {
+		this.activity = text;
+		const el = this.activityEl;
+		if (!el || el.textContent === text) return;
+		// A narrow pane cuts it short; the whole text shows on hover.
+		el.setAttr('aria-label', text);
+		if (el.textContent) appendStreamDelta(el, el.textContent, text);
+		else el.setText(text);
 	}
 
 	/** A run was drawn as still at work, so it has to be drawn again once it ends. */
@@ -256,7 +273,11 @@ export class ConversationPane {
 		const chevron = header.createSpan({ cls: 'librarian-work-chevron' });
 		setIcon(chevron, 'chevron-right');
 		if (running && this.opts.activity)
-			this.activityEl = header.createSpan({ cls: 'librarian-work-activity' });
+			this.activityEl = header.createSpan({
+				cls: 'librarian-work-activity',
+				text: this.activity,
+				attr: { 'aria-label': this.activity },
+			});
 		const body = block.createDiv({ cls: 'librarian-work-body' });
 		const timeline = body.createDiv({ cls: 'librarian-timeline' });
 		for (const step of view.steps) this.renderStep(timeline, step, results, running, status);
@@ -579,6 +600,8 @@ export class ConversationPane {
 		live.text?.markdown.set(text);
 		const calls = message.content.filter((c) => c.type === 'toolCall');
 		live.calls = calls.map((c) => ({ id: c.id, name: c.name, args: c.arguments }));
+		// A call that joins a row already on the timeline comes in the way the row did.
+		const joining = live.tools !== null;
 		if (calls.length && !live.tools)
 			live.tools = live.timeline.createDiv({
 				cls: 'librarian-step is-tools librarian-step-new',
@@ -598,26 +621,28 @@ export class ConversationPane {
 					return;
 				}
 				existing.dataset.toolCallId = block.id;
-				const name = existing.querySelector('.librarian-chip-name');
-				if (name && block.name) name.textContent = block.name;
+				const name = existing.querySelector<HTMLElement>('.librarian-chip-name');
+				if (name && block.name && name.textContent !== block.name)
+					appendStreamDelta(name, name.textContent ?? '', block.name);
 				return;
 			}
 			// A chip whose name turned out to be spawn_agent becomes a row, as the log will show it.
 			existing?.remove();
 			if (isAgent) {
-				const card =
-					tools.querySelector<HTMLElement>('.librarian-agents') ??
-					tools.createDiv({ cls: 'librarian-agents' });
+				const had = tools.querySelector<HTMLElement>('.librarian-agents');
+				const card = had ?? tools.createDiv({ cls: 'librarian-agents' });
 				const row = renderAgentRow(
 					card,
 					this.deps.agentRowOf(call, undefined, true),
 					this.deps.openAgent,
 				);
 				row.dataset.streamIndex = String(i);
+				if (joining) (had ? row : card).addClass('librarian-step-new');
 				return;
 			}
 			const chip = renderChip(tools, { id: block.id, name: block.name }, status);
 			chip.dataset.streamIndex = String(i);
+			if (joining) chip.addClass('librarian-step-new');
 			// Chips stay ahead of the agents' list, as they are drawn from the log.
 			const agentsCard = tools.querySelector('.librarian-agents');
 			if (agentsCard) tools.insertBefore(chip, agentsCard);

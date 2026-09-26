@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { appendStreamDelta, closeFence, StreamingMarkdown } from '../src/ui/stream-text';
+import {
+	appendStreamDelta,
+	closeFence,
+	RedrawReveal,
+	StreamingMarkdown,
+} from '../src/ui/stream-text';
 
 function fakeEl() {
 	const spans: string[] = [];
@@ -102,6 +107,39 @@ describe('StreamingMarkdown (LIB-TEST-271)', () => {
 			['Second', '-100ms'],
 			['bold', ''],
 			[' end', ''],
+		]);
+	});
+
+	it('fades in what a new drawing added, wherever in the text it was added (LIB-TEST-287)', () => {
+		const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+		const el = document.createElement('div');
+		const reveal = new RedrawReveal();
+		// A tool call's details as its arguments arrive: a label, then the arguments as JSON.
+		const drawArgs = (json: string, result?: string) => {
+			el.innerHTML = `<div>Arguments</div><pre>${json}</pre>${result ? `<div>Result</div><pre>${result}</pre>` : ''}`;
+			reveal.after(el);
+		};
+		// The first drawing shows at once.
+		drawArgs('{"command": "ls"}');
+		expect(pieces(el)).toEqual([]);
+		now.mockReturnValue(1100);
+		// The value grows before its closing quote and brace.
+		drawArgs('{"command": "ls -la"}');
+		expect(pieces(el)).toEqual([[' -la', '']]);
+		expect(el.textContent).toBe('Arguments{"command": "ls -la"}');
+		now.mockReturnValue(1200);
+		// The piece still fading goes on from 100 ms into its fade; the new one starts.
+		drawArgs('{"command": "ls -la /"}');
+		expect(pieces(el)).toEqual([
+			[' -la', '-100ms'],
+			[' /', ''],
+		]);
+		now.mockReturnValue(2000);
+		// Done fading, the arguments stay; a section that was not there fades in whole.
+		drawArgs('{"command": "ls -la /"}', 'a.md');
+		expect(pieces(el)).toEqual([
+			['Result', ''],
+			['a.md', ''],
 		]);
 	});
 

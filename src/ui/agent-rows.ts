@@ -4,6 +4,7 @@ import { GENERAL_AGENT } from '../agent/agent-definitions';
 import type { SubagentState } from '../agent/subagent';
 import type { StoredToolCall } from '../session/session-types';
 import { summarizeCall } from './cards';
+import { appendStreamDelta } from './stream-text';
 import { firstLine, renderSpinner } from './work-log';
 
 /**
@@ -186,23 +187,35 @@ export function renderAgentRow(
 	setIcon(icon, 'bot');
 	const text = row.createSpan({ cls: 'librarian-agent-row-text' });
 	const head = text.createSpan({ cls: 'librarian-agent-row-head' });
-	head.createSpan({ cls: 'librarian-agent-row-title' });
-	head.createSpan({ cls: 'librarian-agent-type' });
-	text.createSpan({ cls: 'librarian-agent-row-activity' });
+	// Drawn at once: only what changes after (updateAgentRow) fades in.
+	head.createSpan({ cls: 'librarian-agent-row-title', text: data.title });
+	head.createSpan({ cls: 'librarian-agent-type', text: data.agent });
+	text.createSpan({ cls: 'librarian-agent-row-activity', text: data.activity });
 	row.createSpan({ cls: 'librarian-agent-row-mark' });
 	row.addEventListener('click', () => open(data.callId));
 	updateAgentRow(row, data);
 	return row;
 }
 
+/**
+ * The row with what its run holds now. Words its lines did not have fade in, as streamed text does
+ * (LIB-FEAT-099): a title arriving with the call's arguments, what the agent does next. Only the
+ * status class is swapped, so a fade still running stays.
+ */
 export function updateAgentRow(row: HTMLElement, data: AgentRowData): void {
-	row.className = `librarian-agent-row is-${data.status}`;
+	for (const status of Object.keys(AGENT_STATUS_LABELS)) row.removeClass(`is-${status}`);
+	row.addClass(`is-${data.status}`);
 	const icon = row.querySelector<HTMLElement>('.librarian-agent-row-icon');
 	icon?.setAttr('class', `librarian-agent-row-icon${data.color ? ` is-${data.color}` : ''}`);
-	row.querySelector('.librarian-agent-row-title')?.setText(data.title);
-	row.querySelector('.librarian-agent-type')?.setText(data.agent);
-	const activity = row.querySelector<HTMLElement>('.librarian-agent-row-activity');
-	if (activity && activity.textContent !== data.activity) activity.setText(data.activity);
+	for (const [cls, text] of [
+		['.librarian-agent-row-title', data.title],
+		['.librarian-agent-type', data.agent],
+		['.librarian-agent-row-activity', data.activity],
+	] as const) {
+		const line = row.querySelector<HTMLElement>(cls);
+		if (line && line.textContent !== text)
+			appendStreamDelta(line, line.textContent ?? '', text);
+	}
 	// The line often says the state itself, such as Waiting for your approval: read it once.
 	const label = AGENT_STATUS_LABELS[data.status];
 	row.setAttr(

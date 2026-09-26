@@ -3,7 +3,7 @@ import type { AgentUiState, ToolCardStatus } from '../agent/agent-controller';
 import type { SubagentState } from '../agent/subagent';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
 import { STATUS_LABELS, toolIcon } from './cards';
-import { appendStreamDelta } from './stream-text';
+import { appendStreamDelta, RedrawReveal } from './stream-text';
 
 /**
  * One request and the work it took: the user's message and everything after it until the next
@@ -235,8 +235,13 @@ export function renderChip(
 	return chip;
 }
 
+/**
+ * Swaps the chip's status class only: an open popover's mark (is-open) and a fade still running
+ * stay as they are.
+ */
 export function setChipStatus(chip: HTMLElement, status: ToolCardStatus): void {
-	chip.className = `librarian-chip is-${status}`;
+	for (const name of Object.keys(STATUS_LABELS)) chip.removeClass(`is-${name}`);
+	chip.addClass(`is-${status}`);
 	chip.setAttr(
 		'aria-label',
 		`${chip.querySelector('.librarian-chip-name')?.textContent ?? ''}: ${STATUS_LABELS[status]}`,
@@ -292,6 +297,8 @@ export class StepPopover {
 	} | null = null;
 	/** The step whose popover is open, to find it again after a redraw. */
 	openKey: string | null = null;
+	/** Fades in what a new drawing of the body added, such as arguments still arriving. */
+	private readonly reveal = new RedrawReveal();
 
 	constructor(
 		private readonly host: HTMLElement,
@@ -331,6 +338,7 @@ export class StepPopover {
 		this.anchor = anchor;
 		this.content = content;
 		this.parts = { icon, title, spinner, subtitle, status, body, text: null };
+		this.reveal.reset();
 		this.openKey = anchor.dataset.popKey ?? null;
 		anchor.addClass('is-open');
 		anchor.setAttr('aria-expanded', 'true');
@@ -342,18 +350,29 @@ export class StepPopover {
 		if (this.el) this.draw(false);
 	}
 
-	/** Puts it back on the step with this key after a redraw, or forgets it if the step is gone. */
+	/**
+	 * Puts it back on the step with this key after a redraw, or closes it if the step is gone. It
+	 * stays the popover it was, so it does not come in again and its spinner keeps its turn; what
+	 * the step holds that it did not before, such as the result a call got since, fades in.
+	 */
 	reopen(find: (key: string) => { anchor: HTMLElement; content: () => PopoverContent } | null) {
 		const key = this.openKey;
-		const scroll = this.parts?.body.scrollTop ?? 0;
-		this.el?.remove();
-		this.el = null;
-		this.anchor = null;
-		this.openKey = null;
-		const again = key ? find(key) : null;
-		if (!again) return;
-		this.open(again.anchor, again.content);
-		if (this.parts) this.parts.body.scrollTop = scroll;
+		if (!this.el || !key) return;
+		const step = find(key);
+		if (!step) {
+			this.close();
+			return;
+		}
+		// Taken off the page with what held it: made again.
+		if (!this.el.isConnected) {
+			this.open(step.anchor, step.content);
+			return;
+		}
+		this.anchor = step.anchor;
+		this.content = step.content;
+		step.anchor.addClass('is-open');
+		step.anchor.setAttr('aria-expanded', 'true');
+		this.draw(false);
 	}
 
 	close(): void {
@@ -385,7 +404,11 @@ export class StepPopover {
 		}
 		if (parts.title.textContent !== c.title) parts.title.setText(c.title);
 		parts.spinner.toggleClass('is-hidden', !c.live);
-		parts.subtitle.setText(c.subtitle ?? '');
+		// A summary that grows with the arguments fades in as they do; at first it shows at once.
+		const subtitle = c.subtitle ?? '';
+		if (first) parts.subtitle.setText(subtitle);
+		else if (parts.subtitle.textContent !== subtitle)
+			appendStreamDelta(parts.subtitle, parts.subtitle.textContent ?? '', subtitle);
 		parts.subtitle.toggleClass('is-hidden', !c.subtitle);
 		parts.status.className = `librarian-step-pop-status ${c.status?.cls ?? ''}`;
 		parts.status.setText(c.status?.text ?? '');
@@ -394,6 +417,7 @@ export class StepPopover {
 		const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
 		const scroll = body.scrollTop;
 		if (c.text !== undefined) {
+			this.reveal.reset();
 			if (!parts.text) {
 				body.empty();
 				parts.text = body.createDiv({ cls: 'librarian-step-pop-text' });
@@ -402,9 +426,11 @@ export class StepPopover {
 			if (first) parts.text.setText(c.text);
 			else appendStreamDelta(parts.text, parts.text.textContent ?? '', c.text);
 		} else {
+			// Drawn anew as a call's arguments arrive; only what the new drawing added fades in.
 			parts.text = null;
 			body.empty();
 			c.body?.(body);
+			this.reveal.after(body);
 		}
 		body.scrollTop = !first && atEnd ? body.scrollHeight : scroll;
 		this.reposition();

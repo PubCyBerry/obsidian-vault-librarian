@@ -580,12 +580,7 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			[...this.runtime.agents.values()],
 			nonStreaming ? NO_STREAMING_NOTICE : undefined,
 		);
-		const activityEl = this.main.activityEl;
-		if (activityEl) {
-			activityEl.setText(activity);
-			// A narrow pane cuts it short; the whole text shows on hover.
-			activityEl.setAttr('aria-label', activity);
-		}
+		this.main.setActivity(activity);
 		const standalone = state === 'compacting' && !this.runtime.isRunning;
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.main.el.createDiv({ cls: 'librarian-work is-running' });
