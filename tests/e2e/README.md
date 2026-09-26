@@ -32,8 +32,9 @@ then `__streaming.start('note')` measures the note chip and the answer drawn as 
 Scripted provider and `ls` set to Ask first (put the settings file back afterwards, and delete the
 sessions they leave). `__sessions.start()` sends session A, moves the chat to a new session B while A
 waits for its approval, follows the banner back to A, lets A finish unseen and checks the session
-list's Active group, the head's badge, the Notice, a draft kept across the switch and Stop on an Active
-row (LIB-TEST-279). `__tabs.start()` opens a second chat in a new tab, shows one session and its
+list's Active group, the head's badge, the Notice, a draft kept across the switch, Stop on an Active
+row, and that stopped session back in Active once it is opened from Recent and sent to again
+(LIB-TEST-279). `__tabs.start()` opens a second chat in a new tab, shows one session and its
 approval card in both, restores a chat from its saved state, closes a chat while its session runs and
 closes the last one (LIB-TEST-280). Each leaves its checks in `window.__sessions` or `window.__tabs`.
 
