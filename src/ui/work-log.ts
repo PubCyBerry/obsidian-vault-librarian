@@ -1,5 +1,6 @@
 import { setIcon } from 'obsidian';
-import type { ToolCardStatus } from '../agent/agent-controller';
+import type { AgentUiState, ToolCardStatus } from '../agent/agent-controller';
+import type { SubagentState } from '../agent/subagent';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
 import { STATUS_LABELS, toolIcon } from './cards';
 import { appendStreamDelta } from './stream-text';
@@ -106,6 +107,27 @@ export function formatDuration(ms: number): string {
 	const m = Math.floor(s / 60);
 	if (m < 60) return `${m}m ${s % 60}s`;
 	return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/**
+ * What the agent is doing, as the running run's header says it (LIB-FEAT-252); empty while it
+ * writes or rests. Sub-agents at work count how far they are (LIB-FEAT-140). The session list
+ * says the same of a session that runs unseen (LIB-FEAT-275).
+ */
+export function activityText(
+	state: AgentUiState,
+	agents: readonly SubagentState[],
+	waiting = 'Waiting for the model',
+): string {
+	const busy = agents.filter((a) => a.status === 'waiting' || a.status === 'running').length;
+	if (state === 'compacting') return 'Compacting context';
+	if (state === 'requesting') return waiting;
+	if (state === 'tool-running')
+		return busy
+			? `Running agents, ${agents.length - busy} of ${agents.length} done`
+			: 'Running tools';
+	if (state === 'awaiting-approval') return 'Waiting for your approval';
+	return '';
 }
 
 /** The first line of a text, for a step that shows the rest on demand. */

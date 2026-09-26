@@ -68,7 +68,7 @@ function tab(
 				].map(([name, label]) => ({ tool: { name, label } })),
 		},
 		sessions: { sessionsDir: '.obsidian/plugins/vault-librarian/sessions' },
-		controller: { session: null },
+		hub: { shownIds: () => new Set<string>() },
 		toolExecutionOf: () => 'parallel',
 		toolDeferredOf: () => true,
 	} as unknown as LibrarianPlugin;

@@ -9,6 +9,7 @@ import {
 	TFile,
 } from 'obsidian';
 import type { AgentController, QueuedMessage } from '../agent/agent-controller';
+import type { ComposerDraft } from '../agent/session-hub';
 import { type ContextUsage, cacheHitRatio } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
@@ -152,6 +153,8 @@ class VaultImageModal extends FuzzySuggestModal<TFile> {
 export interface ComposerHost {
 	/** Owns the DOM listeners the composer registers; the view. */
 	component: Component;
+	/** The session the chat shows now; it changes when the chat shows another (LIB-FEAT-274). */
+	runtime(): AgentController;
 	newSession(): Promise<void>;
 	toggleHistory(): Promise<void>;
 	compactNow(): Promise<void>;
@@ -171,7 +174,6 @@ export class Composer {
 	/** The block that asks for a model when the composer is hidden. */
 	readonly pickModelEl: HTMLElement;
 	private readonly app: LibrarianPlugin['app'];
-	private readonly controller: AgentController;
 	private readonly queueEl: HTMLElement;
 	private suggestEl!: HTMLElement;
 	private activeNoteEl!: HTMLElement;
@@ -202,7 +204,6 @@ export class Composer {
 		private readonly host: ComposerHost,
 	) {
 		this.app = plugin.app;
-		this.controller = plugin.controller;
 		// Messages sent while the agent works, waiting above the composer (LIB-FEAT-184).
 		this.queueEl = root.createDiv({ cls: 'librarian-queue is-hidden' });
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
@@ -350,7 +351,49 @@ export class Composer {
 		component.register(() => observer.disconnect());
 	}
 
+	/** The session the chat shows now: what is sent, stopped and measured is its own. */
+	private get controller(): AgentController {
+		return this.host.runtime();
+	}
+
 	// What the view tells the composer
+
+	/** The chat shows another session: its model, its queue, its usage and its state. */
+	showRuntime(): void {
+		this.renderQueue(this.controller.queue);
+		this.renderUsage(this.controller.usage);
+		this.renderState(this.controller.state);
+	}
+
+	/** Takes out what is typed, attached and mentioned, for the session it was written in to keep. */
+	takeDraft(): ComposerDraft {
+		const draft: ComposerDraft = {
+			text: this.inputEl.value,
+			images: this.pendingImages,
+			mentions: this.pendingMentions,
+			activeNote: this.includeActiveNote,
+		};
+		this.inputEl.value = '';
+		this.pendingImages = [];
+		this.pendingMentions = [];
+		this.includeActiveNote = false;
+		this.closeSuggestions();
+		this.renderActiveNote();
+		this.renderMentions();
+		this.renderImages();
+		return draft;
+	}
+
+	/** Puts back what a session kept while the chat showed another. */
+	restoreDraft(draft: ComposerDraft): void {
+		this.inputEl.value = draft.text;
+		this.pendingImages = [...draft.images];
+		this.pendingMentions = [...draft.mentions];
+		this.includeActiveNote = draft.activeNote;
+		this.renderActiveNote();
+		this.renderMentions();
+		this.renderImages();
+	}
 
 	/** The idle state moved: whether a message can be sent, and whether a model has to be picked first. */
 	renderState(state: AgentController['state']): void {

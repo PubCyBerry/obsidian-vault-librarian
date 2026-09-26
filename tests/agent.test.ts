@@ -2,10 +2,12 @@ import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	ACTIVE_TURN_KEY,
+	ACTIVE_TURNS_KEY,
 	AgentController,
 	type ControllerEvent,
 	hasUnfinishedTurn,
 	SKIPPED_RESULT,
+	takeActiveTurns,
 } from '../src/agent/agent-controller';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { DEFAULT_SYSTEM_PROMPT, PromptManager } from '../src/agent/prompt';
@@ -867,11 +869,19 @@ describe('finishing a turn the app was killed during (LIB-TEST-146)', () => {
 		let markedDuringTurn: unknown = null;
 		h.controller.subscribe((e) => {
 			if (e.type === 'state' && e.state === 'requesting' && markedDuringTurn === null)
-				markedDuringTurn = h.app.loadLocalStorage(ACTIVE_TURN_KEY);
+				markedDuringTurn = h.app.loadLocalStorage(ACTIVE_TURNS_KEY);
 		});
 		await h.controller.send('hi');
-		expect(markedDuringTurn).toBe(h.controller.session!.id);
-		expect(h.app.loadLocalStorage(ACTIVE_TURN_KEY)).toBeNull();
+		expect(markedDuringTurn).toEqual([h.controller.session!.id]);
+		expect(h.app.loadLocalStorage(ACTIVE_TURNS_KEY)).toBeNull();
+	});
+
+	it('reads the one session 2.16.1 noted with the list, once (LIB-FEAT-274)', () => {
+		const h = harness([]);
+		h.app.saveLocalStorage(ACTIVE_TURN_KEY, 'old');
+		h.app.saveLocalStorage(ACTIVE_TURNS_KEY, ['a', 'old', 'b']);
+		expect(takeActiveTurns(h.app as unknown as App)).toEqual(['old', 'a', 'b']);
+		expect(takeActiveTurns(h.app as unknown as App)).toEqual([]);
 	});
 
 	it('answers a question whose reply never arrived, and leaves a finished session alone', async () => {

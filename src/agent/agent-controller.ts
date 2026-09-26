@@ -26,15 +26,16 @@ import type {
 	SessionMetadata,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
+import { withFileMutationQueue } from '../tools/mutation-queue';
 import { isAgentsPath, isBinaryPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
 import type { LibrarianSettings, ThinkingLevel } from '../types';
-import { appIsHidden, noteVisibility, releaseVisibilityWaiters, whenVisible } from '../visibility';
+import { appIsHidden, noteVisibility, whenVisible } from '../visibility';
 import type { AgentDefinition } from './agent-definitions';
 import { ApprovalQueue, type ApprovalRequest, type CallOrigin } from './approval-queue';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { type PromptManager, systemPromptOf } from './prompt';
-import type { SpawnArgs, SubagentState } from './subagent';
+import type { Slots, SpawnArgs, SubagentState } from './subagent';
 import { SubagentRunner } from './subagent-runner';
 import {
 	assistantEvent,
@@ -146,13 +147,40 @@ export interface ControllerDeps {
 	skillActivation?: (name: string) => Promise<string | null>;
 	/** A rewind changed a definition file: read the definitions again. */
 	agentDefinitionsChanged?: () => Promise<unknown>;
+	/** Places for sub-agents, one set for every session on the device (LIB-FEAT-274). */
+	agentSlots?: Slots;
 }
 
 /** A snapshot's afterHash when the change removed the note; no content hash looks like it. */
 const REMOVED = 'removed';
 
-/** Device-local: the session whose turn was running, so a killed app can finish it on the next start. */
+/** Device-local: the sessions whose turn runs, so a killed app can finish them on the next start. */
+export const ACTIVE_TURNS_KEY = 'librarian-active-turns';
+/** Up to 2.16.1 only one session could run, kept under this key; it is read once and dropped. */
 export const ACTIVE_TURN_KEY = 'librarian-active-turn';
+
+type LocalStore = Pick<App, 'loadLocalStorage' | 'saveLocalStorage'>;
+
+function activeTurns(app: LocalStore): string[] {
+	const stored: unknown = app.loadLocalStorage(ACTIVE_TURNS_KEY);
+	return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+}
+
+/** Notes a session's turn as running, or as over. */
+export function markActiveTurn(app: LocalStore, sessionId: string, running: boolean): void {
+	const others = activeTurns(app).filter((id) => id !== sessionId);
+	const next = running ? [...others, sessionId] : others;
+	app.saveLocalStorage(ACTIVE_TURNS_KEY, next.length ? next : null);
+}
+
+/** The sessions whose turn was running when the app last went away, oldest first; forgotten now. */
+export function takeActiveTurns(app: LocalStore): string[] {
+	const legacy: unknown = app.loadLocalStorage(ACTIVE_TURN_KEY);
+	const ids = [...(typeof legacy === 'string' && legacy ? [legacy] : []), ...activeTurns(app)];
+	app.saveLocalStorage(ACTIVE_TURN_KEY, null);
+	app.saveLocalStorage(ACTIVE_TURNS_KEY, null);
+	return [...new Set(ids)];
+}
 
 export const BACKGROUND_RESUME_NOTICE =
 	'The app was in the background. Continuing where it stopped.';
@@ -196,6 +224,8 @@ export class AgentController {
 	/** Whether and how a failed request is asked again (turn.ts). */
 	private readonly recovery = new TurnRecovery();
 	private stopRequested = false;
+	/** Aborts on Stop what the run waits for outside Pi, such as the app's return; only this run's. */
+	private halt: AbortController | null = null;
 	private wakeLock: WakeLockSentinel | null = null;
 	/** Messages sent while a turn runs, oldest first. Memory only: they do not survive a restart. */
 	queue: QueuedMessage[] = [];
@@ -261,6 +291,19 @@ export class AgentController {
 
 	get isRunning(): boolean {
 		return this.driving !== null;
+	}
+
+	/** Stop was pressed for the run now ending, or the last one. */
+	get stopping(): boolean {
+		return this.stopRequested;
+	}
+
+	/** A sub-agent session this conversation started, for the permission of a spawn_agent resume. */
+	ownsAgentSession(id: string): boolean {
+		for (const run of this.agents.values()) if (run.sessionId === id) return true;
+		return this.events.some(
+			(e) => e.event.type === 'tool_result' && e.event.agentSession === id,
+		);
 	}
 
 	toolStatusOf(id: string): ToolCardStatus | undefined {
@@ -539,6 +582,7 @@ export class AgentController {
 			finished = resolve;
 		});
 		this.stopRequested = false;
+		this.halt = new AbortController();
 		// The agents of the run before are in the log now; the chat reads them from there.
 		this.subagents.forget();
 		try {
@@ -690,7 +734,7 @@ export class AgentController {
 		};
 		this.agent = createAgent(prepared.messages, prepared.tools);
 		// A phone that kills the app mid-turn leaves this behind, and the next start finishes it.
-		this.deps.app.saveLocalStorage(ACTIVE_TURN_KEY, sessionId);
+		markActiveTurn(this.deps.app, sessionId, true);
 		this.emit({ type: 'state', state: 'requesting' });
 		void this.acquireWakeLock();
 		try {
@@ -699,7 +743,8 @@ export class AgentController {
 			while (!this.stopRequested && this.recovery.next) {
 				const recovery = this.recovery.take();
 				if (recovery === 'visible') {
-					await whenVisible();
+					// Stop ends this wait, and only this run's: another session may wait for the app too.
+					await whenVisible(this.halt?.signal).catch(() => undefined);
 					if (this.stopRequested) break;
 					this.emit({ type: 'notice', message: BACKGROUND_RESUME_NOTICE });
 				} else if (recovery === 'overflow') {
@@ -731,7 +776,7 @@ export class AgentController {
 		} finally {
 			this.agent = null;
 			this.releaseWakeLock();
-			this.deps.app.saveLocalStorage(ACTIVE_TURN_KEY, null);
+			markActiveTurn(this.deps.app, sessionId, false);
 			this.pendingSnapshots.clear();
 			await this.reloadEvents();
 			await this.refreshReadiness();
@@ -743,7 +788,7 @@ export class AgentController {
 		this.stopRequested = true;
 		this.agent?.abort();
 		// A turn parked until the app comes back has nothing to abort; wake it so it can end.
-		releaseVisibilityWaiters();
+		this.halt?.abort();
 		this.approvals.expire();
 	}
 
@@ -1304,75 +1349,79 @@ export class AgentController {
 		const reverted: string[] = [];
 		const unchanged: { path: string; reason: string }[] = [];
 		for (const { event } of snapshots) {
-			const file = await this.noteAt(event.path);
-			if (event.afterHash === REMOVED) {
-				if (file) {
+			// In the note's mutation queue: another session's write keeps its snapshot, its change and
+			// its hash together, and this revert cannot land in between (LIB-FEAT-274).
+			await withFileMutationQueue(event.path, async () => {
+				const file = await this.noteAt(event.path);
+				if (event.afterHash === REMOVED) {
+					if (file) {
+						unchanged.push({
+							path: event.path,
+							reason: 'A note was made at this path after the agent removed it.',
+						});
+						return;
+					}
+					if (isBinaryPath(event.path)) {
+						unchanged.push({
+							path: event.path,
+							reason: 'Rewind does not restore binary files.',
+						});
+						return;
+					}
+					const previous =
+						event.ref === null
+							? null
+							: await this.deps.sessions.readSnapshot(sessionId, event.ref);
+					if (previous === null) {
+						unchanged.push({ path: event.path, reason: 'The snapshot is missing.' });
+						return;
+					}
+					await this.restoreRemoved(event.path, previous);
+					reverted.push(event.path);
+					await this.deps.sessions.deleteSnapshot(sessionId, event.ref!);
+					return;
+				}
+				if (!file) {
+					if (event.ref !== null)
+						unchanged.push({ path: event.path, reason: 'The note no longer exists.' });
+					return;
+				}
+				const current = await file.read();
+				if (contentHash(current) !== event.afterHash) {
 					unchanged.push({
 						path: event.path,
-						reason: 'A note was made at this path after the agent removed it.',
+						reason: 'The note was edited after the agent changed it.',
 					});
-					continue;
+					return;
 				}
+				if (event.ref === null) {
+					await file.trash();
+					reverted.push(event.path);
+					return;
+				}
+				// Snapshots are text, so a picture the shell overwrote would come back with other bytes.
 				if (isBinaryPath(event.path)) {
 					unchanged.push({
 						path: event.path,
 						reason: 'Rewind does not restore binary files.',
 					});
-					continue;
+					return;
 				}
-				const previous =
-					event.ref === null
-						? null
-						: await this.deps.sessions.readSnapshot(sessionId, event.ref);
+				const previous = await this.deps.sessions.readSnapshot(sessionId, event.ref);
 				if (previous === null) {
 					unchanged.push({ path: event.path, reason: 'The snapshot is missing.' });
-					continue;
+					return;
 				}
-				await this.restoreRemoved(event.path, previous);
-				reverted.push(event.path);
-				await this.deps.sessions.deleteSnapshot(sessionId, event.ref!);
-				continue;
-			}
-			if (!file) {
-				if (event.ref !== null)
-					unchanged.push({ path: event.path, reason: 'The note no longer exists.' });
-				continue;
-			}
-			const current = await file.read();
-			if (contentHash(current) !== event.afterHash) {
-				unchanged.push({
-					path: event.path,
-					reason: 'The note was edited after the agent changed it.',
-				});
-				continue;
-			}
-			if (event.ref === null) {
-				await file.trash();
-				reverted.push(event.path);
-				continue;
-			}
-			// Snapshots are text, so a picture the shell overwrote would come back with other bytes.
-			if (isBinaryPath(event.path)) {
-				unchanged.push({
-					path: event.path,
-					reason: 'Rewind does not restore binary files.',
-				});
-				continue;
-			}
-			const previous = await this.deps.sessions.readSnapshot(sessionId, event.ref);
-			if (previous === null) {
-				unchanged.push({ path: event.path, reason: 'The snapshot is missing.' });
-				continue;
-			}
-			if (await file.replace(previous, event.afterHash)) {
-				reverted.push(event.path);
-				await this.deps.sessions.deleteSnapshot(sessionId, event.ref);
-			} else {
-				unchanged.push({
-					path: event.path,
-					reason: 'The note was edited after the agent changed it.',
-				});
-			}
+				if (await file.replace(previous, event.afterHash)) {
+					reverted.push(event.path);
+					await this.deps.sessions.deleteSnapshot(sessionId, event.ref);
+				} else {
+					unchanged.push({
+						path: event.path,
+						reason: 'The note was edited after the agent changed it.',
+					});
+				}
+			});
 		}
 		await this.deps.sessions.append(sessionId, { type: 'rewind', toEventIndex });
 		await this.reloadEvents();

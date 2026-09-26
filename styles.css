@@ -30,6 +30,106 @@ body {
 	display: none;
 }
 
+/* Session head (LIB-FEAT-275). One line on top: which session this chat shows, a badge for the
+   others that run, ask or ended unseen, and a new session. A sidebar hides the view header, so
+   this is where the title stands. */
+
+.librarian-session-head {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--size-2-2);
+	min-height: 32px;
+	padding: 0 var(--size-4-2) 0 var(--size-4-1);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.librarian.is-mobile .librarian-session-head {
+	min-height: 44px;
+}
+
+.librarian .librarian-session-switch {
+	display: flex;
+	flex: 1 1 auto;
+	align-items: center;
+	gap: var(--size-2-3);
+	min-width: 0;
+	height: auto;
+	min-height: 28px;
+	padding: 0 var(--size-2-3);
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+}
+
+.librarian.is-mobile .librarian-session-switch {
+	min-height: 44px;
+}
+
+.librarian .librarian-session-switch:hover,
+.librarian .librarian-session-switch:focus-visible {
+	background: var(--background-modifier-hover);
+}
+
+.librarian-session-head-icon,
+.librarian-session-head-chevron {
+	display: inline-flex;
+	flex: 0 0 auto;
+	color: var(--text-muted);
+}
+
+.librarian-session-head-icon svg,
+.librarian-session-head-chevron svg {
+	width: 14px;
+	height: 14px;
+}
+
+.librarian-session-head-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.librarian-session-badge {
+	flex: 0 0 auto;
+	min-width: 18px;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-l);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	line-height: 18px;
+	text-align: center;
+}
+
+.librarian-session-badge.is-running {
+	color: var(--text-accent);
+	background: color-mix(in srgb, var(--text-accent) 12%, transparent);
+}
+
+.librarian-session-badge.is-asking {
+	color: var(--text-warning);
+	background: color-mix(in srgb, var(--text-warning) 12%, transparent);
+}
+
+/* Only sessions that ended unseen: a dot instead of a count. */
+.librarian-session-badge.is-unread {
+	width: 8px;
+	min-width: 8px;
+	height: 8px;
+	padding: 0;
+	background: var(--text-accent);
+}
+
+.librarian.is-mobile .librarian-session-new {
+	min-width: 44px;
+	min-height: 44px;
+}
+
 /* Banners and notices */
 
 .librarian-key-banner,
@@ -44,6 +144,11 @@ body {
 .librarian-key-banner {
 	background: var(--background-modifier-error-hover);
 	color: var(--text-normal);
+}
+
+/* Another session waits for an approval (LIB-FEAT-276): a warning, not an error. */
+.librarian-key-banner.librarian-attention {
+	background: rgba(var(--color-orange-rgb), 0.15);
 }
 
 .librarian-key-banner-title {
@@ -989,6 +1094,71 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 .librarian-sessions-empty {
 	color: var(--text-muted);
 	padding: var(--size-4-3) 0;
+}
+
+/* The Active group (LIB-FEAT-275): sessions that run, ask or ended unseen, marked as the agent
+   rows mark theirs, with Stop for the ones that run. */
+
+.librarian-sessions-group {
+	padding: var(--size-4-3) 0 var(--size-2-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+}
+
+.librarian-session-row.is-active {
+	gap: var(--size-4-2);
+	min-height: 44px;
+}
+
+.librarian.is-mobile .librarian-session-row.is-active {
+	min-height: 52px;
+}
+
+.librarian-session-mark {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+}
+
+.librarian-session-mark svg {
+	width: 14px;
+	height: 14px;
+}
+
+.librarian-session-mark.is-asking {
+	color: var(--text-warning);
+}
+
+.librarian-session-mark.is-failed {
+	color: var(--text-error);
+}
+
+.librarian-session-mark.is-unread::before {
+	content: "";
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--text-accent);
+}
+
+.librarian-session-activity {
+	overflow: hidden;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.librarian-session-row.is-asking .librarian-session-activity {
+	color: var(--text-warning);
+}
+
+.librarian.is-mobile .librarian-session-stop {
+	min-width: 44px;
+	min-height: 44px;
 }
 
 /* Modals */

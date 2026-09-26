@@ -8,6 +8,8 @@ export interface ScriptedTurn {
 	stopReason?: 'stop' | 'length' | 'toolUse' | 'error';
 	errorMessage?: string;
 	usage?: { input: number; output: number };
+	/** The response waits for this before it arrives, or ends as aborted when the request stops. */
+	hold?: Promise<void>;
 }
 
 /** A `StreamFn` that plays back scripted assistant turns and records every request context. */
@@ -37,7 +39,10 @@ export function scriptedStream(turns: ScriptedTurn[]) {
 			stopReason: 'pending',
 			timestamp: Date.now(),
 		};
-		queueMicrotask(() => {
+		let played = false;
+		const play = () => {
+			if (played) return;
+			played = true;
 			if (options?.signal?.aborted || turn.stopReason === 'error') {
 				message.stopReason = options?.signal?.aborted ? 'aborted' : 'error';
 				message.errorMessage = turn.errorMessage ?? 'scripted error';
@@ -74,7 +79,14 @@ export function scriptedStream(turns: ScriptedTurn[]) {
 			message.stopReason = reason;
 			stream.push({ type: 'done', reason, message });
 			stream.end();
-		});
+		};
+		const hold = turn.hold;
+		if (!hold) queueMicrotask(play);
+		else {
+			// Held until the test lets it go; a Stop meanwhile ends it as aborted.
+			options?.signal?.addEventListener('abort', play, { once: true });
+			void hold.then(play);
+		}
 		return stream;
 	};
 	return { streamFn, requests, sentOptions };

@@ -200,7 +200,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 
 	private async save() {
 		await this.plugin.saveSettings();
-		await this.plugin.controller.recalculateUsage();
+		await this.plugin.recalculateUsage();
 	}
 
 	// Providers
@@ -667,7 +667,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 									'Remove',
 									async () => {
 										await mcp.remove(server.id);
-										await this.plugin.controller.recalculateUsage();
+										await this.plugin.recalculateUsage();
 										this.refresh();
 									},
 								).open(),
@@ -1075,7 +1075,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: 'Max sub-agents',
-						desc: 'How many sub-agents run at once. Further spawn_agent calls wait for a slot. Keep it small on a phone.',
+						desc: 'How many sub-agents run at once, across all sessions. Further spawn_agent calls wait for a slot. Keep it small on a phone.',
 						render: (setting) =>
 							numberInput(
 								setting,
@@ -1276,7 +1276,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						await perms.setGroup(groupId, v as ToolPermission);
 						for (const refresh of hooks.rows) refresh();
 						fill();
-						await this.plugin.controller.recalculateUsage();
+						await this.plugin.recalculateUsage();
 					});
 				});
 			},
@@ -1320,7 +1320,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 						hooks.fill();
 						// No hover on a phone or tablet: the tap itself shows what the icon means.
 						if (Platform.isMobile) new Notice(`${PERMISSION_LABELS[p]}: ${why}`);
-						await this.plugin.controller.recalculateUsage();
+						await this.plugin.recalculateUsage();
 					})(),
 			);
 			setIcon(el, PERMISSION_ICONS[p]);
@@ -1445,7 +1445,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 
 	private sessionsPage(): Page {
 		const list = this.sessionList;
-		const current = this.plugin.controller.session?.id;
+		// Every session a chat shows, now that there may be several (LIB-FEAT-275).
+		const shown = this.plugin.hub.shownIds();
 		return {
 			name: 'Sessions',
 			desc: 'Past conversations, and where they are kept with their rewind snapshots.',
@@ -1459,7 +1460,7 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					search: { placeholder: 'Search sessions', match: rowMatches },
 					emptyState: list ? 'No sessions yet.' : 'Loading sessions',
 					items: (list ?? []).map((session) =>
-						this.sessionRow(session, session.id === current),
+						this.sessionRow(session, shown.has(session.id)),
 					),
 				},
 				{

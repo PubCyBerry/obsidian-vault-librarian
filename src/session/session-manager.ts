@@ -73,6 +73,15 @@ export function replay(events: SessionEvent[]): IndexedEvent[] {
 	return alive;
 }
 
+/** A session's name: the one it was given, else the start of its first message, else `New session`. */
+export function sessionTitle(title: string | undefined, events: readonly IndexedEvent[]): string {
+	if (title) return title;
+	const first = events.find((e) => e.event.type === 'user')?.event;
+	const text =
+		first?.type === 'user' ? first.content.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+	return text || 'New session';
+}
+
 export function summarize(id: string, path: string, events: SessionEvent[]): SessionSummary | null {
 	const meta = events.find(
 		(e): e is Extract<SessionEvent, { type: 'meta' }> => e.type === 'meta',
@@ -84,7 +93,6 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 	let modelId = meta.session.modelId;
 	let thinkingLevel = meta.session.thinkingLevel;
 	let messageCount = 0;
-	let firstUser: string | undefined;
 	for (const { event } of alive) {
 		if (event.type === 'rename') title = event.title;
 		if (event.type === 'model_change') {
@@ -93,15 +101,13 @@ export function summarize(id: string, path: string, events: SessionEvent[]): Ses
 			thinkingLevel = event.thinkingLevel;
 		}
 		if (event.type === 'user' || event.type === 'assistant') messageCount++;
-		if (event.type === 'user' && firstUser === undefined) firstUser = event.content;
 	}
-	if (!title && firstUser) title = firstUser.replace(/\s+/g, ' ').trim().slice(0, 60);
 	const last = events[events.length - 1];
 	const { parentId, parentCallId, agentType, agentTitle } = meta.session;
 	return {
 		id,
 		path,
-		title: title || 'New session',
+		title: sessionTitle(title, alive),
 		providerId,
 		modelId,
 		thinkingLevel,

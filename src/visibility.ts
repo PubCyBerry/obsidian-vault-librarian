@@ -62,15 +62,15 @@ export function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T>
 
 /**
  * Resolves when the app is in front again, or at once when it already is. With a `signal`, Stop
- * ends the wait: releasing the waiters on Stop does not reach one that starts afterwards.
+ * ends the wait of that run alone; other sessions keep waiting for the app (LIB-FEAT-274).
  */
 export function whenVisible(signal?: AbortSignal): Promise<void> {
 	if (!appIsHidden()) return Promise.resolve();
 	return abortable(new Promise<void>((resolve) => waiters.add(resolve)), signal);
 }
 
-/** Lets every waiter go, for a return to the app or a Stop that must not hang on it. */
-export function releaseVisibilityWaiters(): void {
+/** Lets every waiter go: the app is in front again. */
+function releaseVisibilityWaiters(): void {
 	const all = [...waiters];
 	waiters.clear();
 	for (const resolve of all) resolve();

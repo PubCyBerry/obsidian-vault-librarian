@@ -1,15 +1,16 @@
-import { Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
+import { debounce, Notice, Plugin, type WorkspaceLeaf } from 'obsidian';
 import {
-	ACTIVE_TURN_KEY,
 	AgentController,
 	findModel,
 	hasUnfinishedTurn,
+	takeActiveTurns,
 } from './agent/agent-controller';
 import { AgentManager, agentGroup, agentKey } from './agent/agent-definitions';
 import { NestedAgentsMd } from './agent/nested-agents-md';
 import { PromptManager, vaultReferenceReader } from './agent/prompt';
 import { expandReferences } from './agent/references';
-import { createSpawnAgentTool, SPAWN_AGENT_NAME } from './agent/subagent';
+import { SessionHub } from './agent/session-hub';
+import { createSpawnAgentTool, Slots, SPAWN_AGENT_NAME } from './agent/subagent';
 import { ContextManager } from './context/context-manager';
 import { desktopHttp, openInBrowser } from './mcp/loopback';
 import { apiKeySecretId, McpManager } from './mcp/mcp-manager';
@@ -39,6 +40,7 @@ import { createVaultTools, resultBudget, type ToolDeps } from './tools/registry'
 import { ToolRegistry } from './tools/tool-registry';
 import { DEFAULT_LISTED_TOOLS, type LibrarianSettings, mergeSettings } from './types';
 import { LibrarianView, VIEW_TYPE_LIBRARIAN } from './ui/chat-view';
+import { noteVisibility } from './visibility';
 import { WEBDAV_SECRET_ID, WebDavClient } from './webdav/webdav-client';
 import { createWebDavTools, WEBDAV_GROUP } from './webdav/webdav-tools';
 
@@ -57,12 +59,27 @@ export default class LibrarianPlugin extends Plugin {
 	skills!: SkillManager;
 	/** Sub-agent definitions, built in and from `.agents/agents` (LIB-FEAT-268). */
 	agentDefs!: AgentManager;
-	registry!: ToolRegistry;
-	controller!: AgentController;
+	/** Every session's runtime; each chat shows one of them (LIB-FEAT-274). */
+	hub!: SessionHub;
 	private settingTab!: LibrarianSettingTab;
-	shell!: ShellSession;
-	/** Numbers each thing the shell asks about, so concurrent approvals keep separate cards. */
+	/** Each runtime's tools: what tool_search turned on belongs to that session. */
+	private readonly registries = new WeakMap<AgentController, ToolRegistry>();
+	/** Numbers each thing a shell asks about, so concurrent approvals keep separate cards. */
 	private shellActions = 0;
+	/** The chat used last, which Open chat and the commands go to (LIB-FEAT-277). */
+	private lastView: LibrarianView | null = null;
+	/** The Notice that sessions run with no chat open went out, until a chat opens again. */
+	private toldRunningAlone = false;
+
+	/** The runtime of the chat used last; the commands and the e2e scripts talk to it. */
+	get controller(): AgentController {
+		return this.hub.focused();
+	}
+
+	/** That runtime's tools, which the settings list and the e2e scripts read. */
+	get registry(): ToolRegistry {
+		return this.registries.get(this.controller)!;
+	}
 
 	async onload() {
 		this.settings = mergeSettings(await this.loadData());
@@ -133,7 +150,7 @@ export default class LibrarianPlugin extends Plugin {
 			() => this.mcp.destructiveTools(),
 			(tool, args) => {
 				// Starting an agent is judged by that agent's own row (LIB-FEAT-268).
-				if (tool === SPAWN_AGENT_NAME) return agentKey(this.controller.agentOfCall(args));
+				if (tool === SPAWN_AGENT_NAME) return agentKey(this.hub.agentOfCall(args));
 				if (tool !== 'read') return null;
 				const path = (args as { path?: unknown } | null)?.path;
 				const skill = typeof path === 'string' ? this.skills.skillFor(path) : null;
@@ -148,21 +165,7 @@ export default class LibrarianPlugin extends Plugin {
 						.map((a) => agentKey(a.name)),
 				]),
 		);
-		const mutation = {
-			before: (id: string, path: string) => this.controller.beforeMutation(id, path),
-			after: async (id: string, path: string) => {
-				await this.controller.afterMutation(id, path);
-				// Definitions sit outside the vault index, so no vault event says one changed.
-				if (isAgentsPath(path)) await this.agentDefs.scan();
-			},
-		};
-		const vaultDeps: ToolDeps = {
-			app: this.app,
-			settings: () => this.settings,
-			hidden: this.skills.hiddenReader(),
-			mutation,
-			describeAgent: (path) => this.agentDefs.describe(path),
-		};
+		const hidden = this.skills.hiddenReader();
 		// A fresh client per call picks up changed settings and this device's password, and the
 		// call's signal, so Stop ends it.
 		const webdavClient = (signal?: AbortSignal) =>
@@ -172,9 +175,7 @@ export default class LibrarianPlugin extends Plugin {
 				password: this.secrets.get(WEBDAV_SECRET_ID),
 				signal,
 			});
-		const webdavTools = () =>
-			this.webdavOn() ? createWebDavTools({ ...vaultDeps, client: webdavClient }) : [];
-		const nestedAgentsMd = new NestedAgentsMd({
+		const nestedAgentsMdDeps: ConstructorParameters<typeof NestedAgentsMd>[0] = {
 			vault: async (folder) => {
 				const file = this.app.vault.getFileByPath(`${folder}/AGENTS.md`);
 				if (!file) return null;
@@ -194,23 +195,7 @@ export default class LibrarianPlugin extends Plugin {
 						}
 					: null,
 			activePath: () => this.app.workspace.getActiveFile()?.path ?? null,
-		});
-		this.shell = new ShellSession({
-			app: this.app,
-			resultLimit: () => this.settings.toolResultMaxChars,
-			gate: async (name, args, signal, bashCallId) => {
-				const gate = await this.controller.gateShellAction(
-					`${name}-${++this.shellActions}`,
-					name,
-					args,
-					signal,
-					undefined,
-					bashCallId,
-				);
-				if (!gate.ok) throw new Error(gate.reason);
-			},
-			snapshot: mutation,
-		});
+		};
 		// Skills the model may reach: none while read is blocked, and never a blocked one.
 		const usableSkills = () =>
 			this.permissions.get('read') === 'blocked'
@@ -227,88 +212,144 @@ export default class LibrarianPlugin extends Plugin {
 				: this.agentDefs.agents.filter(
 						(a) => this.permissions.get(agentKey(a.name)) !== 'blocked',
 					);
-		// Everything registered, with the execution policy from settings applied; the registry
-		// decides which of these the model sees (deferred tools wait for tool_search).
-		this.registry = new ToolRegistry({
-			registered: () => {
-				const hidden = deferredSkills();
-				const agents = usableAgents();
-				// Built fresh each time so descriptions carry the current default limits from settings.
-				return [
-					...createVaultTools(vaultDeps),
-					createShellTool(this.shell),
-					// With the agents it can start listed in its description.
-					...(agents.length
-						? [
-								createSpawnAgentTool(
-									agents,
-									(id, args, signal) =>
-										this.controller.runSubagent(id, args, signal),
-									resultBudget(this.settings),
-								),
-							]
-						: []),
-					...webdavTools(),
-					...this.mcp.tools(),
-					// Only while some skill waits to be found, as tool_search for deferred tools.
-					...(hidden.length
-						? [createSkillSearchTool(hidden, resultBudget(this.settings))]
-						: []),
-				].map((t) => ({
-					...t,
-					executionMode:
-						this.settings.toolExecutionByTool[t.name] ?? t.executionMode ?? 'parallel',
-				}));
-			},
-			sourceOf: (t) =>
-				this.mcpServerNameOf(t.name) ?? (t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
-			deferred: (t) => this.toolDeferredOf(t.name),
-			budget: () => resultBudget(this.settings),
-		});
 		const context = new ContextManager(this.app, () => this.settings.context);
-		this.controller = new AgentController({
-			app: this.app,
-			settings: () => this.settings,
-			saveSettings: () => this.saveSettings(),
-			sessions: this.sessions,
-			context,
-			permissions: this.permissions,
-			providers: this.providers,
-			transport: this.transport,
-			prompt: new PromptManager(this.app),
-			secrets: this.secrets,
-			nestedAgentsMd,
-			tools: () => this.registry.visible(),
-			// Listed skills go in the catalog; deferred ones by name only, for skill_search to find.
-			skillCatalog: () => {
-				const usable = usableSkills();
-				const listed = usable.filter((s) => !this.toolDeferredOf(skillKey(s.name)));
-				const deferred =
-					this.permissions.get(SKILL_SEARCH_NAME) === 'blocked'
-						? []
-						: usable.filter((s) => !listed.includes(s));
-				return skillsSection(listed, deferred);
-			},
-			agentDefinition: (name) => this.agentDefs.get(name),
-			agentDefinitionsChanged: () => this.agentDefs.scan(),
-			registeredTools: () => this.registry.entries().map((e) => e.tool),
-			readsOnly: (name) =>
-				READ_ONLY_TOOL_NAMES.has(name) || this.mcp.readOnlyTools().has(name),
-			skillActivation: async (name) => {
-				const skill = usableSkills().find((s) => s.name === name);
-				return skill ? this.skills.activation(skill) : null;
-			},
+		// One set of places for every session's sub-agents: Max sub-agents counts the device.
+		const agentSlots = new Slots(() => this.settings.maxSubagents);
+
+		/**
+		 * One session's runtime (LIB-FEAT-274): its own shell, its own tools (what tool_search turns
+		 * on stays in this session) and its own AGENTS.md deliveries, with every tool's hooks bound
+		 * to it, so its snapshots and approvals land in its own conversation.
+		 */
+		const createRuntime = (): AgentController => {
+			let controller!: AgentController;
+			const mutation = {
+				before: (id: string, path: string) => controller.beforeMutation(id, path),
+				after: async (id: string, path: string) => {
+					await controller.afterMutation(id, path);
+					// Definitions sit outside the vault index, so no vault event says one changed.
+					if (isAgentsPath(path)) await this.agentDefs.scan();
+				},
+			};
+			const vaultDeps: ToolDeps = {
+				app: this.app,
+				settings: () => this.settings,
+				hidden,
+				mutation,
+				describeAgent: (path) => this.agentDefs.describe(path),
+			};
+			const shell = new ShellSession({
+				app: this.app,
+				resultLimit: () => this.settings.toolResultMaxChars,
+				gate: async (name, args, signal, bashCallId) => {
+					const gate = await controller.gateShellAction(
+						`${name}-${++this.shellActions}`,
+						name,
+						args,
+						signal,
+						undefined,
+						bashCallId,
+					);
+					if (!gate.ok) throw new Error(gate.reason);
+				},
+				snapshot: mutation,
+			});
+			// Everything registered, with the execution policy from settings applied; the registry
+			// decides which of these the model sees (deferred tools wait for tool_search).
+			const registry = new ToolRegistry({
+				registered: () => {
+					const deferred = deferredSkills();
+					const agents = usableAgents();
+					// Built fresh each time so descriptions carry the current default limits from settings.
+					return [
+						...createVaultTools(vaultDeps),
+						createShellTool(shell),
+						// With the agents it can start listed in its description.
+						...(agents.length
+							? [
+									createSpawnAgentTool(
+										agents,
+										(id, args, signal) =>
+											controller.runSubagent(id, args, signal),
+										resultBudget(this.settings),
+									),
+								]
+							: []),
+						...(this.webdavOn()
+							? createWebDavTools({ ...vaultDeps, client: webdavClient })
+							: []),
+						...this.mcp.tools(),
+						// Only while some skill waits to be found, as tool_search for deferred tools.
+						...(deferred.length
+							? [createSkillSearchTool(deferred, resultBudget(this.settings))]
+							: []),
+					].map((t) => ({
+						...t,
+						executionMode:
+							this.settings.toolExecutionByTool[t.name] ??
+							t.executionMode ??
+							'parallel',
+					}));
+				},
+				sourceOf: (t) =>
+					this.mcpServerNameOf(t.name) ??
+					(t.name.startsWith('webdav_') ? 'WebDAV' : 'vault'),
+				deferred: (t) => this.toolDeferredOf(t.name),
+				budget: () => resultBudget(this.settings),
+			});
+			controller = new AgentController({
+				app: this.app,
+				settings: () => this.settings,
+				saveSettings: () => this.saveSettings(),
+				sessions: this.sessions,
+				context,
+				permissions: this.permissions,
+				providers: this.providers,
+				transport: this.transport,
+				prompt: new PromptManager(this.app),
+				secrets: this.secrets,
+				nestedAgentsMd: new NestedAgentsMd(nestedAgentsMdDeps),
+				agentSlots,
+				tools: () => registry.visible(),
+				// Listed skills go in the catalog; deferred ones by name only, for skill_search to find.
+				skillCatalog: () => {
+					const usable = usableSkills();
+					const listed = usable.filter((s) => !this.toolDeferredOf(skillKey(s.name)));
+					const deferred =
+						this.permissions.get(SKILL_SEARCH_NAME) === 'blocked'
+							? []
+							: usable.filter((s) => !listed.includes(s));
+					return skillsSection(listed, deferred);
+				},
+				agentDefinition: (name) => this.agentDefs.get(name),
+				agentDefinitionsChanged: () => this.agentDefs.scan(),
+				registeredTools: () => registry.entries().map((e) => e.tool),
+				readsOnly: (name) =>
+					READ_ONLY_TOOL_NAMES.has(name) || this.mcp.readOnlyTools().has(name),
+				skillActivation: async (name) => {
+					const skill = usableSkills().find((s) => s.name === name);
+					return skill ? this.skills.activation(skill) : null;
+				},
+			});
+			controller.subscribe((e) => {
+				if (e.type !== 'session') return;
+				registry.reset();
+				// A new conversation starts with empty scratch space and no leftover shell variables.
+				shell.reset();
+			});
+			this.registries.set(controller, registry);
+			return controller;
+		};
+		this.hub = new SessionHub({
+			create: createRuntime,
+			notify: (message) => new Notice(message),
 		});
-		this.controller.subscribe((e) => {
-			if (e.type !== 'session') return;
-			this.registry.reset();
-			// A new conversation starts with empty scratch space and no leftover shell variables.
-			this.shell.reset();
+
+		// Leaving the app freezes the connection on a phone; each running session waits for the return.
+		this.registerDomEvent(document, 'visibilitychange', () => {
+			noteVisibility();
+			for (const runtime of this.hub.runtimes) runtime.onVisibilityChange();
 		});
-		// Leaving the app freezes the connection on a phone; the controller waits for the return.
-		this.registerDomEvent(document, 'visibilitychange', () =>
-			this.controller.onVisibilityChange(),
-		);
 		this.registerObsidianProtocolHandler(OAUTH_PROTOCOL_ACTION, (params) => {
 			const id = serverIdFromState(params.state);
 			if (!id) return;
@@ -326,10 +367,41 @@ export default class LibrarianPlugin extends Plugin {
 				.then(() => this.mcp.connectAll());
 			void this.skills.scan();
 			void this.agentDefs.scan();
-			void this.finishInterruptedTurn();
+			void this.finishInterruptedTurns();
 		});
 
 		this.registerView(VIEW_TYPE_LIBRARIAN, (leaf) => new LibrarianView(leaf, this));
+		// Which chat is used last, and which sessions are on screen now (LIB-FEAT-276, LIB-FEAT-277).
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', (leaf) => {
+				if (leaf?.view instanceof LibrarianView) {
+					this.lastView = leaf.view;
+					this.hub.focus(leaf.view.runtime);
+				}
+				this.hub.refresh();
+			}),
+		);
+		// Closing the last chat leaves the sessions running; a chat moved from one side to the other
+		// is back within the delay, so it says nothing.
+		const noteRunningAlone = debounce(
+			() => {
+				if (this.app.workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN).length) {
+					this.toldRunningAlone = false;
+					return;
+				}
+				if (this.toldRunningAlone || !this.hub.runtimes.some((r) => r.isRunning)) return;
+				this.toldRunningAlone = true;
+				new Notice('Sessions keep running in the background. Open the chat to see them.');
+			},
+			500,
+			true,
+		);
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				this.hub.refresh();
+				noteRunningAlone();
+			}),
+		);
 		this.addRibbonIcon('book-open', 'Open chat', () => void this.activateView());
 		this.addCommand({
 			id: 'open-in-main',
@@ -341,6 +413,11 @@ export default class LibrarianPlugin extends Plugin {
 			name: 'Open chat in right sidebar',
 			callback: () => void this.activateView('sidebar'),
 		});
+		this.addCommand({
+			id: 'open-in-new-tab',
+			name: 'Open chat in new tab',
+			callback: () => void this.openChatInNewTab(),
+		});
 		const settingTab = new LibrarianSettingTab(this.app, this);
 		this.settingTab = settingTab;
 		this.addSettingTab(settingTab);
@@ -349,11 +426,11 @@ export default class LibrarianPlugin extends Plugin {
 		this.register(this.mcp.subscribe(() => settingTab.refresh()));
 		this.register(this.skills.subscribe(() => settingTab.refresh()));
 		this.register(this.agentDefs.subscribe(() => settingTab.refresh()));
-		// A key that arrives sealed may be the one the chat was waiting for.
+		// A key that arrives sealed may be the one a chat was waiting for.
 		this.register(
 			this.secrets.subscribe(() => {
 				settingTab.refresh();
-				void this.controller.refreshReadiness();
+				void this.refreshReadiness();
 			}),
 		);
 
@@ -382,11 +459,12 @@ export default class LibrarianPlugin extends Plugin {
 			id: 'compact-context',
 			name: 'Compact context',
 			callback: async () => {
-				if (!this.controller.session) {
+				const runtime = this.controller;
+				if (!runtime.session) {
 					new Notice('Open a session first.');
 					return;
 				}
-				const outcome = await this.controller.compactNow();
+				const outcome = await runtime.compactNow();
 				new Notice(
 					outcome === 'compacted'
 						? 'Context compacted.'
@@ -407,13 +485,23 @@ export default class LibrarianPlugin extends Plugin {
 	}
 
 	onunload() {
-		this.controller.stop();
+		this.hub.stopAll();
 		this.mcp.stopSignIns();
 		for (const server of this.settings.mcpServers) void this.mcp.disconnect(server.id);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/** Every session's idle state and usage ring again, after keys or settings changed. */
+	async refreshReadiness(): Promise<void> {
+		for (const runtime of this.hub.runtimes) await runtime.refreshReadiness();
+	}
+
+	/** Every session's usage again: a setting changed what the next request holds. */
+	async recalculateUsage(): Promise<void> {
+		for (const runtime of this.hub.runtimes) await runtime.recalculateUsage();
 	}
 
 	/**
@@ -433,14 +521,14 @@ export default class LibrarianPlugin extends Plugin {
 		const fresh = mergeSettings(stored);
 		if (JSON.stringify(fresh) === JSON.stringify(before)) return;
 		this.settings = fresh;
-		this.controller.reselect();
+		for (const runtime of this.hub.runtimes) runtime.reselect();
 		if (fresh.sealedSecrets !== before.sealedSecrets) await this.secrets.unlock();
 		await this.mcp.claimHandoffs();
 		await this.mcp.reconcile(before.mcpServers);
 		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN))
 			if (leaf.view instanceof LibrarianView) leaf.view.renderModelSelect();
 		this.settingTab.refresh();
-		await this.controller.refreshReadiness();
+		await this.refreshReadiness();
 	}
 
 	/** Writes every setting to a JSON file at the top of the vault and returns its path (LIB-FEAT-241). */
@@ -466,7 +554,7 @@ export default class LibrarianPlugin extends Plugin {
 		await this.secrets.unlock();
 		await this.mcp.claimHandoffs();
 		await this.mcp.connectAll();
-		await this.controller.refreshReadiness();
+		await this.refreshReadiness();
 	}
 
 	/** This device's id, made once and kept in its local storage, never synced. */
@@ -515,31 +603,47 @@ export default class LibrarianPlugin extends Plugin {
 	}
 
 	/**
-	 * Reveals the chat and returns the view. Without `location` an open chat is reused wherever
-	 * it is and a new one follows the setting; with it, a chat in the other place is moved.
+	 * A phone may kill the app while agents work. The sessions whose turn was running are noted on
+	 * this device, so the next start opens them and lets the model finish what was asked; the chat
+	 * shows the last of them and the others run on in the session list.
 	 */
-	/**
-	 * A phone may kill the app while the agent works. The session whose turn was running is noted
-	 * on this device, so the next start opens it and lets the model finish what was asked.
-	 */
-	private async finishInterruptedTurn(): Promise<void> {
-		const sessionId: unknown = this.app.loadLocalStorage(ACTIVE_TURN_KEY);
-		if (typeof sessionId !== 'string' || !sessionId) return;
-		this.app.saveLocalStorage(ACTIVE_TURN_KEY, null);
-		if (this.controller.isRunning) return;
-		// Peek before switching the chat: an interrupted turn is the only reason to reopen it.
-		if (!hasUnfinishedTurn(replay(await this.sessions.load(sessionId)))) return;
-		await this.activateView();
-		await this.controller.openSession(sessionId);
-		await this.controller.resumeTurn();
+	private async finishInterruptedTurns(): Promise<void> {
+		const resumed: AgentController[] = [];
+		for (const id of takeActiveTurns(this.app)) {
+			if (this.hub.find(id)?.isRunning) continue;
+			// Peek before opening: an interrupted turn is the only reason to reopen it.
+			if (!hasUnfinishedTurn(replay(await this.sessions.load(id)))) continue;
+			try {
+				resumed.push(await this.hub.open(id));
+			} catch {
+				// Its file is gone; nothing to finish.
+			}
+		}
+		const last = resumed[resumed.length - 1];
+		if (!last) return;
+		const view = await this.activateView();
+		await view?.show(last);
+		for (const runtime of resumed) void runtime.resumeTurn();
 	}
 
+	/**
+	 * Reveals the chat and returns the view. Without `location` the chat used last is reused
+	 * wherever it is and a new one follows the setting; with it, a chat in the other place is
+	 * moved and keeps showing its session.
+	 */
 	async activateView(location?: 'sidebar' | 'tab'): Promise<LibrarianView | null> {
 		const { workspace } = this.app;
-		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN)[0] ?? null;
+		const leaves = workspace.getLeavesOfType(VIEW_TYPE_LIBRARIAN);
+		let leaf: WorkspaceLeaf | null =
+			(this.lastView && leaves.includes(this.lastView.leaf)
+				? this.lastView.leaf
+				: leaves[0]) ?? null;
+		let session: string | undefined;
 		if (leaf && location) {
 			const inMain = leaf.getRoot() === workspace.rootSplit;
 			if (inMain !== (location === 'tab')) {
+				session =
+					leaf.view instanceof LibrarianView ? leaf.view.runtime.session?.id : undefined;
 				leaf.detach();
 				leaf = null;
 			}
@@ -548,10 +652,26 @@ export default class LibrarianPlugin extends Plugin {
 			const wanted = location ?? this.settings.chatLocation;
 			leaf = wanted === 'tab' ? workspace.getLeaf('tab') : workspace.getRightLeaf(false);
 			if (!leaf) return null;
-			await leaf.setViewState({ type: VIEW_TYPE_LIBRARIAN, active: true });
+			await leaf.setViewState({
+				type: VIEW_TYPE_LIBRARIAN,
+				active: true,
+				state: session ? { session } : {},
+			});
 		}
 		await workspace.revealLeaf(leaf);
 		const view = leaf.view instanceof LibrarianView ? leaf.view : null;
+		if (view) this.lastView = view;
+		view?.focusInput();
+		return view;
+	}
+
+	/** One more chat in the main area, on a new session; the chats open stay (LIB-FEAT-277). */
+	async openChatInNewTab(): Promise<LibrarianView | null> {
+		const leaf = this.app.workspace.getLeaf('tab');
+		await leaf.setViewState({ type: VIEW_TYPE_LIBRARIAN, active: true });
+		await this.app.workspace.revealLeaf(leaf);
+		const view = leaf.view instanceof LibrarianView ? leaf.view : null;
+		if (view) this.lastView = view;
 		view?.focusInput();
 		return view;
 	}

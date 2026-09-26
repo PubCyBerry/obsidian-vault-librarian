@@ -54,7 +54,8 @@ export class SubagentRunner {
 	private readonly callOwner = new Map<string, SubagentState>();
 
 	constructor(private readonly c: AgentController) {
-		this.slots = new Slots(() => c.deps.settings().maxSubagents);
+		// One set of places for every session: Max sub-agents counts the device (LIB-FEAT-274).
+		this.slots = c.deps.agentSlots ?? new Slots(() => c.deps.settings().maxSubagents);
 	}
 
 	/** The agents of the run before are in the log now; the chat reads them from there. */

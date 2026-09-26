@@ -80,6 +80,8 @@ function harness(
 	perms: Partial<Record<string, ToolPermission>> = {},
 	extra: Record<string, unknown> = {},
 	files: Record<string, string> = {},
+	/** Places shared with another harness, as every session of a device shares them (LIB-FEAT-274). */
+	agentSlots?: Slots,
 ) {
 	const app = new FakeApp();
 	app.vault.seed('notes/a.md', 'alpha\nbeta');
@@ -182,6 +184,7 @@ function harness(
 		agentDefinition: (name) => defs.get(name),
 		readsOnly: (name) => READ_ONLY_TOOL_NAMES.has(name),
 		agentDefinitionsChanged: () => defs.scan(),
+		agentSlots,
 	});
 	const events: ControllerEvent[] = [];
 	controller.subscribe((e) => events.push(e));
@@ -344,6 +347,41 @@ describe('sub-agents (LIB-TEST-141)', () => {
 			Math.min(seen.indexOf('a:done'), seen.indexOf('b:done')),
 		);
 		expect(seen.indexOf('c:waiting')).toBeLessThan(seen.indexOf('a:done'));
+	});
+
+	it('LIB-TEST-278 6: two sessions share the places, so one waits while the other holds it', async () => {
+		const shared = new Slots(() => 1);
+		const a = harness(
+			{ main: [{ toolCalls: [spawn('first', 'Look.')] }, { text: 'a done' }], first: 'hang' },
+			{},
+			{},
+			{},
+			shared,
+		);
+		const b = harness(
+			{
+				main: [{ toolCalls: [spawn('second', 'Look.')] }, { text: 'b done' }],
+				second: [{ text: 'found' }],
+			},
+			{},
+			{},
+			{},
+			shared,
+		);
+		const statusOf = (h: typeof a) => [...h.controller.agents.values()][0]?.status;
+		const runA = a.controller.send('go');
+		for (let i = 0; i < 100 && statusOf(a) !== 'running'; i++)
+			await new Promise((r) => setTimeout(r, 10));
+		const runB = b.controller.send('go');
+		for (let i = 0; i < 100 && statusOf(b) !== 'waiting'; i++)
+			await new Promise((r) => setTimeout(r, 10));
+		// The main turn of B runs; only its sub-agent waits for the place A's holds.
+		expect(statusOf(b)).toBe('waiting');
+		expect(b.controller.isRunning).toBe(true);
+		a.controller.stop();
+		await runA;
+		await runB;
+		expect(statusOf(b)).toBe('done');
 	});
 
 	it('5: Stop ends the sub-agents with the main agent, even one still being set up', async () => {

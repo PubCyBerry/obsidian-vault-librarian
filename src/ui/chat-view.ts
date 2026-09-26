@@ -1,5 +1,14 @@
-import { ItemView, type Menu, Notice, Platform, setIcon, type WorkspaceLeaf } from 'obsidian';
+import {
+	ItemView,
+	type Menu,
+	Notice,
+	Platform,
+	setIcon,
+	type ViewStateResult,
+	type WorkspaceLeaf,
+} from 'obsidian';
 import type { AgentController, ApprovalRequest, ControllerEvent } from '../agent/agent-controller';
+import type { ComposerDraft, SessionEntry, SessionViewer } from '../agent/session-hub';
 import { SPAWN_AGENT_NAME, type SubagentState } from '../agent/subagent';
 import type LibrarianPlugin from '../main';
 import { NO_STREAMING_NOTICE } from '../provider/transport';
@@ -15,24 +24,33 @@ import { renderApprovalCard } from './cards';
 import { Composer } from './composer';
 import { ConversationPane, type PaneDeps } from './conversation-pane';
 import { steadyLabel } from './segmented';
-import { ConfirmModal, confirmDeleteSession, renderSessionList } from './session-list';
-import { renderSpinner, StepPopover } from './work-log';
+import {
+	ConfirmModal,
+	confirmDeleteSession,
+	renderActiveRows,
+	renderSessionList,
+} from './session-list';
+import { activityText, renderSpinner, StepPopover } from './work-log';
 
 export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
 /**
- * The chat: banners on top, the conversation (the chat's own, or a sub-agent's in the agent pane),
- * the history list in its place when asked, and the composer below. The conversations draw
- * themselves (ConversationPane) and the composer sends (Composer); this view wires the controller's
- * events to them and keeps what the two share: the popover, the approval card and the agent pane.
+ * The chat: the session head on top (LIB-FEAT-275), banners, the conversation (the session's own,
+ * or a sub-agent's in the agent pane), the session list in its place when asked, and the composer
+ * below. It shows one session's runtime at a time; the others run on in the hub (LIB-FEAT-274).
+ * The conversations draw themselves (ConversationPane) and the composer sends (Composer); this view
+ * wires the runtime's events to them and keeps what the two share: the popover, the approval card
+ * and the agent pane.
  */
-export class LibrarianView extends ItemView {
-	private readonly controller: AgentController;
+export class LibrarianView extends ItemView implements SessionViewer {
+	/** The session this chat shows. */
+	runtime: AgentController;
 	private unsubscribe: (() => void) | null = null;
 	private unsubscribeMcp: (() => void) | null = null;
+	private unsubscribeHub: (() => void) | null = null;
 	/** The popover a timeline step opens (LIB-FEAT-252). */
 	private popover!: StepPopover;
-	/** The chat's own conversation. */
+	/** The session's own conversation. */
 	private main!: ConversationPane;
 	/** The agent pane (LIB-FEAT-140): a sub-agent run's conversation in place of the chat's. */
 	private agentPane!: ConversationPane;
@@ -48,21 +66,34 @@ export class LibrarianView extends ItemView {
 	/** The chat's own conversation changed while the pane covered it: drawn again on the way back. */
 	private mainDirty = false;
 	private composer!: Composer;
+	private switchEl!: HTMLElement;
+	private headTitleEl!: HTMLElement;
+	private headChevronEl!: HTMLElement;
+	private badgeEl!: HTMLElement;
 	private bannerEl!: HTMLElement;
 	private mcpBannerEl!: HTMLElement;
+	/** Sessions no chat on screen shows that wait for an approval (LIB-FEAT-276). */
+	private attentionEl!: HTMLElement;
 	private noticeEl!: HTMLElement;
 	private sessionsEl!: HTMLElement;
 	/** Compacting asked for outside a run has no block, so it gets a line of its own. */
 	private compactLineEl: HTMLElement | null = null;
 	private approvalEl: HTMLElement | null = null;
 	private historyMode = false;
+	/** The session list's Active rows as last drawn: the Recent part is read again only when they change. */
+	private activeKey = '';
+	/** What was typed in a session not sent yet, back when this chat opens a new one again. */
+	private newDraft: ComposerDraft | null = null;
+	/** The session a restored layout asked for before the view was built. */
+	private pendingSession: string | null = null;
+	private opened = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
 		private readonly plugin: LibrarianPlugin,
 	) {
 		super(leaf);
-		this.controller = plugin.controller;
+		this.runtime = plugin.hub.create();
 	}
 
 	getViewType(): string {
@@ -77,14 +108,37 @@ export class LibrarianView extends ItemView {
 		return 'book-open';
 	}
 
+	/** On screen now: the tab showing in its group, in a pane that is open. */
+	isShown(): boolean {
+		return this.opened && this.containerEl.isShown();
+	}
+
+	/** The layout keeps which session each chat shows, so a restart opens it again (LIB-FEAT-277). */
+	getState(): Record<string, unknown> {
+		return { ...super.getState(), session: this.runtime.session?.id ?? null };
+	}
+
+	async setState(state: unknown, result: ViewStateResult): Promise<void> {
+		const id = (state as { session?: unknown } | null)?.session;
+		if (typeof id === 'string' && id !== this.runtime.session?.id) {
+			if (this.opened) await this.openSession(id).catch(() => undefined);
+			else this.pendingSession = id;
+		}
+		await super.setState(state, result);
+	}
+
 	async onOpen(): Promise<void> {
 		const root = this.contentEl;
 		root.empty();
 		root.addClass('librarian');
 		if (Platform.isMobile) root.addClass('is-mobile');
+		this.buildHead(root);
 		this.bannerEl = root.createDiv({ cls: 'librarian-key-banner is-hidden' });
 		this.mcpBannerEl = root.createDiv({
 			cls: 'librarian-key-banner librarian-mcp-banner is-hidden',
+		});
+		this.attentionEl = root.createDiv({
+			cls: 'librarian-key-banner librarian-attention is-hidden',
 		});
 		this.noticeEl = root.createDiv({ cls: 'librarian-notice is-hidden' });
 		const messagesEl = root.createDiv({ cls: 'librarian-messages' });
@@ -96,11 +150,11 @@ export class LibrarianView extends ItemView {
 			app: this.app,
 			component: this,
 			popover: this.popover,
-			findReadLine: (path: string, line: number) => this.controller.findReadLine(path, line),
+			findReadLine: (path: string, line: number) => this.runtime.findReadLine(path, line),
 			agentRowOf: (call: StoredToolCall, result: ToolResult | undefined, running: boolean) =>
 				this.agentRowOf(call, result, running),
 			openAgent: (callId: string) => void this.openAgent(callId),
-			hasLiveAgent: (callId: string) => this.controller.agents.has(callId),
+			hasLiveAgent: (callId: string) => this.runtime.agents.has(callId),
 		};
 		this.main = new ConversationPane(messagesEl, deps, {
 			rewind: (index) => this.confirmRewind(index),
@@ -120,6 +174,7 @@ export class LibrarianView extends ItemView {
 		this.buildAgentPane(root, deps);
 		this.composer = new Composer(root, this.plugin, {
 			component: this,
+			runtime: () => this.runtime,
 			newSession: () => this.newSession(),
 			toggleHistory: () => this.toggleHistory(),
 			compactNow: () => this.compactNow(),
@@ -130,23 +185,76 @@ export class LibrarianView extends ItemView {
 				if (this.historyMode) await this.toggleHistory();
 			},
 		});
-		this.unsubscribe = this.controller.subscribe((e) => this.onControllerEvent(e));
 		this.unsubscribeMcp = this.plugin.mcp.subscribe(() => this.renderMcpBanner());
 		this.renderMcpBanner();
+		this.unsubscribeHub = this.plugin.hub.subscribe(() => this.onHubChange());
 		this.registerEvent(
 			this.app.workspace.on('file-open', () => this.composer.renderActiveNote()),
 		);
-		if (this.controller.session) this.renderEvents(this.controller.events);
-		await this.controller.refreshReadiness();
+		this.opened = true;
+		this.attach();
+		const pending = this.pendingSession;
+		this.pendingSession = null;
+		if (pending && pending !== this.runtime.session?.id)
+			await this.openSession(pending).catch(() => undefined);
 	}
 
 	async onClose(): Promise<void> {
+		this.detach();
+		this.opened = false;
 		this.unsubscribeMcp?.();
-		this.unsubscribe?.();
-		this.unsubscribe = null;
+		this.unsubscribeHub?.();
 		this.main.dispose();
 		this.agentPane.dispose();
 		if (this.agentTimer !== null) window.clearTimeout(this.agentTimer);
+	}
+
+	// The session this chat shows (LIB-FEAT-274)
+
+	/** Starts showing `this.runtime`: its log, its queue, its model and what was typed for it. */
+	private attach(): void {
+		const runtime = this.runtime;
+		const hub = this.plugin.hub;
+		hub.show(this, runtime);
+		this.unsubscribe = runtime.subscribe((e) => this.onControllerEvent(e));
+		this.main.reset();
+		this.main.followBottom = true;
+		this.composer.showRuntime();
+		const id = runtime.session?.id;
+		const draft = id ? hub.takeDraft(id) : this.newDraft;
+		if (!id) this.newDraft = null;
+		if (draft) this.composer.restoreDraft(draft);
+		const unsent = id ? hub.takeUnsent(id) : [];
+		if (unsent.length) this.composer.restoreUnsent(unsent);
+		this.renderEvents(runtime.events);
+		this.renderState(runtime.state);
+		this.renderHead();
+		this.renderAttention();
+		void runtime.refreshReadiness();
+	}
+
+	/** Stops showing it. What was typed stays with its session, and nothing it does stops. */
+	private detach(): void {
+		const runtime = this.runtime;
+		this.unsubscribe?.();
+		this.unsubscribe = null;
+		if (this.agentCall) this.closeAgent(false);
+		this.popover.close();
+		this.main.queueStream(null, () => undefined);
+		const draft = this.composer.takeDraft();
+		const id = runtime.session?.id;
+		if (id) this.plugin.hub.keepDraft(id, draft);
+		else this.newDraft = draft;
+		this.plugin.hub.hide(this, runtime);
+	}
+
+	/** Shows another session's runtime here; the one shown so far runs on. */
+	async show(runtime: AgentController): Promise<void> {
+		if (runtime === this.runtime) return;
+		this.detach();
+		this.runtime = runtime;
+		this.attach();
+		this.app.workspace.requestSaveLayout();
 	}
 
 	// The view header's "more options" menu holds what the old toolbar did.
@@ -171,7 +279,7 @@ export class LibrarianView extends ItemView {
 				.setIcon('shrink')
 				.onClick(() => void this.compactNow()),
 		);
-		const current = this.controller.session;
+		const current = this.runtime.session;
 		if (current)
 			menu.addItem((item) =>
 				item
@@ -195,8 +303,8 @@ export class LibrarianView extends ItemView {
 	}
 
 	private async compactNow() {
-		if (!this.controller.session) return this.showNotice('Open a session first.');
-		const outcome = await this.controller.compactNow();
+		if (!this.runtime.session) return this.showNotice('Open a session first.');
+		const outcome = await this.runtime.compactNow();
 		// A failure has already said why.
 		if (outcome !== 'failed')
 			this.showNotice(
@@ -214,10 +322,13 @@ export class LibrarianView extends ItemView {
 		return this.composer.submit();
 	}
 
+	/** A new session in this chat. The one shown so far keeps running (LIB-FEAT-275). */
 	async newSession(): Promise<void> {
 		if (this.historyMode) await this.toggleHistory();
 		this.main.followBottom = true;
-		await this.controller.newSession();
+		// Already a session nobody has written to: nothing to make.
+		if (this.runtime.session || this.runtime.isRunning)
+			await this.show(this.plugin.hub.create());
 		this.composer.renderModelSelect();
 		this.composer.focus();
 	}
@@ -229,6 +340,95 @@ export class LibrarianView extends ItemView {
 
 	focusInput(): void {
 		this.composer.focus();
+	}
+
+	// The session head (LIB-FEAT-275)
+
+	/** One line on top: which session shows, what the others do, and a new session. */
+	private buildHead(root: HTMLElement) {
+		const head = root.createDiv({ cls: 'librarian-session-head' });
+		this.switchEl = head.createEl('button', {
+			cls: 'librarian-session-switch',
+			attr: { 'aria-label': 'Switch session', 'aria-haspopup': 'true' },
+		});
+		setIcon(
+			this.switchEl.createSpan({ cls: 'librarian-session-head-icon' }),
+			'messages-square',
+		);
+		this.headTitleEl = this.switchEl.createSpan({ cls: 'librarian-session-head-title' });
+		this.headChevronEl = this.switchEl.createSpan({ cls: 'librarian-session-head-chevron' });
+		this.badgeEl = this.switchEl.createSpan({ cls: 'librarian-session-badge is-hidden' });
+		this.switchEl.addEventListener('click', () => void this.toggleHistory());
+		const add = head.createEl('button', {
+			cls: 'clickable-icon librarian-session-new',
+			attr: { 'aria-label': 'New session' },
+		});
+		setIcon(add, 'square-pen');
+		add.addEventListener('click', () => void this.newSession());
+	}
+
+	/** The title, and a badge for the sessions no chat on screen shows that run, ask or ended. */
+	private renderHead() {
+		if (!this.opened) return;
+		const hub = this.plugin.hub;
+		this.headTitleEl.setText(hub.titleOf(this.runtime));
+		setIcon(this.headChevronEl, this.historyMode ? 'chevron-up' : 'chevron-down');
+		const others = hub
+			.entries()
+			.filter((e) => e.runtime !== this.runtime && !(e.runtime && hub.isVisible(e.runtime)));
+		const asking = others.filter((e) => e.activity === 'asking').length;
+		const running = others.filter((e) => e.activity === 'running').length;
+		const ended = others.length - asking - running;
+		const busy = asking + running;
+		this.badgeEl.className = `librarian-session-badge ${
+			asking ? 'is-asking' : busy ? 'is-running' : ended ? 'is-unread' : 'is-hidden'
+		}`;
+		this.badgeEl.setText(busy ? String(busy) : '');
+		const parts = [
+			running ? `${running} running` : '',
+			asking ? `${asking} waiting for your approval` : '',
+			ended ? `${ended} finished` : '',
+		].filter(Boolean);
+		this.switchEl.setAttr(
+			'aria-label',
+			parts.length ? `Switch session. Other sessions: ${parts.join(', ')}` : 'Switch session',
+		);
+	}
+
+	/** One line per session no chat on screen shows that waits for an approval (LIB-FEAT-276). */
+	private renderAttention() {
+		if (!this.opened) return;
+		const hub = this.plugin.hub;
+		const waiting = hub
+			.entries()
+			.filter(
+				(e) =>
+					e.activity === 'asking' &&
+					e.runtime &&
+					e.runtime !== this.runtime &&
+					!hub.isVisible(e.runtime),
+			);
+		this.attentionEl.toggleClass('is-hidden', waiting.length === 0);
+		this.attentionEl.empty();
+		for (const entry of waiting.slice(0, 3)) {
+			const row = this.attentionEl.createDiv({ cls: 'librarian-key-banner-row' });
+			row.createSpan({ text: `"${entry.title}" is waiting for your approval.` });
+			const open = row.createEl('button', { cls: 'mod-cta', text: 'Open' });
+			open.addEventListener('click', () => void this.openSession(entry.sessionId));
+		}
+		const more = waiting.length - 3;
+		if (more > 0)
+			this.attentionEl.createDiv({
+				cls: 'librarian-key-banner-row',
+				text: `${more} more ${more === 1 ? 'session is' : 'sessions are'} waiting for your approval.`,
+			});
+	}
+
+	/** Another session moved on: the head, the banner, and the Active rows when the list shows. */
+	private onHubChange() {
+		this.renderHead();
+		this.renderAttention();
+		if (this.historyMode) this.renderActive();
 	}
 
 	// Controller events
@@ -244,6 +444,8 @@ export class LibrarianView extends ItemView {
 				// Another conversation: its agents are not the ones the pane showed.
 				if (this.agentCall) this.closeAgent(false);
 				this.composer.renderModelSelect();
+				this.renderHead();
+				this.app.workspace.requestSaveLayout();
 				break;
 			case 'events':
 				this.renderEvents(event.events);
@@ -278,7 +480,7 @@ export class LibrarianView extends ItemView {
 		}
 	}
 
-	private readonly mainStatus = (id: string) => this.controller.toolStatusOf(id);
+	private readonly mainStatus = (id: string) => this.runtime.toolStatusOf(id);
 
 	private renderState(state: AgentController['state']) {
 		this.bannerEl.toggleClass('is-hidden', state !== 'no-key');
@@ -286,12 +488,12 @@ export class LibrarianView extends ItemView {
 		this.composer.renderState(state);
 		this.renderActivity(state);
 		// The last events of a run are drawn while it still runs; once it has ended, it folds.
-		if (this.controller.session && !this.controller.isRunning && this.main.hasRunningRun)
-			this.renderEvents(this.controller.events);
+		if (this.runtime.session && !this.runtime.isRunning && this.main.hasRunningRun)
+			this.renderEvents(this.runtime.events);
 	}
 
 	private renderKeyBanner() {
-		const provider = this.controller.selection?.provider;
+		const provider = this.runtime.selection?.provider;
 		this.bannerEl.empty();
 		if (!provider) return;
 		this.bannerEl.createDiv({
@@ -309,7 +511,7 @@ export class LibrarianView extends ItemView {
 			() =>
 				void (async () => {
 					this.plugin.secrets.set(provider.secretId, input.value.trim());
-					await this.controller.refreshReadiness();
+					await this.plugin.refreshReadiness();
 					this.composer.focus();
 				})(),
 		);
@@ -359,43 +561,32 @@ export class LibrarianView extends ItemView {
 	}
 
 	private async retryLast() {
-		const last = [...this.controller.events].reverse().find((e) => e.event.type === 'user');
+		const last = [...this.runtime.events].reverse().find((e) => e.event.type === 'user');
 		if (last?.event.type !== 'user') return;
-		await this.controller.send(last.event.content, last.event.images ?? []);
+		await this.runtime.send(last.event.content, last.event.images ?? []);
 	}
 
 	// The chat's own conversation
 
 	/** What the agent is doing, in the running run's header, or on a line of its own for compacting. */
 	private renderActivity(state: AgentController['state']) {
-		const provider = this.controller.selection?.provider;
+		const provider = this.runtime.selection?.provider;
 		const nonStreaming = provider
 			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
 			: false;
 		// Sub-agents at work: how far they are, which the rows under it tell one by one.
-		const agents = [...this.controller.agents.values()];
-		const busy = agents.filter((a) => a.status === 'waiting' || a.status === 'running').length;
-		const activity =
-			state === 'compacting'
-				? 'Compacting context'
-				: state === 'requesting'
-					? nonStreaming
-						? NO_STREAMING_NOTICE
-						: 'Waiting for the model'
-					: state === 'tool-running'
-						? busy
-							? `Running agents, ${agents.length - busy} of ${agents.length} done`
-							: 'Running tools'
-						: state === 'awaiting-approval'
-							? 'Waiting for your approval'
-							: '';
+		const activity = activityText(
+			state,
+			[...this.runtime.agents.values()],
+			nonStreaming ? NO_STREAMING_NOTICE : undefined,
+		);
 		const activityEl = this.main.activityEl;
 		if (activityEl) {
 			activityEl.setText(activity);
 			// A narrow pane cuts it short; the whole text shows on hover.
 			activityEl.setAttr('aria-label', activity);
 		}
-		const standalone = state === 'compacting' && !this.controller.isRunning;
+		const standalone = state === 'compacting' && !this.runtime.isRunning;
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.main.el.createDiv({ cls: 'librarian-work is-running' });
 			const header = this.compactLineEl.createDiv({ cls: 'librarian-work-header' });
@@ -416,9 +607,9 @@ export class LibrarianView extends ItemView {
 		}
 		this.compactLineEl = null;
 		this.approvalEl = null;
-		this.main.draw(events, { running: this.controller.isRunning, status: this.mainStatus });
-		if (this.controller.pendingApproval) this.renderApproval(this.controller.pendingApproval);
-		this.renderActivity(this.controller.state);
+		this.main.draw(events, { running: this.runtime.isRunning, status: this.mainStatus });
+		if (this.runtime.pendingApproval) this.renderApproval(this.runtime.pendingApproval);
+		this.renderActivity(this.runtime.state);
 	}
 
 	private renderApproval(request: ApprovalRequest | null) {
@@ -433,7 +624,7 @@ export class LibrarianView extends ItemView {
 			request.name,
 			// A resume may leave agent out: the card names the agent it goes on with.
 			request.name === SPAWN_AGENT_NAME
-				? { ...request.args, agent: this.controller.agentOfCall(request.args) }
+				? { ...request.args, agent: this.runtime.agentOfCall(request.args) }
 				: request.args,
 			request.existingLength,
 			{
@@ -467,7 +658,7 @@ export class LibrarianView extends ItemView {
 	// Rewind
 
 	private confirmRewind(index: number) {
-		const preview = this.controller.previewRewind(index);
+		const preview = this.runtime.previewRewind(index);
 		if (!preview) return;
 		new ConfirmModal(
 			this.app,
@@ -491,7 +682,7 @@ export class LibrarianView extends ItemView {
 			},
 			'Rewind',
 			async () => {
-				const result = await this.controller.rewind(index);
+				const result = await this.runtime.rewind(index);
 				if (!result) return;
 				// Ahead of anything already there, such as queued messages the rewind handed back.
 				this.composer.prependDraft(result.userText);
@@ -540,7 +731,7 @@ export class LibrarianView extends ItemView {
 	/** A sub-agent moved on: its rows on the timeline, the run head, and the pane if it shows it. */
 	private onAgent(state: SubagentState) {
 		this.main.updateAgentRows(state.callId, liveRow(state));
-		this.renderActivity(this.controller.state);
+		this.renderActivity(this.runtime.state);
 		if (this.agentCall !== state.callId || this.agentTimer !== null) return;
 		// Its stream moves as fast as the chat's; one redraw per stretch keeps the pane smooth.
 		this.agentTimer = window.setTimeout(() => {
@@ -555,13 +746,13 @@ export class LibrarianView extends ItemView {
 		result: ToolResult | undefined,
 		running: boolean,
 	): AgentRowData {
-		const live = this.controller.agents.get(call.id);
+		const live = this.runtime.agents.get(call.id);
 		if (live) return liveRow(live);
-		const agent = this.controller.agentOfCall(call.args);
+		const agent = this.runtime.agentOfCall(call.args);
 		return storedRow(call, result, running, {
 			agent,
 			color: this.plugin.agentDefs.get(agent)?.color,
-			asking: this.controller.toolStatusOf(call.id) === 'awaiting-approval',
+			asking: this.runtime.toolStatusOf(call.id) === 'awaiting-approval',
 		});
 	}
 
@@ -571,9 +762,7 @@ export class LibrarianView extends ItemView {
 		if (this.historyMode) await this.toggleHistory();
 		this.agentCall = callId;
 		this.agentPane.reset();
-		this.agentStored = this.controller.agents.has(callId)
-			? null
-			: await this.storedAgent(callId);
+		this.agentStored = this.runtime.agents.has(callId) ? null : await this.storedAgent(callId);
 		// A switch while the file was read won the race.
 		if (this.agentCall !== callId) return;
 		this.main.el.addClass('is-hidden');
@@ -602,15 +791,15 @@ export class LibrarianView extends ItemView {
 		if (!redraw) return;
 		if (this.mainDirty) {
 			this.mainDirty = false;
-			this.renderEvents(this.controller.events);
-		} else this.renderApproval(this.controller.pendingApproval);
+			this.renderEvents(this.runtime.events);
+		} else this.renderApproval(this.runtime.pendingApproval);
 	}
 
 	/** A finished run read back from its session file, which the spawn_agent result names. */
 	private async storedAgent(
 		callId: string,
 	): Promise<{ data: AgentRowData; events: IndexedEvent[] } | null> {
-		const events = this.controller.events;
+		const events = this.runtime.events;
 		const call = events.find(
 			(e) => e.event.type === 'tool_call' && e.event.toolCallId === callId,
 		)?.event as Extract<SessionEvent, { type: 'tool_call' }> | undefined;
@@ -639,7 +828,7 @@ export class LibrarianView extends ItemView {
 	private renderAgentPane() {
 		const callId = this.agentCall;
 		if (!callId) return;
-		const live = this.controller.agents.get(callId);
+		const live = this.runtime.agents.get(callId);
 		const data = live ? liveRow(live) : this.agentStored?.data;
 		const head = this.agentHeadEl;
 		head.querySelector('.librarian-agent-row-icon')?.setAttr(
@@ -669,32 +858,60 @@ export class LibrarianView extends ItemView {
 				stream: live?.stream ?? null,
 				emptyText: running ? 'Waiting for a slot.' : 'Its conversation was not saved.',
 			});
-			if (this.controller.pendingApproval)
-				this.renderApproval(this.controller.pendingApproval);
+			if (this.runtime.pendingApproval) this.renderApproval(this.runtime.pendingApproval);
 		} else if (live?.stream) this.agentPane.stream(live.stream, status);
 		this.agentPane.scrollToBottom();
 	}
 
-	// History
+	// The session list (LIB-FEAT-275)
 
 	async toggleHistory(): Promise<void> {
 		if (this.agentCall) this.closeAgent();
 		this.historyMode = !this.historyMode;
 		this.main.el.toggleClass('is-hidden', this.historyMode);
 		this.sessionsEl.toggleClass('is-hidden', !this.historyMode);
+		this.renderHead();
 		if (this.historyMode) await this.renderSessions();
 	}
 
-	private async renderSessions() {
-		await renderSessionList(this.sessionsEl, this.plugin, (session) =>
-			this.openSession(session.id),
-		);
+	/** Sessions that run, ask or ended unseen, bar the one this chat shows. */
+	private activeEntries(): SessionEntry[] {
+		const shown = this.runtime.session?.id;
+		return this.plugin.hub.entries().filter((e) => e.sessionId !== shown);
 	}
 
-	/** Opens a session picked from the history list or from the settings, leaving the history. */
+	private async renderSessions() {
+		const active = this.activeEntries();
+		this.activeKey = active.map((e) => e.sessionId).join('\n');
+		await renderSessionList(this.sessionsEl, this.plugin, (id) => this.openSession(id), {
+			current: this.runtime.session?.id ?? null,
+			active,
+			stop: (entry) => entry.runtime?.stop(),
+		});
+	}
+
+	/** The Active rows again; when another session joined or left them, the whole list. */
+	private renderActive() {
+		const active = this.activeEntries();
+		const key = active.map((e) => e.sessionId).join('\n');
+		const box = this.sessionsEl.querySelector<HTMLElement>('.librarian-sessions-active');
+		if (key !== this.activeKey) {
+			void this.renderSessions();
+			return;
+		}
+		if (box)
+			renderActiveRows(
+				box,
+				active,
+				(id) => this.openSession(id),
+				(entry) => entry.runtime?.stop(),
+			);
+	}
+
+	/** Opens a session in this chat, from the list, a banner or the settings. Nothing stops. */
 	async openSession(id: string): Promise<void> {
 		this.main.followBottom = true;
-		await this.controller.openSession(id);
+		await this.show(await this.plugin.hub.open(id));
 		if (this.historyMode) await this.toggleHistory();
 		this.composer.renderModelSelect();
 	}

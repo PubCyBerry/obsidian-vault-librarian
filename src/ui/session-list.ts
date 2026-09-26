@@ -1,6 +1,16 @@
 import { Modal, setIcon } from 'obsidian';
+import type { SessionActivity, SessionEntry } from '../agent/session-hub';
 import type LibrarianPlugin from '../main';
 import type { SessionMetadata } from '../session/session-types';
+import { renderSpinner } from './work-log';
+
+/** How a session in the Active group is said to a screen reader (LIB-FEAT-275). */
+export const ACTIVITY_LABELS: Record<SessionActivity, string> = {
+	running: 'Running',
+	asking: 'Waiting for your approval',
+	unread: 'Finished',
+	failed: 'Failed',
+};
 
 /**
  * Obsidian's own button row for a modal, with Cancel in it. The caller adds the main button
@@ -80,20 +90,24 @@ export class TextPromptModal extends Modal {
 	}
 }
 
-/** Asks, then deletes the session and its snapshots; closes it first when it is the open one. */
+/** Asks, then deletes the session and its snapshots; a run in it stops first (LIB-FEAT-275). */
 export function confirmDeleteSession(
 	plugin: LibrarianPlugin,
 	session: SessionMetadata,
 	after: () => void | Promise<void>,
 ): void {
+	const running = plugin.hub.find(session.id)?.isRunning ?? false;
 	new ConfirmModal(
 		plugin.app,
 		'Delete this session?',
-		(el) => el.createEl('p', { text: `"${session.title}" and its snapshots will be deleted.` }),
+		(el) =>
+			el.createEl('p', {
+				text: `"${session.title}" and its snapshots will be deleted.${running ? ' It is running and stops first.' : ''}`,
+			}),
 		'Delete',
 		async () => {
-			if (plugin.controller.session?.id === session.id)
-				await plugin.controller.closeSession();
+			// A chat showing it is left on an empty session.
+			await plugin.hub.remove(session.id);
 			await plugin.sessions.delete(session.id);
 			await after();
 		},
@@ -107,31 +121,106 @@ export function renameSession(
 ): void {
 	new TextPromptModal(plugin.app, 'Rename session', session.title, async (title) => {
 		await plugin.sessions.rename(session.id, title);
-		if (plugin.controller.session?.id === session.id) plugin.controller.session.title = title;
+		const shown = plugin.hub.find(session.id)?.session;
+		if (shown) shown.title = title;
+		// The chats' heads say the new name.
+		plugin.hub.refresh();
 		await after();
 	}).open();
 }
 
+export interface SessionListOptions {
+	/** The session the chat shows, drawn in the accent color. */
+	current?: string | null;
+	/** Sessions that run, ask or ended unseen, drawn on top in the Active group (LIB-FEAT-275). */
+	active?: SessionEntry[];
+	/** Stops a running session from its row. */
+	stop?: (entry: SessionEntry) => void;
+}
+
 /**
- * Past conversations, newest first. A row opens its session; the pencil renames it and the bin
- * deletes it. Used by the chat's history view and by the Sessions page in the settings.
+ * The sessions that need a look: a mark of their state, the title, what they do or how they
+ * ended, and Stop while they run. A row opens its session without stopping any (LIB-FEAT-275).
+ */
+export function renderActiveRows(
+	el: HTMLElement,
+	entries: readonly SessionEntry[],
+	open: (id: string) => void | Promise<void>,
+	stop?: (entry: SessionEntry) => void,
+): void {
+	el.empty();
+	for (const entry of entries) {
+		const row = el.createDiv({ cls: `librarian-session-row is-active is-${entry.activity}` });
+		const mark = row.createSpan({ cls: `librarian-session-mark is-${entry.activity}` });
+		if (entry.activity === 'running') renderSpinner(mark);
+		else if (entry.activity === 'asking') setIcon(mark, 'hand');
+		else if (entry.activity === 'failed') setIcon(mark, 'x');
+		const main = row.createDiv({
+			cls: 'librarian-session-main',
+			attr: {
+				role: 'button',
+				tabindex: '0',
+				'aria-label': `${entry.title}: ${ACTIVITY_LABELS[entry.activity]}. ${entry.line}`,
+			},
+		});
+		main.createDiv({ cls: 'librarian-session-title', text: entry.title });
+		main.createDiv({ cls: 'librarian-session-activity', text: entry.line });
+		main.addEventListener('click', () => void open(entry.sessionId));
+		main.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter') void open(entry.sessionId);
+		});
+		if (
+			!stop ||
+			!entry.runtime ||
+			(entry.activity !== 'running' && entry.activity !== 'asking')
+		)
+			continue;
+		const runtime = entry.runtime;
+		const button = row.createDiv({ cls: 'librarian-session-actions' }).createEl('button', {
+			cls: 'clickable-icon librarian-session-stop',
+			attr: { 'aria-label': 'Stop this session' },
+		});
+		setIcon(button, 'circle-stop');
+		button.addEventListener('click', () => stop({ ...entry, runtime }));
+	}
+}
+
+/**
+ * Past conversations, newest first, after the Active group when there is one. A row opens its
+ * session; the pencil renames it and the bin deletes it. The chat's session list uses it.
  */
 export async function renderSessionList(
 	el: HTMLElement,
 	plugin: LibrarianPlugin,
-	open: (session: SessionMetadata) => void | Promise<void>,
+	open: (id: string) => void | Promise<void>,
+	opts: SessionListOptions = {},
 ): Promise<void> {
 	el.empty();
+	const active = opts.active ?? [];
+	if (active.length) {
+		el.createDiv({ cls: 'librarian-sessions-group', text: 'Active' });
+		renderActiveRows(
+			el.createDiv({ cls: 'librarian-sessions-active' }),
+			active,
+			open,
+			opts.stop,
+		);
+		el.createDiv({ cls: 'librarian-sessions-group', text: 'Recent' });
+	}
+	const inActive = new Set(active.map((e) => e.sessionId));
 	// A sub-agent's session opens from the conversation that started it, not from here.
-	const sessions = (await plugin.sessions.list()).filter((s) => !s.parentId);
+	const sessions = (await plugin.sessions.list()).filter(
+		(s) => !s.parentId && !inActive.has(s.id),
+	);
 	if (!sessions.length) {
-		el.createDiv({ cls: 'librarian-sessions-empty', text: 'No sessions yet.' });
+		if (!active.length)
+			el.createDiv({ cls: 'librarian-sessions-empty', text: 'No sessions yet.' });
 		return;
 	}
-	const redraw = () => renderSessionList(el, plugin, open);
+	const redraw = () => renderSessionList(el, plugin, open, opts);
 	for (const session of sessions) {
 		const row = el.createDiv({ cls: 'librarian-session-row' });
-		if (plugin.controller.session?.id === session.id) row.addClass('is-current');
+		if (opts.current === session.id) row.addClass('is-current');
 		const main = row.createDiv({ cls: 'librarian-session-main' });
 		main.setAttr('role', 'button');
 		main.setAttr('tabindex', '0');
@@ -139,9 +228,9 @@ export async function renderSessionList(
 		const meta = main.createDiv({ cls: 'librarian-session-meta' });
 		meta.createSpan({ text: `${session.providerId || '?'}/${session.modelId || '?'}` });
 		meta.createSpan({ text: new Date(session.updatedAt).toLocaleString() });
-		main.addEventListener('click', () => void open(session));
+		main.addEventListener('click', () => void open(session.id));
 		main.addEventListener('keydown', (e) => {
-			if (e.key === 'Enter') void open(session);
+			if (e.key === 'Enter') void open(session.id);
 		});
 		const actions = row.createDiv({ cls: 'librarian-session-actions' });
 		const rename = actions.createEl('button', {
