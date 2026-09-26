@@ -124,6 +124,8 @@ export class SharedSignIns {
 	 * copy this device cannot open is left out: an older copy would hold replaced tokens.
 	 */
 	async latest(serverId: string): Promise<SharedSignIn[]> {
+		// This device's own copy still being sealed counts: read after it lands.
+		await this.writing.get(serverId);
 		const newest = new Map<string, SignInRecord>();
 		for (const path of await this.deps.files.list(serverId)) {
 			const record = parse(await this.deps.files.read(path));
@@ -140,6 +142,17 @@ export class SharedSignIns {
 			if (stored) out.push({ device, at, grant, stored });
 		}
 		return out;
+	}
+
+	/** When the newest copy of a sign-in was made, read without opening any copy; null for none. */
+	async sharedAt(serverId: string, grant: string): Promise<number | null> {
+		await this.writing.get(serverId);
+		let at: number | null = null;
+		for (const path of await this.deps.files.list(serverId)) {
+			const record = parse(await this.deps.files.read(path));
+			if (record?.grant === grant && (at === null || record.at > at)) at = record.at;
+		}
+		return at;
 	}
 
 	/** Shares the sign-in this device holds now, in its own file. */

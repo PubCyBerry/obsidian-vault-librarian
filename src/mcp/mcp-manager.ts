@@ -449,12 +449,14 @@ export class McpManager {
 		const http = this.server(id)?.auth === 'oauth' ? this.deps.loopback?.() : null;
 		if (http) {
 			this.endSignIn(id);
+			let signIn: { loopback: Loopback; state?: string } | undefined;
 			const loopback = await listenForRedirect(http, {
 				accept: (state) => state !== null && state === this.signIns.get(id)?.state,
-				onResult: (result) => void this.loopbackResult(id, result),
+				onResult: (result) => void this.loopbackResult(id, result, signIn),
 				path: this.configuredClient(id) ? '/' : '/callback',
 			});
-			this.signIns.set(id, { loopback });
+			signIn = { loopback };
+			this.signIns.set(id, signIn);
 			// A client registered for another redirect address would be refused, so start clean.
 			this.oauthProvider(id).invalidateCredentials('all');
 		}
@@ -485,11 +487,16 @@ export class McpManager {
 		}
 	}
 
-	private async loopbackResult(id: string, result: LoopbackResult): Promise<void> {
+	private async loopbackResult(
+		id: string,
+		result: LoopbackResult,
+		signIn?: { loopback: Loopback; state?: string },
+	): Promise<void> {
 		// The code is exchanged with the loopback address, so the sign-in ends only after that.
 		if ('code' in result) await this.finishAuth(id, result.code);
 		else this.deps.notice(`Sign-in failed: ${result.error}`);
-		this.signIns.delete(id);
+		// A sign-in started again meanwhile is another one, and stays.
+		if (this.signIns.get(id) === signIn) this.signIns.delete(id);
 	}
 
 	private endSignIn(id: string): void {
@@ -681,9 +688,11 @@ export class McpManager {
 			grant: own.grant ?? crypto.randomUUID(),
 		};
 		if (own.at === undefined || own.grant === undefined) provider.replace(stored);
-		const copy = (await this.deps.shared?.latest(id))?.find((s) => s.grant === stored.grant);
-		if (copy && stored.at !== undefined && copy.at >= stored.at) return;
-		await this.deps.shared?.share(id, stored);
+		const shared = this.deps.shared;
+		if (!shared || !stored.grant || stored.at === undefined) return;
+		const copy = await shared.sharedAt(id, stored.grant);
+		if (copy !== null && copy >= stored.at) return;
+		await shared.share(id, stored);
 	}
 
 	/**

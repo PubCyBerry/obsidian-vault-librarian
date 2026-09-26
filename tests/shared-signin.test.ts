@@ -212,12 +212,17 @@ const record = async (synced: FakeVault, device: string) =>
 		grant: string;
 		sealed?: string;
 	};
-/** Waits for a device to write a copy other than `before`. */
-const newCopy = (synced: FakeVault, device: string, before: string) =>
-	until(async () => {
+/**
+ * Waits for a device's copy made after `before`, the text of an earlier copy or '' for none: by
+ * its time, since the same sign-in written twice differs in text alone.
+ */
+const newCopy = (synced: FakeVault, device: string, before: string) => {
+	const since = before ? (JSON.parse(before) as { at: number }).at : -1;
+	return until(async () => {
 		const now = await text(synced, device);
-		return now !== '' && now !== before;
+		return now !== '' && (JSON.parse(now) as { at: number }).at > since;
 	}, `a new copy from ${device}`);
+};
 
 /** Signs a desktop in through its loopback, answering as the browser would, and waits for its copy. */
 async function signInOnDesktop(
