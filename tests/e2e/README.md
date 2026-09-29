@@ -48,6 +48,14 @@ keeps the frontmatter lines the editor does not show, a file changed while the e
 the model in the settings, in plain Korean, to make, change and delete a skill. Results land in
 `window.__skillCrud.results`; put the settings file back afterwards and delete the sessions they leave.
 
+`models.js` needs a provider whose key is saved on that device, such as Open WebUI with vLLM and Ollama models
+(LIB-TEST-297). `__models.start('add', { provider })` adds every model the server lists from **Add from server** and
+saves; `__models.start('detect', { provider, model })` presses **Detect** in a model's editor and saves;
+`__models.start('effort', { provider, cases: [[model, level], ...], transport })` asks one question per case in a
+fresh session and records the level the chat keeps and shows, the `reasoning_effort` the request carried (fetch only)
+and how much thinking came back. Tool cards are rejected. Results land in `window.__models.results`; put the settings
+file back afterwards and delete the sessions in `results.sessions`.
+
 `webdav.js` needs a WebDAV storage in the settings and its password saved on that device. It calls the nine
 storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in the vault, removes both, and
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:
