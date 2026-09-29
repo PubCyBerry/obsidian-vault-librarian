@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.20.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.19.0...2.20.0) (2026-09-29)
+
+
+### Features
+
+* add Detect to the model editor, which fills in a model's details from the server again ([7e797fc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7e797fce4154ecf74cca66a25c52c1deb2e7a623))
+* fill in the details of models Ollama serves, and of open-weight models by their names ([7e797fc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7e797fce4154ecf74cca66a25c52c1deb2e7a623))
+
+
+### Bug Fixes
+
+* hold back at most half the context window for the answer ([7e797fc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7e797fce4154ecf74cca66a25c52c1deb2e7a623))
+* send and show the effort level a model takes, the same way on both transports ([7e797fc](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/7e797fce4154ecf74cca66a25c52c1deb2e7a623))
+
 ## [2.19.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.18.1...2.19.0) (2026-09-26)
 
 
