@@ -115,7 +115,7 @@ class ModelPickerModal extends Modal {
 						}),
 				);
 				option.setText(level);
-				setChecked(option, level === this.controller.thinkingLevel);
+				setChecked(option, level === this.controller.effectiveThinkingLevel);
 			}
 		}
 	}
@@ -427,7 +427,7 @@ export class Composer {
 			cls: 'librarian-model-name',
 			text: current ? current.model.name : options.length ? 'Pick a model' : 'No model',
 		});
-		const level = this.controller.thinkingLevel;
+		const level = this.controller.effectiveThinkingLevel;
 		if (current && level !== 'off')
 			this.modelButton.createSpan({ cls: 'librarian-model-effort', text: level });
 		this.pickModelEl.empty();

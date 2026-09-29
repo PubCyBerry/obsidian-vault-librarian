@@ -65,12 +65,36 @@ export function effectiveRequestOptions(
 	};
 }
 
-/** Thinking levels the chat selector may offer for a model. `null` in the map hides a level. */
-export function selectableThinkingLevels(model: ModelConfig): ThinkingLevel[] {
+type Levels = Pick<ModelConfig, 'reasoning' | 'thinkingLevelMap'>;
+
+/**
+ * Thinking levels the chat selector may offer for a model, by pi-ai's rule: `null` in the map
+ * hides a level, and xhigh and max need a value of their own (LIB-FEAT-293).
+ */
+export function selectableThinkingLevels(model: Levels): ThinkingLevel[] {
 	if (!model.reasoning) return ['off'];
-	const map = model.thinkingLevelMap;
-	if (!map) return [...THINKING_LEVELS];
-	return THINKING_LEVELS.filter((level) => map[level] !== null);
+	const map = model.thinkingLevelMap ?? {};
+	return THINKING_LEVELS.filter((level) =>
+		level === 'xhigh' || level === 'max' ? typeof map[level] === 'string' : map[level] !== null,
+	);
+}
+
+/**
+ * The level a request goes out with, as pi-ai clamps it: the level itself if the model takes it,
+ * else the nearest one above, else the nearest one below.
+ */
+export function clampThinkingLevel(model: Levels, level: ThinkingLevel): ThinkingLevel {
+	const levels = selectableThinkingLevels(model);
+	if (levels.includes(level)) return level;
+	const at = THINKING_LEVELS.indexOf(level);
+	return (
+		THINKING_LEVELS.slice(at + 1).find((l) => levels.includes(l)) ??
+		THINKING_LEVELS.slice(0, at)
+			.reverse()
+			.find((l) => levels.includes(l)) ??
+		levels[0] ??
+		'off'
+	);
 }
 
 export function toPiModel(provider: ProviderConfig, model: ModelConfig): PiModel {

@@ -382,8 +382,11 @@ export class ContextManager {
 
 	budget(model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>) {
 		const s = this.settings();
-		const reserved =
-			s.reserveOutputTokens === 'model-max' ? model.maxTokens : s.reserveOutputTokens;
+		// At most half the window: an output limit as large as the window would leave no input.
+		const reserved = Math.min(
+			s.reserveOutputTokens === 'model-max' ? model.maxTokens : s.reserveOutputTokens,
+			Math.floor(model.contextWindow / 2),
+		);
 		const margin = Math.min(s.safetyMarginTokens, Math.floor(model.contextWindow * 0.1));
 		const usable = Math.max(1, model.contextWindow - reserved - margin);
 		return { reserved, margin, usable };

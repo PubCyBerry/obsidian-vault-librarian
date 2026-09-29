@@ -10,7 +10,7 @@ import {
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId } from '../mcp/mcp-manager';
 import { clientSecretId } from '../mcp/oauth-provider';
-import { modelFromServer } from '../provider/model-catalog';
+import { describeServerModel } from '../provider/model-catalog';
 import { type ServerModel, testConnection } from '../provider/transport';
 import {
 	MAX_DESCRIPTION,
@@ -441,13 +441,31 @@ function jsonObject(text: string): Record<string, unknown> | undefined | null {
 	}
 }
 
+/** Takes what detection found about a model, keeping its name, sampling and compatibility. */
+export function applyDetected(d: ModelConfig, found: ModelConfig): void {
+	d.toolCalling = found.toolCalling;
+	d.reasoning = found.reasoning;
+	d.input = found.input;
+	d.contextWindow = found.contextWindow;
+	d.maxTokens = found.maxTokens;
+	if (found.thinkingLevelMap) d.thinkingLevelMap = { ...found.thinkingLevelMap };
+	else delete d.thinkingLevelMap;
+	if (found.api) d.api = found.api;
+	if (Object.values(found.cost).some((v) => v > 0)) d.cost = { ...found.cost };
+	if (!d.name || d.name === d.id) d.name = found.name;
+}
+
 export class ModelEditorModal extends Modal {
 	private readonly draft: ModelConfig;
+	private samplingText = '';
+	private buttonsEl: HTMLElement | null = null;
 
 	constructor(
 		app: App,
 		model: ModelConfig | null,
 		private readonly onSave: (model: ModelConfig) => void,
+		/** The model as the server and the lists describe it; null when the server does not list it. */
+		private readonly detect?: (id: string) => Promise<ModelConfig | null>,
 	) {
 		super(app);
 		this.draft = model ? (JSON.parse(JSON.stringify(model)) as ModelConfig) : newModel('');
@@ -456,6 +474,15 @@ export class ModelEditorModal extends Modal {
 	onOpen() {
 		this.modalEl.addClass('librarian-modal');
 		this.titleEl.setText(this.draft.id ? `Edit model ${this.draft.id}` : 'Add model');
+		const params = this.draft.samplingParams;
+		this.samplingText = params ? JSON.stringify(params) : '';
+		this.render();
+	}
+
+	/** Draws the form from the draft; Detect draws it again with what it found (LIB-FEAT-294). */
+	private render() {
+		this.contentEl.empty();
+		this.buttonsEl?.remove();
 		const el = this.contentEl;
 		const d = this.draft;
 		const idSetting: Setting = new Setting(el)
@@ -470,6 +497,32 @@ export class ModelEditorModal extends Modal {
 						clearError(idSetting);
 					}),
 			);
+		const detect = this.detect;
+		if (detect) {
+			const detectSetting: Setting = new Setting(el)
+				.setName('Details from server')
+				.setDesc(
+					'Fills tool calling, reasoning, images, context, output and effort levels from the server and known model lists.',
+				)
+				.addButton((b) =>
+					b.setButtonText('Detect').onClick(async () => {
+						if (!d.id) return invalid(idSetting, 'The model needs an ID.');
+						clearError(detectSetting);
+						b.setDisabled(true);
+						try {
+							const found = await detect(d.id);
+							if (!found)
+								return invalid(detectSetting, `The server does not list ${d.id}.`);
+							applyDetected(d, found);
+							this.render();
+						} catch (e) {
+							invalid(detectSetting, e instanceof Error ? e.message : String(e));
+						} finally {
+							b.setDisabled(false);
+						}
+					}),
+				);
+		}
 		new Setting(el).setName('Display name').addText((t) =>
 			t
 				.setPlaceholder('Same as the ID')
@@ -514,7 +567,7 @@ export class ModelEditorModal extends Modal {
 		thinking.createEl('summary', { text: 'Thinking level map' });
 		thinking.createEl('p', {
 			cls: 'setting-item-description',
-			text: 'Provider value for each level. Empty keeps the default, "-" hides the level.',
+			text: 'Value sent for each level. Empty sends the level name, except that off sends nothing and xhigh and max are hidden. "-" hides the level.',
 		});
 		for (const level of THINKING_LEVELS) {
 			const current = d.thinkingLevelMap?.[level];
@@ -536,16 +589,15 @@ export class ModelEditorModal extends Modal {
 			numberInput(new Setting(cost).setName(key), d.cost[key], (v) => (d.cost[key] = v ?? 0));
 		}
 
-		let samplingText = d.samplingParams ? JSON.stringify(d.samplingParams) : '';
 		const sampling: Setting = new Setting(el)
 			.setName('Sampling parameters')
 			.setDesc('JSON object merged into the request body.')
 			.addTextArea((t) =>
 				t
 					.setPlaceholder('{"top_k": 20}')
-					.setValue(samplingText)
+					.setValue(this.samplingText)
 					.onChange((v) => {
-						samplingText = v;
+						this.samplingText = v;
 						clearError(sampling);
 					}),
 			);
@@ -556,12 +608,13 @@ export class ModelEditorModal extends Modal {
 
 		// Outside the scrolling content, so Save stays in view on a long form.
 		const buttons = modalButtons(this.modalEl, () => this.close());
+		this.buttonsEl = buttons;
 		buttons
 			.createEl('button', { cls: 'mod-cta', text: 'Save' })
 			.addEventListener('click', () => {
 				if (!d.id) return invalid(idSetting, 'The model needs an ID.');
 				if (!d.name) d.name = d.id;
-				const params = jsonObject(samplingText);
+				const params = jsonObject(this.samplingText);
 				if (params === null)
 					return invalid(sampling, 'Sampling parameters must be a JSON object.');
 				if (params) d.samplingParams = params;
@@ -744,9 +797,8 @@ export class ProviderEditorModal extends Modal {
 			.setDesc('Asks the server for its models with this key.')
 			.addButton((b) =>
 				b.setButtonText('Test').onClick(async () => {
-					const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
 					b.setDisabled(true);
-					const result = await testConnection(d, key);
+					const result = await testConnection(d, this.key());
 					b.setDisabled(false);
 					new Notice(
 						result.ok
@@ -817,7 +869,7 @@ export class ProviderEditorModal extends Modal {
 			.setHeading()
 			.addButton((b) =>
 				b.setButtonText('Add from server').onClick(async () => {
-					const key = this.apiKeyTouched ? this.apiKeyInput.trim() : stored;
+					const key = this.key();
 					b.setDisabled(true);
 					const result = await testConnection(d, key);
 					b.setDisabled(false);
@@ -836,17 +888,24 @@ export class ProviderEditorModal extends Modal {
 						return;
 					}
 					new ServerModelModal(this.app, fresh, (m) => {
-						d.models.push(modelFromServer(d.baseUrl, m));
-						this.renderModels();
+						void describeServerModel(d, key, m).then((model) => {
+							d.models.push(model);
+							this.renderModels();
+						});
 					}).open();
 				}),
 			)
 			.addButton((b) =>
 				b.setButtonText('Add model').onClick(() => {
-					new ModelEditorModal(this.app, null, (model) => {
-						d.models.push(model);
-						this.renderModels();
-					}).open();
+					new ModelEditorModal(
+						this.app,
+						null,
+						(model) => {
+							d.models.push(model);
+							this.renderModels();
+						},
+						this.detectModel,
+					).open();
 				}),
 			);
 		this.modelsEl = el.createDiv({ cls: 'librarian-model-list' });
@@ -884,6 +943,22 @@ export class ProviderEditorModal extends Modal {
 		);
 	}
 
+	/** The key typed into the editor, else the one saved on this device. */
+	private key(): string | null {
+		return this.apiKeyTouched
+			? this.apiKeyInput.trim()
+			: this.plugin.secrets.get(this.draft.secretId);
+	}
+
+	/** One model as the server lists it now, for the model editor's Detect (LIB-FEAT-294). */
+	private readonly detectModel = async (id: string): Promise<ModelConfig | null> => {
+		const key = this.key();
+		const result = await testConnection(this.draft, key);
+		if (!result.ok) throw new Error(`Connection failed: ${result.message}`);
+		const server = result.models.find((m) => m.id === id);
+		return server ? describeServerModel(this.draft, key, server) : null;
+	};
+
 	private renderModels() {
 		this.modelsEl.empty();
 		if (!this.draft.models.length)
@@ -901,10 +976,15 @@ export class ProviderEditorModal extends Modal {
 						.setIcon('pencil')
 						.setTooltip('Edit')
 						.onClick(() => {
-							new ModelEditorModal(this.app, model, (updated) => {
-								this.draft.models[i] = updated;
-								this.renderModels();
-							}).open();
+							new ModelEditorModal(
+								this.app,
+								model,
+								(updated) => {
+									this.draft.models[i] = updated;
+									this.renderModels();
+								},
+								this.detectModel,
+							).open();
 						}),
 				)
 				.addExtraButton((b) =>

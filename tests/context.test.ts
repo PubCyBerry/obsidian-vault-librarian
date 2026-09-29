@@ -67,6 +67,17 @@ describe('budget (LIB-TEST-061, LIB-TEST-062)', () => {
 		expect(usage.usageRatio).toBeCloseTo(2800 / 3175);
 	});
 
+	it('holds back at most half the window for the answer (LIB-TEST-296)', () => {
+		const { cm, settings } = manager();
+		const wide = { contextWindow: 1048576, maxTokens: 1048576 };
+		expect(cm.budget(wide)).toMatchObject({
+			reserved: 524288,
+			usable: 1048576 - 524288 - 4096,
+		});
+		settings.context.reserveOutputTokens = 2_000_000;
+		expect(cm.budget(wide).reserved).toBe(524288);
+	});
+
 	it('uses 70% and 85% by default and follows changed thresholds', () => {
 		const { cm, settings } = manager();
 		expect(cm.usageFor(Math.ceil(3175 * 0.7), model).state).toBe('warning');

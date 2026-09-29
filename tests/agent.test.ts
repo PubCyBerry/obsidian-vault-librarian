@@ -36,6 +36,7 @@ interface Harness {
 	controller: AgentController;
 	events: ControllerEvent[];
 	requests: ReturnType<typeof scriptedStream>['requests'];
+	sentOptions: ReturnType<typeof scriptedStream>['sentOptions'];
 	sessions: SessionManager;
 	permissions: ToolPermissionManager;
 	/** Answers every approval request with the given decision, recording the tool names asked. */
@@ -72,7 +73,7 @@ function harness(
 	for (const [tool, p] of Object.entries(perms))
 		settings.toolPermissions.byTool[tool as 'ls'] = p!;
 	app.secrets.set('vault-librarian-p', 'key');
-	const { streamFn, requests } = scriptedStream(turns);
+	const { streamFn, requests, sentOptions } = scriptedStream(turns);
 	const sessions = new SessionManager(app as unknown as App, '.obsidian/plugins/vault-librarian');
 	const permissions = new ToolPermissionManager(
 		() => settings,
@@ -138,6 +139,7 @@ function harness(
 		controller,
 		events,
 		requests,
+		sentOptions,
 		sessions,
 		permissions,
 		autoApprove(decision) {
@@ -395,6 +397,34 @@ describe('effort before the first session', () => {
 		expect(h.controller.session?.thinkingLevel).toBe('high');
 		await h.controller.newSession();
 		expect(h.controller.thinkingLevel).toBe('medium');
+	});
+
+	it('shows and sends the level the model takes, and keeps the one picked (LIB-TEST-296)', async () => {
+		const h = harness([{ text: 'ok' }, { text: 'ok' }]);
+		const provider = h.controller.deps.settings().providers[0]!;
+		provider.requestDefaults.thinkingLevel = 'medium';
+		// Ollama's glm-5.3 cannot stop thinking and takes low, high and max.
+		provider.models.push({
+			...newModel('glm'),
+			reasoning: true,
+			thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: null, high: 'high' },
+		});
+		await h.controller.refreshReadiness();
+		// A model that does not reason gets off; the pick waits for a model that does.
+		expect(h.controller.effectiveThinkingLevel).toBe('off');
+		await h.controller.setModel(provider.id, 'glm');
+		expect(h.controller.thinkingLevel).toBe('medium');
+		expect(h.controller.effectiveThinkingLevel).toBe('high');
+		await h.controller.send('hi');
+		expect(h.sentOptions[0]?.reasoning).toBe('high');
+		// Off on it is its lowest level, not no effort, which would leave it at its own default.
+		await h.controller.setThinkingLevel('off');
+		expect(h.controller.effectiveThinkingLevel).toBe('low');
+		await h.controller.send('again');
+		expect(h.sentOptions[1]?.reasoning).toBe('low');
+		await h.controller.setModel(provider.id, 'm');
+		expect(h.controller.effectiveThinkingLevel).toBe('off');
+		expect(h.controller.thinkingLevel).toBe('off');
 	});
 });
 

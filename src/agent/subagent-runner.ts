@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-ai/utils/transcript';
 import {
 	type ActiveSelection,
+	clampThinkingLevel,
 	type PiModel,
 	selectableThinkingLevels,
 	toPiModel,
@@ -184,7 +185,10 @@ export class SubagentRunner {
 		if (c.deps.secrets.get(selection.provider.secretId) === null)
 			throw new Error(`No API key for ${selection.provider.name} on this device.`);
 		const levels = selectableThinkingLevels(selection.model);
-		const level = [def.effort, c.thinkingLevel].find((l) => l && levels.includes(l)) ?? 'off';
+		// Neither fits: as close to off as the model goes, which is off when it can stop thinking.
+		const level =
+			[def.effort, c.thinkingLevel].find((l) => l && levels.includes(l)) ??
+			clampThinkingLevel(selection.model, 'off');
 		return { selection, level };
 	}
 

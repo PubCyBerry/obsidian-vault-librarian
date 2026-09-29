@@ -3,6 +3,7 @@ import type { App } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
 import { modelFromServer } from '../src/provider/model-catalog';
 import {
+	clampThinkingLevel,
 	effectiveRequestOptions,
 	mergeCompat,
 	ProviderManager,
@@ -18,7 +19,7 @@ import {
 } from '../src/provider/transport';
 import { isValidSecretId, SecretStore } from '../src/storage/secret-store';
 import { createVaultTools } from '../src/tools/registry';
-import { mergeSettings, newModel, newProvider } from '../src/types';
+import { mergeSettings, newModel, newProvider, type ThinkingLevel } from '../src/types';
 import { noteVisibility } from '../src/visibility';
 import { FakeApp } from './fake-app';
 import { Platform, requestUrlMock } from './obsidian-stub';
@@ -127,13 +128,16 @@ describe('provider config (LIB-TEST-017, LIB-TEST-018, LIB-TEST-023)', () => {
 		});
 	});
 
-	it('hides thinking levels mapped to null', () => {
+	it('hides thinking levels mapped to null, and xhigh and max without a value (LIB-TEST-296)', () => {
 		const model = {
 			...newModel('m'),
 			reasoning: true,
 			thinkingLevelMap: { off: 'none', minimal: null, low: 'low', high: null },
 		};
-		expect(selectableThinkingLevels(model)).toEqual(['off', 'low', 'medium', 'xhigh', 'max']);
+		expect(selectableThinkingLevels(model)).toEqual(['off', 'low', 'medium']);
+		expect(
+			selectableThinkingLevels({ ...model, thinkingLevelMap: { xhigh: 'xhigh', max: null } }),
+		).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 		expect(selectableThinkingLevels({ ...newModel('m'), reasoning: false })).toEqual(['off']);
 	});
 
@@ -249,6 +253,71 @@ describe('request body (LIB-TEST-019, LIB-TEST-089, LIB-TEST-090)', () => {
 			type: 'ephemeral',
 		});
 		expect(Object.keys(marked)).toEqual(Object.keys(plain));
+	});
+});
+
+describe('effort levels as pi-ai sends them (LIB-TEST-296)', () => {
+	// Ollama's glm-5.3: it cannot stop thinking and takes low, high and max.
+	const glm = {
+		...newModel('glm-5.3'),
+		reasoning: true,
+		thinkingLevelMap: {
+			off: null,
+			minimal: null,
+			low: 'low',
+			medium: null,
+			high: 'high',
+			xhigh: null,
+			max: 'max',
+		},
+	};
+	const effort = (baseUrl: string, model: typeof glm, level: ThinkingLevel) =>
+		buildRequestBody(toPiModel({ ...newProvider('p'), baseUrl }, model), context('hi'), {
+			thinkingLevel: level,
+		}).reasoning_effort;
+
+	it('moves a level the model does not take to the nearest one above, else below', () => {
+		expect(clampThinkingLevel(glm, 'medium')).toBe('high');
+		expect(clampThinkingLevel(glm, 'off')).toBe('low');
+		expect(clampThinkingLevel(glm, 'xhigh')).toBe('max');
+		expect(clampThinkingLevel({ ...glm, thinkingLevelMap: { max: null } }, 'max')).toBe('high');
+		expect(clampThinkingLevel({ ...glm, reasoning: false }, 'high')).toBe('off');
+	});
+
+	it('sends reasoning_effort without streaming as the streaming request does', () => {
+		// No compatibility set: a server that is not known to refuse it gets the effort.
+		expect(effort('https://llm.example/api', glm, 'medium')).toBe('high');
+		expect(effort('https://llm.example/api', glm, 'max')).toBe('max');
+		expect(effort('https://llm.example/api', glm, 'off')).toBeUndefined();
+		const ollama = { ...glm, thinkingLevelMap: { ...glm.thinkingLevelMap, off: 'none' } };
+		expect(effort('https://llm.example/api', ollama, 'off')).toBe('none');
+		// Hosts pi-ai sends no reasoning_effort to.
+		expect(effort('https://api.x.ai/v1', glm, 'high')).toBeUndefined();
+		expect(effort('https://api.moonshot.ai/v1', glm, 'high')).toBeUndefined();
+	});
+
+	it('reads the model vLLM serves and where Ollama describes a model from the list', async () => {
+		requestUrlMock.impl = async () => ({
+			status: 200,
+			json: {
+				data: [
+					{ id: 'house-model', root: 'Qwen/Qwen3.8-27B', max_model_len: 131072 },
+					{ id: 'kimi-k3', owned_by: 'openai', openai: { owned_by: 'ollama' } },
+				],
+			},
+		});
+		try {
+			const provider = { ...newProvider('p'), baseUrl: 'https://llm.example/api' };
+			expect(await testConnection(provider, 'key')).toEqual({
+				ok: true,
+				models: [
+					{ id: 'house-model', root: 'Qwen/Qwen3.8-27B', contextWindow: 131072 },
+					{ id: 'kimi-k3', show: 'https://ollama.com/api/show' },
+				],
+			});
+		} finally {
+			requestUrlMock.impl = null;
+		}
 	});
 });
 

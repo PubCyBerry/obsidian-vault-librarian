@@ -21,7 +21,13 @@ import { requestUrl } from 'obsidian';
 import { requestUrlFetch } from '../mcp/fetch-shim';
 import type { InputModality, ProviderConfig, ThinkingLevel, TransportMode } from '../types';
 import { appIsHidden, wasHiddenSince } from '../visibility';
-import type { CompletionsModel, EffectiveRequestOptions, PiModel } from './provider-manager';
+import { ollamaShowUrl } from './ollama';
+import {
+	type CompletionsModel,
+	clampThinkingLevel,
+	type EffectiveRequestOptions,
+	type PiModel,
+} from './provider-manager';
 
 export const NO_STREAMING_NOTICE =
 	'Streaming is not available for this provider. Waiting for the full response.';
@@ -46,14 +52,19 @@ export interface ResolvedRequest {
 
 type Compat = NonNullable<CompletionsModel['compat']>;
 
+/** The hosts pi-ai sends no reasoning_effort to; they take thinking in fields of their own. */
+const NO_REASONING_EFFORT =
+	/api\.x\.ai|api\.z\.ai|open\.bigmodel\.cn|api\.moonshot\.|api\.together\.|gateway\.ai\.cloudflare\.com|integrate\.api\.nvidia\.com|api\.ant-ling\.com/;
+
 /** Fill the defaults `pi-ai` derives from the URL so `convertMessages` gets a complete compat. */
 function resolveCompat(model: CompletionsModel) {
 	const c: Compat = model.compat ?? {};
 	return {
 		supportsStore: c.supportsStore ?? false,
 		supportsDeveloperRole: c.supportsDeveloperRole ?? false,
-		// Google's OpenAI endpoint takes it, as pi-ai's own detection says (LIB-FEAT-250).
-		supportsReasoningEffort: c.supportsReasoningEffort ?? isGoogle(model.baseUrl),
+		// As pi-ai's own detection, so both transports send the same effort (LIB-FEAT-293).
+		supportsReasoningEffort:
+			c.supportsReasoningEffort ?? !NO_REASONING_EFFORT.test(model.baseUrl),
 		supportsUsageInStreaming: c.supportsUsageInStreaming ?? true,
 		supportsFinishReason: c.supportsFinishReason ?? true,
 		maxTokensField: c.maxTokensField ?? 'max_tokens',
@@ -131,16 +142,19 @@ function usageFrom(model: CompletionsModel, raw: Record<string, unknown> | undef
 	return u;
 }
 
+/**
+ * The reasoning_effort value for a level, as pi-ai's streaming request picks it: a level the model
+ * does not take moves to the nearest one it does, and `off` sends the map's value if it has one.
+ */
 function reasoningEffort(
 	model: CompletionsModel,
 	level: ThinkingLevel | undefined,
 ): string | undefined {
 	if (!model.reasoning) return undefined;
-	const wanted = level ?? 'off';
-	const mapped = model.thinkingLevelMap?.[wanted];
-	if (mapped === null) return undefined;
-	if (mapped !== undefined) return mapped;
-	return wanted === 'off' ? undefined : wanted;
+	const clamped = level && level !== 'off' ? clampThinkingLevel(model, level) : 'off';
+	const mapped = model.thinkingLevelMap?.[clamped];
+	if (clamped === 'off') return typeof mapped === 'string' ? mapped : undefined;
+	return mapped ?? clamped;
 }
 
 /** Google's placeholder for a call it did not sign, such as one kept before signatures were. */
@@ -643,20 +657,26 @@ export class TransportRouter {
 export interface ServerModel {
 	id: string;
 	name?: string;
+	/** The Hugging Face name vLLM serves a model from, whatever name it lists it under. */
+	root?: string;
+	/** Where Ollama describes the model, when Ollama serves it (LIB-FEAT-292). */
+	show?: string;
 	contextWindow?: number;
 	maxTokens?: number;
 	input?: InputModality[];
 	reasoning?: boolean;
 	toolCalling?: boolean;
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
 }
 
 const positive = (n: unknown): n is number => typeof n === 'number' && n > 0;
 
 /**
- * vLLM reports max_model_len; OpenRouter reports context_length, the output limit, the input kinds
- * and the parameters it takes (LIB-FEAT-246). OpenAI and most servers report only the name.
+ * vLLM reports max_model_len and the model it serves; OpenRouter reports context_length, the
+ * output limit, the input kinds and the parameters it takes (LIB-FEAT-246). OpenAI and most
+ * servers report only the name; Ollama's models are described at /api/show (LIB-FEAT-292).
  */
-function serverModel(entry: unknown): ServerModel[] {
+function serverModel(entry: unknown, baseUrl: string): ServerModel[] {
 	if (!entry || typeof entry !== 'object') return [];
 	const e = entry as Record<string, unknown>;
 	if (typeof e.id !== 'string' || !e.id) return [];
@@ -665,10 +685,13 @@ function serverModel(entry: unknown): ServerModel[] {
 	const modalities = (e.architecture as { input_modalities?: unknown } | undefined)
 		?.input_modalities;
 	const params = Array.isArray(e.supported_parameters) ? e.supported_parameters : undefined;
+	const show = ollamaShowUrl(e, baseUrl);
 	return [
 		{
 			id: e.id,
 			...(typeof e.name === 'string' && e.name ? { name: e.name } : {}),
+			...(typeof e.root === 'string' && e.root && e.root !== e.id ? { root: e.root } : {}),
+			...(show ? { show } : {}),
 			...(size ? { contextWindow: size } : {}),
 			...(positive(top?.max_completion_tokens)
 				? { maxTokens: top.max_completion_tokens }
@@ -696,7 +719,10 @@ export async function testConnection(
 		const status = response.status;
 		if (status >= 400) return { ok: false, message: `HTTP ${status}` };
 		const data = (response.json as { data?: unknown[] } | undefined)?.data;
-		return { ok: true, models: Array.isArray(data) ? data.flatMap(serverModel) : [] };
+		const models = Array.isArray(data)
+			? data.flatMap((e) => serverModel(e, provider.baseUrl))
+			: [];
+		return { ok: true, models };
 	} catch (error) {
 		return { ok: false, message: error instanceof Error ? error.message : String(error) };
 	}

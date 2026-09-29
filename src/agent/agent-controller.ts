@@ -12,6 +12,7 @@ import type { CompactionResult, ContextManager, ContextUsage } from '../context/
 import type { ToolPermissionManager } from '../permissions/tool-permission-manager';
 import {
 	type ActiveSelection,
+	clampThinkingLevel,
 	effectiveRequestOptions,
 	type PiModel,
 	type ProviderManager,
@@ -212,7 +213,19 @@ export class AgentController {
 	private readonly subagents = new SubagentRunner(this);
 	/** Provider and model the current session runs on; may differ from the settings default. */
 	selection: ActiveSelection | undefined;
+	/** The level picked, kept across models so that switching back finds it again. */
 	thinkingLevel: ThinkingLevel = 'off';
+
+	/**
+	 * The level the model gets and the chat shows: one the model cannot take moves to the nearest
+	 * one it can, as pi-ai moves it (LIB-FEAT-293). Off on a model that cannot stop thinking is its
+	 * lowest level rather than no effort at all, which would leave the model at its own default.
+	 */
+	get effectiveThinkingLevel(): ThinkingLevel {
+		return this.selection
+			? clampThinkingLevel(this.selection.model, this.thinkingLevel)
+			: this.thinkingLevel;
+	}
 
 	private agent: Agent | null = null;
 	private readonly listeners = new Set<(event: ControllerEvent) => void>();
@@ -505,7 +518,7 @@ export class AgentController {
 	}
 
 	private streamFn(): StreamFn {
-		return this.streamFor(this.selection!, () => this.thinkingLevel);
+		return this.streamFor(this.selection!, () => this.effectiveThinkingLevel);
 	}
 
 	streamFor(sel: ActiveSelection, level: ThinkingLevel | (() => ThinkingLevel)): StreamFn {
@@ -705,7 +718,7 @@ export class AgentController {
 			const agent = new Agent({
 				initialState: {
 					model,
-					thinkingLevel: this.thinkingLevel,
+					thinkingLevel: this.effectiveThinkingLevel,
 					tools,
 					messages,
 				},
@@ -822,7 +835,10 @@ export class AgentController {
 					{
 						systemPrompt: await this.systemPrompt(),
 						tools: this.exposedTools(),
-						reasoning: this.thinkingLevel === 'off' ? undefined : this.thinkingLevel,
+						reasoning:
+							this.effectiveThinkingLevel === 'off'
+								? undefined
+								: this.effectiveThinkingLevel,
 						keepLastUser: opts.keepLastUser,
 						signal: this.agent?.signal,
 					},
