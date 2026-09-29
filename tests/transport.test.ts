@@ -295,7 +295,9 @@ describe('effort levels as pi-ai sends them (LIB-TEST-296)', () => {
 		expect(effort('https://api.x.ai/v1', glm, 'high')).toBeUndefined();
 		expect(effort('https://api.moonshot.ai/v1', glm, 'high')).toBeUndefined();
 	});
+});
 
+describe('models from the list (LIB-TEST-295)', () => {
 	it('reads the model vLLM serves and where Ollama describes a model from the list', async () => {
 		requestUrlMock.impl = async () => ({
 			status: 200,

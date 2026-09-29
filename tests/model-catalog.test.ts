@@ -7,7 +7,8 @@ import {
 	ollamaShowUrl,
 } from '../src/provider/ollama';
 import { apiOf, toPiModel } from '../src/provider/provider-manager';
-import { COMPLETIONS_API, newProvider, RESPONSES_API } from '../src/types';
+import { applyDetected } from '../src/settings/modals';
+import { COMPLETIONS_API, newModel, newProvider, RESPONSES_API } from '../src/types';
 import { requestUrlMock } from './obsidian-stub';
 
 describe('models added from a server (LIB-TEST-248)', () => {
@@ -295,5 +296,42 @@ describe('models Ollama serves and open-weight models (LIB-TEST-295)', () => {
 		} finally {
 			requestUrlMock.impl = null;
 		}
+	});
+});
+
+describe("the model editor's Detect (LIB-TEST-295)", () => {
+	it('takes the detected details and keeps the name, sampling, compatibility and request format', () => {
+		const draft = {
+			...newModel('qwen3.8-27B'),
+			name: 'My Qwen',
+			api: RESPONSES_API,
+			samplingParams: { top_k: 20 },
+			compat: { requiresThinkingAsText: true },
+			thinkingLevelMap: { off: 'none' as const },
+		};
+		const found = modelFromServer('https://llm.example/api', { id: 'qwen3.8-27B' });
+		applyDetected(draft, found);
+		expect(draft).toMatchObject({
+			name: 'My Qwen',
+			api: RESPONSES_API,
+			samplingParams: { top_k: 20 },
+			compat: { requiresThinkingAsText: true },
+			reasoning: true,
+			input: ['text', 'image'],
+			contextWindow: 262144,
+			maxTokens: 32768,
+			thinkingLevelMap: { off: null, low: 'low', xhigh: 'xhigh' },
+		});
+		// A name left as the ID takes the list's; a model found without levels drops the old ones.
+		const plain = { ...newModel('x'), thinkingLevelMap: { off: 'none' as const } };
+		applyDetected(plain, {
+			...found,
+			id: 'x',
+			name: 'Found',
+			reasoning: false,
+			thinkingLevelMap: undefined,
+		});
+		expect(plain.name).toBe('Found');
+		expect(plain.thinkingLevelMap).toBeUndefined();
 	});
 });
