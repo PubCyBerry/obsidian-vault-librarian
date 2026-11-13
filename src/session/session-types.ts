@@ -70,6 +70,11 @@ export type SessionEvent =
 			thinking?: string;
 			toolCalls: StoredToolCall[];
 			usage?: StoredUsage;
+			/**
+			 * How long the request took, in milliseconds from when it went out: to the first piece
+			 * of the stream (absent when the response did not stream) and to its end (LIB-FEAT-306).
+			 */
+			timing?: { ttft?: number; total: number };
 			stopReason?: string;
 			responses?: ResponsesReplay;
 	  }

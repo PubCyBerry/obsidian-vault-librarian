@@ -8,6 +8,7 @@ import {
 	cacheHitRatio,
 	estimateText,
 	HANDOFF_PROMPT,
+	outputSpeed,
 	SUMMARY_PREFIX,
 	truncateMiddle,
 } from '../src/context/context-manager';
@@ -246,6 +247,48 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 		expect(cm.usage(replay([meta]), piModel).lastResponse).toBeNull();
 		expect(cacheHitRatio(null)).toBeNull();
 		expect(cacheHitRatio({ input: 0, output: 5, cacheRead: 0, cacheWrite: 0 })).toBeNull();
+	});
+
+	it('carries how long the last response took, and its output speed while it streamed (LIB-TEST-307)', () => {
+		const { cm } = manager();
+		const reply = (timing?: { ttft?: number; total: number }) =>
+			replay([
+				ev('meta', { session: { id: 's' } }),
+				ev('assistant', {
+					content: 'reply',
+					toolCalls: [],
+					usage: {
+						input: 200,
+						output: 120,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 320,
+					},
+					...(timing ? { timing } : {}),
+				}),
+			]);
+		const last = cm.usage(reply({ ttft: 500, total: 2900 }), piModel).lastResponse;
+		expect(last).toMatchObject({ output: 120, ttft: 500, total: 2900 });
+		// 120 tokens over the 2.4 seconds from the first piece to the end.
+		expect(outputSpeed(last)).toBeCloseTo(50);
+		// A response that came whole has no first piece, and one written before 2.21.0 no times.
+		const whole = cm.usage(reply({ total: 2900 }), piModel).lastResponse;
+		expect(whole).toMatchObject({ total: 2900 });
+		expect(whole?.ttft).toBeUndefined();
+		expect(outputSpeed(whole)).toBeNull();
+		expect(outputSpeed(cm.usage(reply(), piModel).lastResponse)).toBeNull();
+		expect(outputSpeed(null)).toBeNull();
+		// All of it in one piece at the end: no time to divide by.
+		expect(
+			outputSpeed({
+				input: 1,
+				output: 9,
+				cacheRead: 0,
+				cacheWrite: 0,
+				ttft: 800,
+				total: 800,
+			}),
+		).toBeNull();
 	});
 
 	it('inlines attached images from the vault and marks missing ones', async () => {
