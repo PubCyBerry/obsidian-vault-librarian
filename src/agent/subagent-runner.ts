@@ -264,7 +264,7 @@ export class SubagentRunner {
 		const prompt = await this.agentPrompt(def, state.title, tools());
 		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
 		const history = prior.length
-			? await c.deps.context.project({ events: prior, model, scratch: c.deps.scratch })
+			? await c.deps.context.project({ events: prior, model })
 			: fork
 				? forkMessages(c.mainMessages())
 				: [];
