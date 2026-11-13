@@ -85,12 +85,15 @@ function short(s: unknown, n = 60): string {
 	return text.length > n ? `${text.slice(0, n)}…` : text;
 }
 
-/** One-line summary shown in the collapsed card header. */
-export function summarizeCall(
+/**
+ * What a call was given and what it came to, each in a few words: the line a call has on the
+ * timeline (LIB-FEAT-308) reads `name(gist)` over its outcome.
+ */
+export function describeCall(
 	name: string,
 	args: Record<string, unknown>,
 	result: string | null,
-): string {
+): { gist: string; outcome: string } {
 	let parsed: Record<string, unknown> | null = null;
 	if (result) {
 		try {
@@ -101,67 +104,107 @@ export function summarizeCall(
 	}
 	const count = (key: string) =>
 		Array.isArray(parsed?.[key]) ? (parsed[key] as unknown[]).length : null;
+	const counted = (n: number | null, one: string, many = `${one}s`) =>
+		n === null ? '' : `${n} ${n === 1 ? one : many}`;
+	const firstLine = (text: string) => text.split('\n').find((l) => l.trim()) ?? '';
+	// A failed call says why, whatever its tool.
+	if (result?.startsWith('Error:')) {
+		const gist = describeCall(name, args, null).gist;
+		return { gist, outcome: short(firstLine(result.slice(6)).trim(), 100) };
+	}
 	switch (shapeOf(name)) {
 		case 'ls': {
 			const n = parsed && typeof parsed.total === 'number' ? parsed.total : count('entries');
-			return `${(args.path as string) || '/'}${n !== null ? `, ${n} entries` : ''}`;
+			return { gist: str(args.path) || '/', outcome: counted(n, 'entry', 'entries') };
 		}
-		case 'find': {
-			const n = count('matches');
-			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
-		}
-		case 'grep': {
-			const n = count('matches');
-			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
-		}
+		case 'find':
+		case 'grep':
+			return {
+				gist: short(args.query),
+				outcome: counted(count('matches'), 'match', 'matches'),
+			};
 		case 'read': {
 			const offset = typeof args.offset === 'number' ? args.offset : 1;
 			const lines = count('lines');
-			const end = lines !== null ? offset + lines - 1 : null;
-			return `${args.path as string}:${offset}${end !== null ? `-${end}` : ''}`;
+			return {
+				gist: `${str(args.path)}${typeof args.offset === 'number' ? `:${offset}` : ''}`,
+				// A picture has no lines to count.
+				outcome:
+					typeof parsed?.type === 'string'
+						? parsed.type
+						: lines === null
+							? ''
+							: `lines ${offset} to ${offset + lines - 1}`,
+			};
 		}
 		case 'tool_search':
-		case 'skill_search': {
-			const n = count('matches');
-			const noun = name === 'tool_search' ? 'tool' : 'skill';
-			return `${short(args.query)}${n !== null ? `, ${n} ${noun}${n === 1 ? '' : 's'}` : ''}`;
-		}
+		case 'skill_search':
+			return {
+				gist: short(args.query),
+				outcome: counted(count('matches'), name === 'tool_search' ? 'tool' : 'skill'),
+			};
 		case 'get_active_note':
-			return parsed && typeof parsed.path === 'string'
-				? parsed.path
-				: parsed
-					? 'no active note'
-					: '';
+			return {
+				gist: '',
+				outcome:
+					parsed && typeof parsed.path === 'string'
+						? parsed.path
+						: parsed
+							? 'no active note'
+							: '',
+			};
 		case 'write':
-			return `${args.path as string}${parsed?.operation ? ` (${parsed.operation as string})` : ''}`;
+			return { gist: str(args.path), outcome: str(parsed?.operation) };
 		case 'edit': {
 			const n =
 				parsed && typeof parsed.replacements === 'number' ? parsed.replacements : null;
-			return `${args.path as string}${n !== null ? `, ${n} ${n === 1 ? 'replacement' : 'replacements'}` : ''}`;
+			return { gist: str(args.path), outcome: counted(n, 'replacement') };
 		}
 		case 'webdav_mkdir':
 		case 'webdav_delete':
-			return str(args.path) || '/';
+			return { gist: str(args.path) || '/', outcome: '' };
 		case 'webdav_move':
-			return `${str(args.from)} to ${str(args.to)}`;
+			return { gist: `${str(args.from)} to ${str(args.to)}`, outcome: '' };
 		case 'webdav_download':
 		case 'webdav_upload': {
 			const [from, to] =
 				name === 'webdav_download'
 					? [args.path, args.vault_path]
 					: [args.vault_path, args.path];
-			const n = count('files');
-			return `${str(from) || '/'} to ${str(to) || '/'}${n !== null ? `, ${n} ${n === 1 ? 'file' : 'files'}` : ''}`;
+			return {
+				gist: `${str(from) || '/'} to ${str(to) || '/'}`,
+				outcome: counted(count('files'), 'file'),
+			};
 		}
-		case 'bash':
-			return short(
-				str(args.command)
-					.split('\n')
-					.find((l) => l.trim()) ?? '',
-			);
+		case 'bash': {
+			// Its result is the output as text: the first line, and how much more there is.
+			const output = (result ?? '').split('\n').filter((l) => l.trim());
+			const more = output.length > 1 ? `, ${counted(output.length - 1, 'more line')}` : '';
+			return {
+				gist: short(firstLine(str(args.command))),
+				outcome: output.length ? `${short(output[0], 80)}${more}` : '',
+			};
+		}
 		default:
-			return short(args);
+			return {
+				gist: short(args),
+				// A result that is not JSON, as most MCP tools give, starts with what it says.
+				outcome: result && !parsed ? short(firstLine(result), 80) : '',
+			};
 	}
+}
+
+/** One-line summary of a call: what it was given, and for a vault tool what it came to. */
+export function summarizeCall(
+	name: string,
+	args: Record<string, unknown>,
+	result: string | null,
+): string {
+	const { gist, outcome } = describeCall(name, args, result);
+	const vaultTool = shapeOf(name) in TOOL_ICONS && name !== 'bash';
+	return vaultTool && !result?.startsWith('Error:') && outcome
+		? [gist, outcome].filter(Boolean).join(', ')
+		: gist || outcome;
 }
 
 /**

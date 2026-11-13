@@ -2,7 +2,8 @@ import { setIcon } from 'obsidian';
 import type { AgentUiState, ToolCardStatus } from '../agent/agent-controller';
 import type { SubagentState } from '../agent/subagent';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
-import { STATUS_LABELS, toolIcon } from './cards';
+import { describeCall, STATUS_LABELS } from './cards';
+import type { OrbState } from './orb';
 import { appendStreamDelta, RedrawReveal } from './stream-text';
 
 /**
@@ -136,6 +137,14 @@ export function firstLine(text: string, max = 80): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** The last line of a text that has words, for a step whose text is still arriving. */
+export function lastLine(text: string, max = 80): string {
+	const lines = text.trim().split('\n');
+	const line = (lines[lines.length - 1] ?? '').trim();
+	// Its end is what is new, so a long line keeps its end, from a whole word on.
+	return line.length > max ? line.slice(line.length - max).replace(/^\S*\s+/, '') : line;
+}
+
 /**
  * A spinner that turns in step with every other: made anew by a redraw, it carries on its turn
  * where it was instead of starting it again from the top, which reads as a stutter.
@@ -147,12 +156,12 @@ export function renderSpinner(parent: HTMLElement): HTMLElement {
 }
 
 /**
- * A note the model wrote between its calls, whole (LIB-FEAT-252): a chip that holds its icon and
- * its Markdown, which goes in `text`.
+ * A note the model wrote between its calls, whole (LIB-FEAT-252): a dot, as every line of the
+ * timeline has, and its Markdown, which goes in `text`.
  */
 export function renderMessage(parent: HTMLElement): { box: HTMLElement; text: HTMLElement } {
 	const box = parent.createDiv({ cls: 'librarian-message' });
-	setIcon(box.createSpan({ cls: 'librarian-message-icon' }), 'message-square');
+	box.createSpan({ cls: 'librarian-message-icon librarian-bullet' });
 	const text = box.createDiv({
 		cls: 'librarian-message-text librarian-markdown markdown-rendered',
 	});
@@ -209,49 +218,104 @@ export function grow(
 	};
 }
 
-const STATUS_ICONS: Partial<Record<ToolCardStatus, string>> = {
-	ok: 'check',
-	failed: 'x',
-	rejected: 'ban',
-	blocked: 'ban',
-	expired: 'clock',
-	skipped: 'minus',
-	'awaiting-approval': 'hand',
-};
+/** A call as the timeline shows it: what it is named and, as far as they have come, its arguments. */
+export interface ChipCall {
+	id: string;
+	name: string;
+	args?: Record<string, unknown>;
+}
 
-/** A tool call on the timeline: its icon and name, and a mark for how it went. */
+/**
+ * A tool call on the timeline, as a coding agent's terminal lists one (LIB-FEAT-308): a dot for
+ * how it went, `name(what it was given)`, and under that what it came to. The whole line opens
+ * the call's popover.
+ */
 export function renderChip(
 	parent: HTMLElement,
-	call: { id: string; name: string },
+	call: ChipCall,
 	status: ToolCardStatus,
+	result: string | null = null,
 ): HTMLButtonElement {
 	const chip = parent.createEl('button', { cls: 'librarian-chip' });
 	chip.dataset.toolCallId = call.id;
 	chip.dataset.popKey = `call:${call.id}`;
-	setIcon(chip.createSpan({ cls: 'librarian-chip-icon' }), toolIcon(call.name));
-	chip.createSpan({ cls: 'librarian-chip-name', text: call.name || '…' });
-	chip.createSpan({ cls: 'librarian-chip-mark' });
-	setChipStatus(chip, status);
+	chip.createSpan({ cls: 'librarian-chip-mark librarian-bullet' });
+	const line = chip.createSpan({ cls: 'librarian-chip-line' });
+	line.createSpan({ cls: 'librarian-chip-name', text: call.name || '…' });
+	// Its brackets are drawn by the style sheet, so the words inside only ever grow.
+	line.createSpan({ cls: 'librarian-chip-args' });
+	chip.createSpan({ cls: 'librarian-chip-result' });
+	updateChip(chip, call, status, result);
 	return chip;
 }
 
 /**
- * Swaps the chip's status class only: an open popover's mark (is-open) and a fade still running
- * stay as they are.
+ * The line with what its call holds now: arguments still arriving, a new state, a result. Words
+ * it did not have fade in, as streamed text does (LIB-FEAT-099).
  */
-export function setChipStatus(chip: HTMLElement, status: ToolCardStatus): void {
+export function updateChip(
+	chip: HTMLElement,
+	call: Omit<ChipCall, 'id'>,
+	status: ToolCardStatus,
+	result: string | null = null,
+): void {
+	const { gist, outcome } = describeCall(call.name, call.args ?? {}, result);
+	const args = chip.querySelector<HTMLElement>('.librarian-chip-args');
+	if (args && args.textContent !== gist) appendStreamDelta(args, args.textContent ?? '', gist);
+	setChipStatus(chip, status, outcome);
+}
+
+/** States that say more than a result does, or stand in for one that never came. */
+const SAID_BY_STATE: Partial<Record<ToolCardStatus, string>> = {
+	'awaiting-approval': STATUS_LABELS['awaiting-approval'],
+	rejected: STATUS_LABELS.rejected,
+	blocked: STATUS_LABELS.blocked,
+	expired: STATUS_LABELS.expired,
+	skipped: STATUS_LABELS.skipped,
+};
+
+/**
+ * Swaps the line's status class, which colors its dot, and the words under it when the state or
+ * the result has some: an open popover's mark (is-open) and a fade still running stay as they are.
+ */
+export function setChipStatus(chip: HTMLElement, status: ToolCardStatus, outcome?: string): void {
 	for (const name of Object.keys(STATUS_LABELS)) chip.removeClass(`is-${name}`);
 	chip.addClass(`is-${status}`);
 	chip.setAttr(
 		'aria-label',
 		`${chip.querySelector('.librarian-chip-name')?.textContent ?? ''}: ${STATUS_LABELS[status]}`,
 	);
-	const mark = chip.querySelector<HTMLElement>('.librarian-chip-mark');
-	if (!mark) return;
-	mark.empty();
-	const icon = STATUS_ICONS[status];
-	if (icon) setIcon(mark, icon);
-	else renderSpinner(mark);
+	const result = chip.querySelector<HTMLElement>('.librarian-chip-result');
+	if (!result) return;
+	// A finished call told only its state keeps what the line says; one at work says nothing yet.
+	const done = status === 'ok' || status === 'failed';
+	const said = SAID_BY_STATE[status] ?? outcome ?? (done ? (result.textContent ?? '') : '');
+	if (result.textContent !== said) appendStreamDelta(result, result.textContent ?? '', said);
+}
+
+/**
+ * The word the running run's header shows for what the agent is doing, and how its orb moves
+ * (LIB-FEAT-308). `thinking` is a response whose thinking is the part still growing; `state` is
+ * null where only the stream is known, as in a sub-agent's conversation.
+ */
+export function workMood(
+	state: AgentUiState | null,
+	thinking: boolean,
+	agentsBusy = false,
+): { verb: string; orb: OrbState } {
+	if (state === 'compacting') return { verb: 'Compacting', orb: 'shaping' };
+	if (state === 'awaiting-approval') return { verb: 'Waiting', orb: 'listening' };
+	if (state === 'tool-running')
+		return { verb: 'Working', orb: agentsBusy ? 'connecting' : 'working' };
+	if (thinking || state === 'requesting') return { verb: 'Thinking', orb: 'breathing' };
+	if (state === 'streaming') return { verb: 'Writing', orb: 'composing' };
+	return { verb: 'Working', orb: 'working' };
+}
+
+/** `850`, `1.2k`, `34k`: a token count short enough for a header. */
+export function compactCount(n: number): string {
+	if (n < 1000) return String(n);
+	return n < 10_000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
 /** What a step's popover shows. Read each time it is drawn, so a streaming step stays current. */
