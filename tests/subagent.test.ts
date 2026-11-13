@@ -157,10 +157,14 @@ function harness(
 		effectiveMode: () => 'fetch',
 		hasFallenBack: () => false,
 	} as unknown as TransportRouter;
+	// One picture in the shell's scratch files, as a download would leave it.
+	const scratch = async (path: string) =>
+		path === '/tmp/pic.png' ? new Uint8Array([1, 2, 3]) : null;
 	const vault = (): AgentTool[] =>
 		createVaultTools({
 			app: app as unknown as App,
 			settings: () => settings,
+			scratch,
 			mutation: {
 				before: (id, p) => controller.beforeMutation(id, p),
 				after: async (id, p) => {
@@ -195,6 +199,7 @@ function harness(
 		readsOnly: (name) => READ_ONLY_TOOL_NAMES.has(name),
 		hiddenFilesChanged: rescan,
 		agentSlots,
+		scratch,
 	});
 	const events: ControllerEvent[] = [];
 	controller.subscribe((e) => events.push(e));
@@ -714,6 +719,29 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		// The resumed run goes on after its log: no two events share an index.
 		const indexes = [...h.controller.agents.values()].at(-1)!.events.map((e) => e.index);
 		expect(new Set(indexes).size).toBe(indexes.length);
+	});
+
+	it('a resumed agent sees again the picture it read from the scratch files (LIB-TEST-304)', async () => {
+		const main: ScriptedTurn[] = [
+			{ toolCalls: [spawn('look', 'What is in /tmp/pic.png?')] },
+			{ text: 'A rose.' },
+		];
+		const h = harness({
+			main,
+			look: [
+				{ toolCalls: [{ name: 'read', args: { path: '/tmp/pic.png' } }] },
+				{ text: 'A rose.' },
+				{ text: 'Orange.' },
+			],
+		});
+		await h.controller.send('look at it');
+		const id = [...h.controller.agents.values()][0]!.sessionId!;
+		main.push({ toolCalls: [spawn('look', 'Which color?', { resume: id })] }, { text: 'done' });
+		await h.controller.send('and its color?');
+		const read = h.requests.look![2]!.messages.find((m) => m.role === 'toolResult') as {
+			content: { type: string }[];
+		};
+		expect(read.content.map((c) => c.type)).toEqual(['text', 'image']);
 	});
 
 	it('resume refuses an agent of another conversation or one still at work', async () => {

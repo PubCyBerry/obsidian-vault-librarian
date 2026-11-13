@@ -310,7 +310,7 @@ export class SubagentRunner {
 		const prompt = await this.agentPrompt(def, state.title, tools());
 		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
 		const history = prior.length
-			? await c.deps.context.project({ events: prior, model })
+			? await c.deps.context.project({ events: prior, model, scratch: c.deps.scratch })
 			: forked;
 		const limits: LoopLimits = { ...freshLimits(), max: def.maxTurns };
 		const nested = c.deps.nestedAgentsMd?.fork(forked.length > 0);
