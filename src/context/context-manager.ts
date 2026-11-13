@@ -286,15 +286,22 @@ export class ContextManager {
 				const written = asWritten(event, input.model);
 				const content: AssistantMessage['content'] = written ?? [];
 				if (!written) {
-					// Chat Completions takes the text back under reasoning_content. The Responses
-					// API wants its own reasoning item as the signature, which only the model that
-					// wrote it gets (asWritten); Pi parses whatever is there as JSON, so anything
-					// else broke every request after a turn with thinking.
-					if (event.thinking && input.model.api !== RESPONSES_API)
+					// Chat Completions takes the text back in the field the server sent it in, which
+					// the model that wrote it gets (LIB-FEAT-298); any other gets it under
+					// reasoning_content. The Responses API wants its own reasoning item as the
+					// signature, which only the model that wrote it gets (asWritten); Pi parses
+					// whatever is there as JSON, so anything else broke every request after a turn
+					// with thinking.
+					const replay = event.thinkingReplay;
+					const own =
+						replay?.model === `${input.model.provider}/${input.model.id}`
+							? replay.signature
+							: null;
+					if ((event.thinking || own) && input.model.api !== RESPONSES_API)
 						content.push({
 							type: 'thinking',
-							thinking: event.thinking,
-							thinkingSignature: 'reasoning_content',
+							thinking: event.thinking ?? '',
+							thinkingSignature: own ?? 'reasoning_content',
 						});
 					if (event.content) content.push({ type: 'text', text: event.content });
 					for (const call of event.toolCalls)

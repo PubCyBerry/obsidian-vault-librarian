@@ -600,6 +600,71 @@ describe('Responses API (LIB-TEST-249)', () => {
 	});
 });
 
+describe('thinking in a tool loop over streaming (LIB-TEST-299)', () => {
+	const g = globalThis as unknown as { window?: unknown };
+	afterEach(() => {
+		delete g.window;
+	});
+
+	it('sends the thinking of a response that called a tool back with the next request', async () => {
+		const sse = (chunks: unknown[]) =>
+			`${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('')}data: [DONE]\n\n`;
+		const delta = (d: unknown, finish: string | null = null) => ({
+			id: 'x',
+			object: 'chat.completion.chunk',
+			choices: [{ index: 0, delta: d, finish_reason: finish }],
+		});
+		// As Ollama and vLLM stream it: the thinking under `reasoning`, then the call.
+		const first = sse([
+			delta({ role: 'assistant', reasoning: 'The passphrase is amber. ' }),
+			delta({ reasoning: 'Now the tool.' }),
+			delta({
+				tool_calls: [
+					{ index: 0, id: 'call_a', type: 'function', function: { name: 'grep' } },
+				],
+			}),
+			delta({ tool_calls: [{ index: 0, function: { arguments: '{"query":"x"}' } }] }),
+			delta({}, 'tool_calls'),
+		]);
+		const bodies: { messages: Record<string, unknown>[] }[] = [];
+		g.window = {
+			fetch: async (_url: unknown, init?: { body?: unknown }) => {
+				bodies.push(JSON.parse(String(init?.body)) as (typeof bodies)[number]);
+				return new Response(
+					bodies.length === 1 ? first : sse([delta({ content: 'amber' }, 'stop')]),
+					{ status: 200, headers: { 'content-type': 'text/event-stream' } },
+				);
+			},
+		};
+		const provider = { ...newProvider('p'), baseUrl: 'https://x', transport: 'fetch' as const };
+		const model = { ...newModel('m'), reasoning: true };
+		const streamFn = new TransportRouter().createStreamFn(provider, () => ({
+			apiKey: 'k',
+			authHeader: true,
+			options: effectiveRequestOptions(provider, model, 'low'),
+		}));
+		const pi = toPiModel(provider, model);
+		const reply = await (await streamFn(pi, context('find x'), {})).result();
+		expect(reply.content[0]).toMatchObject({
+			type: 'thinking',
+			thinking: 'The passphrase is amber. Now the tool.',
+			thinkingSignature: 'reasoning',
+		});
+		const result = {
+			role: 'toolResult' as const,
+			toolCallId: 'call_a',
+			toolName: 'grep',
+			content: [{ type: 'text' as const, text: 'none' }],
+			isError: false,
+			timestamp: 3,
+		};
+		await (await streamFn(pi, context('find x', [reply, result]), {})).result();
+		const sent = bodies[1]!.messages.find((m) => m.role === 'assistant')!;
+		expect(sent.reasoning).toBe('The passphrase is amber. Now the tool.');
+		expect(sent.tool_calls).toHaveLength(1);
+	});
+});
+
 describe('auto transport while the app is away (LIB-TEST-148)', () => {
 	const g = globalThis as unknown as { window?: unknown; document?: unknown };
 	afterEach(() => {

@@ -68,6 +68,12 @@ export type SessionEvent =
 			type: 'assistant';
 			content: string;
 			thinking?: string;
+			/**
+			 * How a Chat Completions server sent that thinking: the field's name (`reasoning`), or
+			 * OpenRouter's reasoning_details as JSON. The model that wrote it gets it back the same
+			 * way from a context rebuilt out of the log (LIB-FEAT-298). Absent before 2.21.0.
+			 */
+			thinkingReplay?: { model: string; signature: string };
 			toolCalls: StoredToolCall[];
 			usage?: StoredUsage;
 			stopReason?: string;
