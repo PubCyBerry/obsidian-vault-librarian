@@ -46,6 +46,29 @@ export function requestUrl(req: unknown): Promise<unknown> {
 	return requestUrlMock.impl(req);
 }
 
+/** Each page's lines for the PDFs `loadPdfJs` opens; null fails as a broken file does. */
+export const pdfJsMock: { pages: string[][] | null } = { pages: null };
+
+/** PDF.js as far as the text of a PDF goes. */
+export async function loadPdfJs(): Promise<unknown> {
+	return {
+		getDocument: () => ({
+			promise: (async () => {
+				const pages = pdfJsMock.pages;
+				if (!pages) throw new Error('Invalid PDF structure.');
+				return {
+					numPages: pages.length,
+					getPage: async (n: number) => ({
+						getTextContent: async () => ({
+							items: (pages[n - 1] ?? []).map((str) => ({ str, hasEOL: true })),
+						}),
+					}),
+				};
+			})(),
+		}),
+	};
+}
+
 export class Notice {
 	constructor(public message: string) {}
 }

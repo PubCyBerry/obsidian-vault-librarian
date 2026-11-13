@@ -36,6 +36,7 @@ import {
 	MAX_BACKGROUND_RESUMES,
 	messageOf,
 	RETRY_DELAY_MS,
+	resultImages,
 	rewriteProviderError,
 	textOf,
 	withErrorPrefix,
@@ -263,7 +264,7 @@ export class SubagentRunner {
 		const prompt = await this.agentPrompt(def, state.title, tools());
 		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
 		const history = prior.length
-			? await c.deps.context.project({ events: prior, model })
+			? await c.deps.context.project({ events: prior, model, scratch: c.deps.scratch })
 			: fork
 				? forkMessages(c.mainMessages())
 				: [];
@@ -440,6 +441,7 @@ export class SubagentRunner {
 				ok: !m.isError,
 				content: withErrorPrefix(textOf(m.content), m.isError),
 				truncated: this.c.truncatedResults.delete(m.toolCallId),
+				...resultImages(m),
 			});
 		}
 	}

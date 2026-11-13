@@ -125,6 +125,14 @@ export function textOf(content: readonly { type: string }[]): string {
 		.join('');
 }
 
+/** The pictures a tool result carries, by the paths its tool named, for the session log. */
+export function resultImages(m: { details?: unknown }): { images?: string[] } {
+	const images = (m.details as { images?: unknown } | undefined)?.images;
+	return Array.isArray(images) && images.length
+		? { images: images.filter((p): p is string => typeof p === 'string') }
+		: {};
+}
+
 export function messageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }

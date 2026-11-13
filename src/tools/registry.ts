@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { type App, parseFrontMatterAliases, TFile, TFolder } from 'obsidian';
 import { type TSchema, Type } from 'typebox';
 import type { LibrarianSettings, ToolName } from '../types';
+import { base64, imageType, pdfText, readBytes, type ScratchReader, scratchPath } from './media';
 import { withFileMutationQueue } from './mutation-queue';
 import {
 	checkPath,
@@ -32,7 +33,12 @@ export interface ToolDeps {
 	 * to it; null for any other file.
 	 */
 	describe?: (path: string) => Record<string, unknown> | null;
+	/** The conversation's shell scratch files, which read opens by their /tmp path. */
+	scratch?: ScratchReader;
 }
+
+/** The largest picture read hands to the model. Providers refuse or shrink larger ones. */
+const IMAGE_MAX_BYTES = 5_000_000;
 
 /** Keeps the typed parameters inside each tool while the registry hands out the erased shape. */
 export function tool<T extends TSchema>(t: AgentTool<T>): AgentTool {
@@ -533,9 +539,11 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 		name: 'read',
 		label: 'Read note',
 		description:
-			'Read a range of lines from a text file. Use this after find or grep to inspect the actual source text. One result holds as many lines as fit in it; when it has nextOffset, call again with that offset to read on.',
+			'Read a range of lines from a text file. Use this after find or grep to inspect the actual source text. One result holds as many lines as fit in it; when it has nextOffset, call again with that offset to read on. A PDF comes back as its text, page by page. A picture (png, jpg, gif, webp) comes back as the picture itself, for you to look at. Files the shell saved under /tmp are read the same way.',
 		parameters: Type.Object({
-			path: Type.String({ description: 'Vault-relative file path.' }),
+			path: Type.String({
+				description: 'Vault-relative file path, or a /tmp path of the shell.',
+			}),
 			offset: Type.Optional(
 				Type.Integer({ minimum: 1, description: '1-based first line. Default 1.' }),
 			),
@@ -549,12 +557,46 @@ export function createReadTool(deps: ToolDeps): AgentTool {
 		}),
 		async execute(_id, params, signal) {
 			throwIfAborted(signal);
-			const path = checkPath(params.path, { configDir: deps.app.vault.configDir });
-			if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
+			const path =
+				scratchPath(params.path) ??
+				checkPath(params.path, { configDir: deps.app.vault.configDir });
+			const bytes = async () => {
+				const found = await readBytes(deps.app, path, deps.scratch);
+				if (!found) throw new Error(`File not found: ${path}`);
+				return found;
+			};
+			const type = imageType(path);
+			if (type) {
+				const data = await bytes();
+				// shortcut: a picture past the limit is refused, scale it down here if photos need it.
+				if (data.length > IMAGE_MAX_BYTES)
+					throw new Error(
+						`The picture is ${(data.length / 1e6).toFixed(1)} MB; pictures over ${IMAGE_MAX_BYTES / 1e6} MB are not read.`,
+					);
+				// The path in `details` is how the log finds the picture again (LIB-FEAT-303).
+				return {
+					content: [
+						{ type: 'text', text: JSON.stringify({ path, type, bytes: data.length }) },
+						{ type: 'image', data: base64(data), mimeType: type },
+					],
+					details: { images: [path] },
+				};
+			}
 			const file = deps.app.vault.getFileByPath(path);
 			let text: string;
 			let extra: Record<string, unknown> = {};
-			if (file) text = await deps.app.vault.cachedRead(file);
+			if (path.toLowerCase().endsWith('.pdf')) {
+				const pdf = await pdfText(await bytes());
+				text = pdf.text;
+				extra = {
+					pages: pdf.pages,
+					...(/[^\s-]/.test(text.replace(/^--- page \d+ ---$/gm, ''))
+						? {}
+						: { note: 'No text in this PDF; its pages may be scans.' }),
+				};
+			} else if (isBinaryPath(path)) throw new Error(`Not a text file: ${path}`);
+			else if (scratchPath(path)) text = new TextDecoder().decode(await bytes());
+			else if (file) text = await deps.app.vault.cachedRead(file);
 			else {
 				// Off the index: a skill file (with its resources) or any other hidden file on disk.
 				const hidden = await deps.hidden?.read(path);
