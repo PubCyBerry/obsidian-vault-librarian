@@ -115,8 +115,6 @@ export function summarizeCall(
 			return `${short(args.query)}${n !== null ? `, ${n} ${n === 1 ? 'match' : 'matches'}` : ''}`;
 		}
 		case 'read': {
-			// A picture has no lines to count.
-			if (typeof parsed?.type === 'string') return `${str(args.path)}, ${parsed.type}`;
 			const offset = typeof args.offset === 'number' ? args.offset : 1;
 			const lines = count('lines');
 			const end = lines !== null ? offset + lines - 1 : null;
