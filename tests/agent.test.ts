@@ -174,57 +174,6 @@ beforeEach(() => {
 	// each test builds its own harness
 });
 
-describe('how long a response took (LIB-TEST-307)', () => {
-	const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-	it('times each request to its first piece and to its end, and shows the last one', async () => {
-		let release = () => {};
-		const hold = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const h = harness(
-			[
-				{
-					toolCalls: [{ name: 'find', args: { query: 'a' } }],
-					usage: { input: 10, output: 5 },
-				},
-				{ text: 'done', usage: { input: 30, output: 12 }, hold },
-			],
-			{ find: 'always_allow' },
-		);
-		const sent = h.controller.send('find a');
-		// The second request is out: its answer is held back from here, not from the first one.
-		while (h.requests.length < 2) await wait(5);
-		await wait(50);
-		release();
-		await sent;
-		const replies = (await sessionEvents(h)).filter((e) => e.type === 'assistant');
-		expect(replies).toHaveLength(2);
-		for (const reply of replies) {
-			expect(reply.timing?.total).toBeGreaterThanOrEqual(reply.timing?.ttft ?? -1);
-			expect(reply.timing?.ttft).toBeGreaterThanOrEqual(0);
-		}
-		// The second request was held back, and its clock started when it went out, not at the first.
-		expect(replies[1]!.timing!.ttft).toBeGreaterThanOrEqual(30);
-		expect(replies[1]!.timing!.total).toBeLessThan(2000);
-		expect(h.controller.usage?.lastResponse).toMatchObject({
-			output: 12,
-			ttft: replies[1]!.timing!.ttft,
-			total: replies[1]!.timing!.total,
-		});
-	});
-
-	it('leaves the first piece out for a response that came whole over requestUrl', async () => {
-		const h = harness([{ text: 'done', usage: { input: 30, output: 12 } }]);
-		(h.controller.deps.transport as { effectiveMode: () => string }).effectiveMode = () =>
-			'requestUrl';
-		await h.controller.send('hi');
-		const reply = (await sessionEvents(h)).find((e) => e.type === 'assistant');
-		expect(reply?.timing?.total).toBeGreaterThanOrEqual(0);
-		expect(reply?.timing && 'ttft' in reply.timing).toBe(false);
-	});
-});
-
 describe('agent loop through Pi (LIB-TEST-030, LIB-TEST-038, LIB-TEST-088)', () => {
 	it('runs find then read then answers, feeding tool results back into the next request', async () => {
 		const h = harness([
@@ -1397,5 +1346,56 @@ describe('settings from another device (LIB-TEST-255)', () => {
 		settings.providers = [];
 		h.controller.reselect();
 		expect(h.controller.selection).toBeUndefined();
+	});
+});
+
+describe('how long a response took (LIB-TEST-307)', () => {
+	const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+	it('times each request to its first piece and to its end, and shows the last one', async () => {
+		let release = () => {};
+		const hold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const h = harness(
+			[
+				{
+					toolCalls: [{ name: 'find', args: { query: 'a' } }],
+					usage: { input: 10, output: 5 },
+				},
+				{ text: 'done', usage: { input: 30, output: 12 }, hold },
+			],
+			{ find: 'always_allow' },
+		);
+		const sent = h.controller.send('find a');
+		// The second request is out: its answer is held back from here, not from the first one.
+		while (h.requests.length < 2) await wait(5);
+		await wait(50);
+		release();
+		await sent;
+		const replies = (await sessionEvents(h)).filter((e) => e.type === 'assistant');
+		expect(replies).toHaveLength(2);
+		for (const reply of replies) {
+			expect(reply.timing?.total).toBeGreaterThanOrEqual(reply.timing?.ttft ?? -1);
+			expect(reply.timing?.ttft).toBeGreaterThanOrEqual(0);
+		}
+		// The second request was held back, and its clock started when it went out, not at the first.
+		expect(replies[1]!.timing!.ttft).toBeGreaterThanOrEqual(30);
+		expect(replies[1]!.timing!.total).toBeLessThan(2000);
+		expect(h.controller.usage?.lastResponse).toMatchObject({
+			output: 12,
+			ttft: replies[1]!.timing!.ttft,
+			total: replies[1]!.timing!.total,
+		});
+	});
+
+	it('leaves the first piece out for a response that came whole over requestUrl', async () => {
+		const h = harness([{ text: 'done', usage: { input: 30, output: 12 } }]);
+		(h.controller.deps.transport as { effectiveMode: () => string }).effectiveMode = () =>
+			'requestUrl';
+		await h.controller.send('hi');
+		const reply = (await sessionEvents(h)).find((e) => e.type === 'assistant');
+		expect(reply?.timing?.total).toBeGreaterThanOrEqual(0);
+		expect(reply?.timing && 'ttft' in reply.timing).toBe(false);
 	});
 });
