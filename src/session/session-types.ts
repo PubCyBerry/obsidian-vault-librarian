@@ -60,9 +60,27 @@ export interface StoredUsage {
 	totalTokens: number;
 }
 
+/** How a sub-agent ended, kept with the message that told the main agent of it (LIB-FEAT-311). */
+export interface AgentOutcome {
+	/** The spawn_agent call that started it. */
+	callId: string;
+	sessionId: string | null;
+	status: 'done' | 'stopped' | 'failed';
+}
+
 export type SessionEvent =
 	| { t: string; type: 'meta'; session: SessionMetadata }
-	| { t: string; type: 'user'; content: string; images?: string[] }
+	| {
+			t: string;
+			type: 'user';
+			content: string;
+			images?: string[];
+			/**
+			 * Not the user's words: the message Librarian sent the main agent when a sub-agent
+			 * finished. The chat shows it on the agent's row, not as a message.
+			 */
+			agent?: AgentOutcome;
+	  }
 	| {
 			t: string;
 			type: 'assistant';

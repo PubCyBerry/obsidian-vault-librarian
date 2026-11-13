@@ -19,7 +19,14 @@ import type {
 	SessionMetadata,
 	StoredToolCall,
 } from '../session/session-types';
-import { AGENT_STATUS_LABELS, type AgentRowData, liveRow, storedRow } from './agent-rows';
+import {
+	AGENT_STATUS_LABELS,
+	type AgentRowData,
+	agentResultOf,
+	liveRow,
+	type StoredAgentResult,
+	storedRow,
+} from './agent-rows';
 import { renderApprovalCard } from './cards';
 import { Composer } from './composer';
 import { ConversationPane, type PaneDeps } from './conversation-pane';
@@ -151,8 +158,11 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			component: this,
 			popover: this.popover,
 			findReadLine: (path: string, line: number) => this.runtime.findReadLine(path, line),
-			agentRowOf: (call: StoredToolCall, result: ToolResult | undefined, running: boolean) =>
-				this.agentRowOf(call, result, running),
+			agentRowOf: (
+				call: StoredToolCall,
+				result: StoredAgentResult | undefined,
+				running: boolean,
+			) => this.agentRowOf(call, result, running),
 			openAgent: (callId: string) => void this.openAgent(callId),
 			hasLiveAgent: (callId: string) => this.runtime.agents.has(callId),
 		};
@@ -745,7 +755,7 @@ export class LibrarianView extends ItemView implements SessionViewer {
 	/** A spawn_agent call's row: from the run in memory while there is one, else from the log. */
 	private agentRowOf(
 		call: StoredToolCall,
-		result: ToolResult | undefined,
+		result: StoredAgentResult | undefined,
 		running: boolean,
 	): AgentRowData {
 		const live = this.runtime.agents.get(call.id);
@@ -809,9 +819,12 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		const result = events.find(
 			(e) => e.event.type === 'tool_result' && e.event.toolCallId === callId,
 		)?.event as ToolResult | undefined;
+		// How it ended is in the message that told the main agent, when one came.
+		const told = events.find((e) => e.event.type === 'user' && e.event.agent?.callId === callId)
+			?.event as Extract<SessionEvent, { type: 'user' }> | undefined;
 		const data = this.agentRowOf(
 			{ id: callId, name: call.name, args: call.args },
-			result,
+			agentResultOf(result, told),
 			false,
 		);
 		// A failed run has no result naming it, but its session knows the call that started it.

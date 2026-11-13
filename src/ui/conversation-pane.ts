@@ -3,7 +3,13 @@ import { type App, Component, MarkdownRenderer, Menu, setIcon, TFile } from 'obs
 import type { ToolCardStatus } from '../agent/agent-controller';
 import { SPAWN_AGENT_NAME } from '../agent/subagent';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
-import { type AgentRowData, renderAgentRow, updateAgentRow } from './agent-rows';
+import {
+	type AgentRowData,
+	agentResultOf,
+	renderAgentRow,
+	type StoredAgentResult,
+	updateAgentRow,
+} from './agent-rows';
 import {
 	renderToolDetails,
 	STATUS_LABELS,
@@ -92,7 +98,7 @@ export interface PaneDeps {
 	/** A spawn_agent call's row: from the run in memory while there is one, else from the log. */
 	agentRowOf: (
 		call: StoredToolCall,
-		result: ToolResult | undefined,
+		result: StoredAgentResult | undefined,
 		running: boolean,
 	) => AgentRowData;
 	openAgent: (callId: string) => void;
@@ -141,6 +147,8 @@ export class ConversationPane {
 	private events: IndexedEvent[] = [];
 	private statusOf: (toolCallId: string) => ToolCardStatus | undefined = () => undefined;
 	private pendingStream: AssistantMessage | null = null;
+	/** The messages that told the main agent a sub-agent had finished, by its spawn_agent call. */
+	private told = new Map<string, Extract<SessionEvent, { type: 'user' }>>();
 	private streamTimer: number | null = null;
 
 	constructor(
@@ -219,8 +227,12 @@ export class ConversationPane {
 	/** Every run of a conversation: the message that asked, the work block, the answer. */
 	private drawRuns(events: IndexedEvent[], stageRunning: boolean, status: DrawOptions['status']) {
 		const results = new Map<string, ToolResult>();
-		for (const { event } of events)
+		this.told = new Map();
+		for (const { event } of events) {
 			if (event.type === 'tool_result') results.set(event.toolCallId, event);
+			// The word that a sub-agent finished, by the call that started it (LIB-FEAT-311).
+			else if (event.type === 'user' && event.agent) this.told.set(event.agent.callId, event);
+		}
 		const runs = groupRuns(events);
 		const folds = this.folds;
 		const running = stageRunning ? (runs[runs.length - 1]?.key ?? null) : null;
@@ -258,6 +270,8 @@ export class ConversationPane {
 		const view = viewOf(run);
 		// Before the first message there may be only a model change: nothing to show.
 		if (!run.user && !view.steps.length && !view.errors.length && view.answer === null) return;
+		// Agents that finished together are told of one after another: the work follows the last.
+		if (run.user?.agent && !run.events.length && !running) return;
 		const hasSteps = view.steps.length > 0;
 		const folds = this.folds;
 		const block = this.el.createDiv({ cls: 'librarian-work' });
@@ -382,7 +396,11 @@ export class ConversationPane {
 					for (const call of agents)
 						renderAgentRow(
 							card,
-							this.deps.agentRowOf(call, results.get(call.id), running),
+							this.deps.agentRowOf(
+								call,
+								agentResultOf(results.get(call.id), this.told.get(call.id)),
+								running,
+							),
 							this.deps.openAgent,
 						);
 				}
@@ -463,6 +481,19 @@ export class ConversationPane {
 	 * caption above names. Only the chat's own messages rewind.
 	 */
 	private renderUser(index: number, event: Extract<SessionEvent, { type: 'user' }>) {
+		// Not the user's words: a sub-agent finished and the main agent was told (LIB-FEAT-311).
+		// One line says so, and opens that agent's conversation.
+		if (event.agent) {
+			const { callId, status } = event.agent;
+			const title = /title="([^"]*)"/.exec(event.content)?.[1] || 'Agent';
+			const line = this.el.createEl('button', { cls: 'librarian-agent-told' });
+			setIcon(line.createSpan({ cls: 'librarian-agent-told-icon' }), 'bot');
+			line.createSpan({
+				text: `${title} ${status === 'done' ? 'finished' : status === 'stopped' ? 'stopped early' : 'failed'}`,
+			});
+			line.addEventListener('click', () => this.deps.openAgent(callId));
+			return;
+		}
 		if (this.opts.asker)
 			this.el.createDiv({ cls: 'librarian-msg-asker', text: this.opts.asker });
 		const wrap = this.el.createDiv({ cls: 'librarian-msg librarian-msg-user' });

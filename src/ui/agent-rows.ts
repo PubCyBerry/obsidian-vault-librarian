@@ -1,8 +1,8 @@
 import { setIcon } from 'obsidian';
 import type { AgentColor } from '../agent/agent-definitions';
 import { GENERAL_AGENT } from '../agent/agent-definitions';
-import type { SubagentState } from '../agent/subagent';
-import type { StoredToolCall } from '../session/session-types';
+import { answerOf, isStartNotice, type SubagentState } from '../agent/subagent';
+import type { SessionEvent, StoredToolCall } from '../session/session-types';
 import { summarizeCall } from './cards';
 import { appendStreamDelta } from './stream-text';
 import { firstLine, renderSpinner } from './work-log';
@@ -125,14 +125,41 @@ export function liveRow(state: SubagentState): AgentRowData {
 	};
 }
 
+/** What the log says of a spawn_agent call's agent: its answer, or only that it started. */
+export interface StoredAgentResult {
+	ok: boolean;
+	content: string;
+	agentSession?: string;
+	/** The call's result says the agent started; no word of how it ended has come. */
+	started?: boolean;
+}
+
 /**
- * A row from the log: the call's arguments and, once there, its result. `agent` is the one the
- * call starts, which a resume names only through its agent_id; `asking` is a call still waiting
- * for the user's approval to start.
+ * The outcome of a spawn_agent call's agent as the log has it (LIB-FEAT-311): from the message
+ * that told the main agent it had finished; else from the call's own result, which is the answer
+ * in a log written before agents ran in the background and a start notice since.
+ */
+export function agentResultOf(
+	result: { ok: boolean; content: string; agentSession?: string } | undefined,
+	told: Extract<SessionEvent, { type: 'user' }> | undefined,
+): StoredAgentResult | undefined {
+	if (told?.agent)
+		return {
+			ok: told.agent.status !== 'failed',
+			content: answerOf(told.content),
+			agentSession: told.agent.sessionId ?? result?.agentSession,
+		};
+	return result && { ...result, started: isStartNotice(result.content) };
+}
+
+/**
+ * A row from the log: the call's arguments and, once there, its agent's outcome. `agent` is the
+ * one the call starts, which a resume names only through its agent_id; `asking` is a call still
+ * waiting for the user's approval to start.
  */
 export function storedRow(
 	call: StoredToolCall,
-	result: { ok: boolean; content: string; agentSession?: string } | undefined,
+	result: StoredAgentResult | undefined,
 	running: boolean,
 	{
 		agent: named,
@@ -145,9 +172,10 @@ export function storedRow(
 		named ??
 		(typeof args.agent === 'string' && args.agent.trim() ? args.agent.trim() : GENERAL_AGENT);
 	const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : agent;
-	const answer = result ? withoutAgentId(result.content) : '';
-	const status: AgentRowStatus = result
-		? !result.ok
+	const ended = result && !result.started ? result : undefined;
+	const answer = ended ? withoutAgentId(ended.content) : '';
+	const status: AgentRowStatus = ended
+		? !ended.ok
 			? 'failed'
 			: /\n\n\[Stopped[^\]]*\]$/.test(answer)
 				? 'stopped'
@@ -155,19 +183,25 @@ export function storedRow(
 		: running
 			? asking
 				? 'asking'
-				: 'pending'
-			: 'failed';
+				: result
+					? 'running'
+					: 'pending'
+			: result
+				? 'stopped'
+				: 'failed';
 	return {
 		callId: call.id,
 		title,
 		agent,
 		...(color ? { color } : {}),
 		status,
-		activity: result
+		activity: ended
 			? plainLine(answer.replace(/^Error:\s*/, ''))
 			: running
 				? AGENT_STATUS_LABELS[status]
-				: 'It did not run.',
+				: result
+					? 'It did not finish.'
+					: 'It did not run.',
 		sessionId: result?.agentSession ?? null,
 	};
 }

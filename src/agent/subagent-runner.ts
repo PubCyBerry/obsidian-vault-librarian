@@ -12,7 +12,8 @@ import {
 	toPiModel,
 } from '../provider/provider-manager';
 import { replay } from '../session/session-manager';
-import type { SessionEvent, SessionEventInput } from '../session/session-types';
+import type { AgentOutcome, SessionEvent, SessionEventInput } from '../session/session-types';
+import { resultBudget } from '../tools/registry';
 import type { ThinkingLevel } from '../types';
 import { wasHiddenSince, whenVisible } from '../visibility';
 import type { AgentController, ToolCardStatus } from './agent-controller';
@@ -20,11 +21,13 @@ import { type AgentDefinition, GENERAL_AGENT, toolsFor } from './agent-definitio
 import { systemPromptOf } from './prompt';
 import {
 	forkMessages,
+	resultMessage,
 	runTitle,
 	Slots,
 	SPAWN_AGENT_NAME,
 	type SpawnArgs,
 	type SubagentState,
+	startNotice,
 	subagentSection,
 } from './subagent';
 import {
@@ -53,6 +56,10 @@ export class SubagentRunner {
 	private readonly slots: Slots;
 	/** Which sub-agent made a call, for the approvals its shell commands ask for. */
 	private readonly callOwner = new Map<string, SubagentState>();
+	/** The agents at work, each by the promise of its end. */
+	private readonly working = new Set<Promise<void>>();
+	/** Agents that ended and whose word has not reached the main agent yet (LIB-FEAT-311). */
+	private readonly finished: { text: string; outcome: AgentOutcome }[] = [];
 
 	constructor(private readonly c: AgentController) {
 		// One set of places for every session: Max sub-agents counts the device (LIB-FEAT-274).
@@ -63,6 +70,7 @@ export class SubagentRunner {
 	forget(): void {
 		this.agents.clear();
 		this.callOwner.clear();
+		this.finished.length = 0;
 	}
 
 	/** The sub-agent that made a call, for a shell command asking from inside it. */
@@ -105,13 +113,31 @@ export class SubagentRunner {
 		return typeof agent === 'string' && agent.trim() ? agent.trim() : GENERAL_AGENT;
 	}
 
+	/** Resolves once every agent that was started has wound up, as after Stop. */
+	async settled(): Promise<void> {
+		await Promise.allSettled([...this.working]);
+	}
+
+	/** An agent of this run waits for a place or is at work. */
+	get busy(): boolean {
+		for (const run of this.agents.values())
+			if (run.status === 'waiting' || run.status === 'running') return true;
+		return false;
+	}
+
+	/** The agents that finished since the last call, each with the message that says how. */
+	takeFinished(): { text: string; outcome: AgentOutcome }[] {
+		return this.finished.splice(0);
+	}
+
 	/**
-	 * spawn_agent: runs one sub-agent to its end and returns its last message (LIB-FEAT-139). It
-	 * runs as its definition says (LIB-FEAT-268), under the user's permissions, with its own loop
-	 * limits, AGENTS.md deliveries and session; `resume` goes on in the session of an earlier run
-	 * of this conversation. Past `maxSubagents` it waits for a place.
+	 * spawn_agent: starts one sub-agent and returns at once (LIB-ADR-050); its last message comes
+	 * later, through `takeFinished`. It runs as its definition says (LIB-FEAT-268), under the
+	 * user's permissions, with its own loop limits, AGENTS.md deliveries and session; `resume` goes
+	 * on in the session of an earlier run of this conversation. Past `maxSubagents` it waits for a
+	 * place. `signal` ends it with the run that started it.
 	 */
-	async run(
+	async start(
 		callId: string,
 		args: SpawnArgs,
 		signal?: AbortSignal,
@@ -129,6 +155,8 @@ export class SubagentRunner {
 		const resume =
 			typeof args.resume === 'string' && args.resume.trim() ? args.resume.trim() : null;
 		if (resume) await this.checkResume(resume);
+		// A model without a key fails the call, so the main agent hears of it now.
+		const { selection, level } = this.agentModel(def);
 		const state: SubagentState = {
 			callId,
 			title: runTitle(args.title, def.name),
@@ -141,29 +169,59 @@ export class SubagentRunner {
 			toolStatus: new Map(),
 			sessionId: resume,
 		};
+		// Its session exists before the call returns, so the result can name it.
+		if (!state.sessionId)
+			state.sessionId = (
+				await c.deps.sessions.create({
+					providerId: selection.provider.id,
+					modelId: selection.model.id,
+					thinkingLevel: level,
+					parentId: c.session.id,
+					parentCallId: callId,
+					agentType: def.name,
+					agentTitle: state.title,
+				})
+			).id;
 		this.agents.set(callId, state);
 		this.emitAgent(state);
+		// The conversation as it stands now: by the time the agent gets a place it has moved on.
+		const forked = args.fork_context === true ? forkMessages(c.mainMessages()) : [];
+		const work = this.work(state, def, forked, signal).finally(() => this.working.delete(work));
+		this.working.add(work);
+		return { text: startNotice(state.title), sessionId: state.sessionId };
+	}
+
+	/** One agent from its place in line to its end, and the word of it to the main agent. */
+	private async work(
+		state: SubagentState,
+		def: AgentDefinition,
+		forked: AgentMessage[],
+		signal?: AbortSignal,
+	): Promise<void> {
+		let text: string;
+		let held = false;
 		try {
 			await this.slots.take(signal);
+			held = true;
+			text = await this.drive(state, def, forked, signal);
 		} catch (error) {
 			state.status = 'failed';
-			this.emitAgent(state);
-			throw error;
-		}
-		try {
-			return await this.drive(state, def, args.fork_context === true, signal);
-		} catch (error) {
-			state.status = 'failed';
-			const message = signal?.aborted
-				? 'Operation aborted'
-				: rewriteProviderError(messageOf(error));
-			await this.log(state, { type: 'error', stage: 'provider', message });
-			throw new Error(message);
+			text = signal?.aborted ? 'Operation aborted' : rewriteProviderError(messageOf(error));
+			await this.log(state, { type: 'error', stage: 'provider', message: text });
 		} finally {
 			state.stream = null;
-			this.slots.release();
-			this.emitAgent(state);
+			if (held) this.slots.release();
 		}
+		this.emitAgent(state);
+		// A stopped run has nobody left to tell.
+		if (signal?.aborted) return;
+		const status =
+			state.status === 'done' || state.status === 'stopped' ? state.status : 'failed';
+		this.finished.push({
+			text: resultMessage(state, status, text, resultBudget(this.c.deps.settings())),
+			outcome: { callId: state.callId, sessionId: state.sessionId, status },
+		});
+		this.c.wake();
 	}
 
 	/** Only an agent this conversation started, and not while that agent is still at work. */
@@ -220,12 +278,13 @@ export class SubagentRunner {
 		return parts.join('\n\n');
 	}
 
+	/** Runs the agent to its end and returns its answer, with why it stopped early if it did. */
 	private async drive(
 		state: SubagentState,
 		def: AgentDefinition,
-		fork: boolean,
+		forked: AgentMessage[],
 		signal?: AbortSignal,
-	): Promise<{ text: string; sessionId: string | null }> {
+	): Promise<string> {
 		const c = this.c;
 		const { selection, level } = this.agentModel(def);
 		const model = toPiModel(selection.provider, selection.model);
@@ -236,19 +295,6 @@ export class SubagentRunner {
 				)
 			: [];
 		state.events = [...prior];
-		if (!state.sessionId) {
-			const session = await c.deps.sessions.create({
-				providerId: selection.provider.id,
-				modelId: selection.model.id,
-				thinkingLevel: level,
-				parentId: c.session!.id,
-				parentCallId: state.callId,
-				agentType: def.name,
-				agentTitle: state.title,
-			});
-			state.sessionId = session.id;
-		}
-		const sessionId = state.sessionId;
 		state.status = 'running';
 		await this.log(state, { type: 'user', content: state.task });
 		// Its definition's tools, bar spawn_agent: one level of agents only. A tool it may not
@@ -264,11 +310,9 @@ export class SubagentRunner {
 		const leading = createInitialSystemMessage(prompt, tools().map(toToolDeclaration));
 		const history = prior.length
 			? await c.deps.context.project({ events: prior, model })
-			: fork
-				? forkMessages(c.mainMessages())
-				: [];
+			: forked;
 		const limits: LoopLimits = { ...freshLimits(), max: def.maxTurns };
-		const nested = c.deps.nestedAgentsMd?.fork(fork);
+		const nested = c.deps.nestedAgentsMd?.fork(forked.length > 0);
 		let requestStart = Date.now();
 		const agent = new Agent({
 			initialState: {
@@ -353,13 +397,10 @@ export class SubagentRunner {
 		if (limits.stopReason) {
 			state.status = 'stopped';
 			await this.log(state, { type: 'error', stage: 'tool', message: limits.stopReason });
-			return {
-				text: `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`,
-				sessionId,
-			};
+			return `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`;
 		}
 		state.status = 'done';
-		return { text: text || 'The agent finished without an answer.', sessionId };
+		return text || 'The agent finished without an answer.';
 	}
 
 	/**
@@ -391,8 +432,9 @@ export class SubagentRunner {
 			};
 		}
 		const gate = await c.authorize(toolCallId, name, args, signal, set, { agent: state });
-		// The main agent is still running its tools, whatever the card that came and went.
-		if (c.turnRunning && !c.pendingApproval) c.emit({ type: 'state', state: 'tool-running' });
+		// The run goes on, whatever the card that came and went: the main agent with its tools,
+		// or the agents alone while it waits for them.
+		if (c.isRunning && !c.pendingApproval) c.emit({ type: 'state', state: 'tool-running' });
 		if (!gate.ok) {
 			set(gate.status);
 			return { block: true, reason: gate.reason };

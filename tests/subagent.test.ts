@@ -14,9 +14,12 @@ import {
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { PromptManager } from '../src/agent/prompt';
 import {
+	answerOf,
 	createSpawnAgentTool,
 	fitAnswer,
 	forkMessages,
+	isStartNotice,
+	resultMessage,
 	Slots,
 	SPAWN_AGENT_NAME,
 } from '../src/agent/subagent';
@@ -33,7 +36,8 @@ import { SecretStore } from '../src/storage/secret-store';
 import { isAgentsPath, isSkillsPath } from '../src/tools/path-policy';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings, newModel, newProvider, type ToolPermission } from '../src/types';
-import { storedRow } from '../src/ui/agent-rows';
+import { agentResultOf, storedRow } from '../src/ui/agent-rows';
+import { groupRuns } from '../src/ui/work-log';
 import { FakeApp } from './fake-app';
 import { type ScriptedTurn, scriptedStream } from './scripted-stream';
 
@@ -179,9 +183,7 @@ function harness(
 		secrets: new SecretStore(app as unknown as App),
 		tools: () => [
 			...vault(),
-			createSpawnAgentTool(defs.agents, (id, args, signal) =>
-				controller.runSubagent(id, args, signal),
-			),
+			createSpawnAgentTool(defs.agents, (id, args) => controller.runSubagent(id, args)),
 		],
 		skillCatalog: () => '',
 		nestedAgentsMd: new NestedAgentsMd({
@@ -203,9 +205,17 @@ function harness(
 			content: string;
 			agentSession?: string;
 		}[];
+	/** The messages that told the main agent a sub-agent had finished, as the log keeps them. */
+	const agentAnswers = async () =>
+		(await sessions.load(controller.session!.id)).flatMap((e) =>
+			e.type === 'user' && e.agent
+				? [{ ...e.agent, answer: answerOf(e.content), message: e.content }]
+				: [],
+		);
 	return {
 		app,
 		controller,
+		agentAnswers,
 		defs,
 		skills,
 		events,
@@ -294,7 +304,7 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		).toBe(true);
 	});
 
-	it('3: the last message is the result; a limit or an error says so', async () => {
+	it('3: the call returns at once; the last message, a limit or an error comes as a message', async () => {
 		const h = harness(
 			{
 				main: [
@@ -321,13 +331,32 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		await h.controller.send('go');
 		const spawned = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
 		const agents = [...h.controller.agents.values()];
-		expect(spawned.map((r) => r.content)).toEqual([
-			`Found in notes/a.md:1\n\n[agent_id: ${agents[0]!.sessionId}]`,
-			`The agent stopped before it wrote an answer.\n\n[Stopped after 1 tool iterations]\n\n[agent_id: ${agents[1]!.sessionId}]`,
-			'Error: HTTP 500 from the server',
+		// Each call came back at once, saying its agent had started and naming it.
+		expect(spawned.map((r) => r.ok && isStartNotice(r.content))).toEqual([true, true, true]);
+		expect(spawned.map((r) => r.agentSession)).toEqual(agents.map((a) => a.sessionId));
+		expect(spawned[0]!.content.endsWith(`[agent_id: ${agents[0]!.sessionId}]`)).toBe(true);
+		// The answers came as messages of their own, in whatever order the agents finished.
+		const told = new Map((await h.agentAnswers()).map((t) => [t.callId, t]));
+		expect(agents.map((a) => told.get(a.callId)?.answer)).toEqual([
+			'Found in notes/a.md:1',
+			'The agent stopped before it wrote an answer.\n\n[Stopped after 1 tool iterations]',
+			'HTTP 500 from the server',
 		]);
-		expect(spawned.map((r) => r.ok)).toEqual([true, true, false]);
+		expect(agents.map((a) => told.get(a.callId)?.status)).toEqual([
+			'done',
+			'stopped',
+			'failed',
+		]);
+		expect(agents.map((a) => told.get(a.callId)?.sessionId)).toEqual(
+			agents.map((a) => a.sessionId),
+		);
 		expect(agents.map((a) => a.status)).toEqual(['done', 'stopped', 'failed']);
+		// The main agent was called again with them, each in a tag that names its agent.
+		const last = h.requests.main![h.requests.main!.length - 1]!;
+		expect(texts(last).filter((t) => t.startsWith('<agent_result ')).length).toBe(3);
+		expect(told.get(agents[0]!.callId)!.message).toBe(
+			`<agent_result agent_id="${agents[0]!.sessionId}" title="ok" agent="general-purpose" status="done">\nFound in notes/a.md:1\n</agent_result>`,
+		);
 	});
 
 	it('4: past maxSubagents a call waits for a place', async () => {
@@ -400,10 +429,11 @@ describe('sub-agents (LIB-TEST-141)', () => {
 				queueMicrotask(() => h.controller.stop());
 		});
 		await h.controller.send('go');
-		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
-		expect(result?.ok).toBe(false);
 		expect([...h.controller.agents.values()][0]?.status).toBe('failed');
 		expect(h.controller.state).toBe('idle');
+		expect(h.controller.isRunning).toBe(false);
+		// A stopped run has nobody left to tell: no word of the agent goes to the main agent.
+		expect(await h.agentAnswers()).toEqual([]);
 	});
 
 	it('6: approvals from agents side by side come one at a time and say who asks', async () => {
@@ -584,8 +614,9 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		// Read, Grep and Glob in Claude Code's names: Glob is find here.
 		expect(declared(first).sort()).toEqual(['find', 'grep', 'read']);
 		expect(h.models.style).toEqual(['small', 'small']);
-		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
-		expect(result!.content).toMatch(/\[Stopped after 2 tool iterations\]/);
+		const [told] = await h.agentAnswers();
+		expect(told).toMatchObject({ status: 'stopped' });
+		expect(told!.answer).toMatch(/\[Stopped after 2 tool iterations\]/);
 	});
 
 	it('warns about a model Settings lacks and runs that agent on the main model', async () => {
@@ -614,8 +645,7 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		});
 		await h.controller.send('go');
 		expect(h.models['odd one']).toEqual(['m']);
-		const [result] = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
-		expect(result!.content).toMatch(/^Looked\./);
+		expect((await h.agentAnswers())[0]!.answer).toMatch(/^Looked\./);
 	});
 
 	it('a plan agent starts without asking and reads only; dontAsk refuses instead of asking', async () => {
@@ -931,5 +961,189 @@ describe('sub-agent parts', () => {
 		);
 		expect(done).toMatchObject({ status: 'done', activity: 'Found in a', sessionId: 's1' });
 		expect(storedRow(call, undefined, false).status).toBe('failed');
+	});
+
+	it('a row from a log of background agents: started, then how the agent ended (LIB-TEST-312)', () => {
+		const call = { id: 'c1', name: SPAWN_AGENT_NAME, args: { title: 'Look' } };
+		const started = { ok: true, content: 'Started in the background. …', agentSession: 's1' };
+		const told = (status: 'done' | 'stopped' | 'failed', text: string) =>
+			({
+				t: '2026-11-13T00:00:00.000Z',
+				type: 'user',
+				content: resultMessage(
+					{ title: 'Look', agent: 'explore', sessionId: 's1' },
+					status,
+					text,
+				),
+				agent: { callId: 'c1', sessionId: 's1', status },
+			}) as const;
+		// Only the start is known: at work while the run goes on, cut short once it has ended.
+		const working = agentResultOf(started, undefined);
+		expect(storedRow(call, working, true)).toMatchObject({
+			status: 'running',
+			sessionId: 's1',
+		});
+		expect(storedRow(call, working, false)).toMatchObject({
+			status: 'stopped',
+			activity: 'It did not finish.',
+		});
+		expect(
+			storedRow(call, agentResultOf(started, told('done', 'Found **two** notes.')), false),
+		).toMatchObject({
+			status: 'done',
+			activity: 'Found two notes.',
+			sessionId: 's1',
+		});
+		expect(
+			storedRow(
+				call,
+				agentResultOf(
+					started,
+					told('stopped', 'Half.\n\n[Stopped after 3 tool iterations]'),
+				),
+				false,
+			).status,
+		).toBe('stopped');
+		expect(
+			storedRow(call, agentResultOf(started, told('failed', 'HTTP 500')), false),
+		).toMatchObject({
+			status: 'failed',
+			activity: 'HTTP 500',
+		});
+		// A log from before 2.21.0: the call's own result is the answer.
+		const old = { ok: true, content: 'Found it.\n\n[agent_id: s0]', agentSession: 's0' };
+		expect(storedRow(call, agentResultOf(old, undefined), false)).toMatchObject({
+			status: 'done',
+			activity: 'Found it.',
+		});
+	});
+
+	it('the message that tells of an agent fits one result and gives its answer back (LIB-TEST-312)', () => {
+		const state = { title: 'Say "hi"', agent: 'explore', sessionId: 's1' };
+		const short = resultMessage(state, 'done', 'Found it.');
+		expect(short).toBe(
+			`<agent_result agent_id="s1" title="Say 'hi'" agent="explore" status="done">\nFound it.\n</agent_result>`,
+		);
+		expect(answerOf(short)).toBe('Found it.');
+		const long = resultMessage(
+			state,
+			'stopped',
+			`${'x'.repeat(5000)}\n\n[Stopped: full]`,
+			1000,
+		);
+		expect(long.length).toBeLessThanOrEqual(1000);
+		expect(long.endsWith('[Stopped: full]\n</agent_result>')).toBe(true);
+		// Text that is no such message reads as it is, as an answer from an old log does.
+		expect(answerOf('plain')).toBe('plain');
+	});
+});
+
+describe('sub-agents in the background (LIB-TEST-312)', () => {
+	const until = async (what: () => boolean) => {
+		for (let i = 0; i < 400 && !what(); i++) await new Promise((r) => setTimeout(r, 5));
+		expect(what()).toBe(true);
+	};
+
+	it('answers a message from the user while an agent works, and ends the agent on Stop', async () => {
+		const h = harness({
+			main: [
+				{ toolCalls: [spawn('slow', 'Take long.')] },
+				{ text: 'It is on its way.' },
+				{ text: 'Four.' },
+			],
+			slow: 'hang',
+		});
+		const run = h.controller.send('look into it');
+		// The main agent has answered and its agent works on: the run stays on, waiting.
+		await until(() => h.requests.main?.length === 2 && !h.controller.turnRunning);
+		await until(() => h.controller.state === 'tool-running');
+		expect(h.controller.isRunning).toBe(true);
+		const agent = [...h.controller.agents.values()][0]!;
+		expect(agent.status).toBe('running');
+		// A message sent now is not kept for later: the main agent answers it at once.
+		void h.controller.send('what is two plus two?');
+		await until(() => h.requests.main?.length === 3 && !h.controller.turnRunning);
+		expect(texts(h.requests.main![2]!).slice(-1)).toEqual(['what is two plus two?']);
+		expect(h.controller.queue).toEqual([]);
+		expect(agent.status).toBe('running');
+		expect(h.controller.isRunning).toBe(true);
+		h.controller.stop();
+		await run;
+		expect(agent.status).toBe('failed');
+		expect(h.controller.state).toBe('idle');
+		const log = await h.sessions.load(h.controller.session!.id);
+		expect(log.filter((e) => e.type === 'assistant').map((e) => e.content)).toEqual([
+			'',
+			'It is on its way.',
+			'Four.',
+		]);
+		expect(await h.agentAnswers()).toEqual([]);
+	});
+
+	it('hands an answer that comes while the main agent works to its next request', async () => {
+		let release = () => {};
+		const hold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const h = harness({
+			main: [
+				{ toolCalls: [spawn('quick', 'Look.'), { name: 'find', args: { query: 'a' } }] },
+				// Held until the agent has finished, so its answer is there when this turn goes on.
+				{ toolCalls: [{ name: 'find', args: { query: 'b' } }], hold },
+				{ text: 'All done.' },
+			],
+			quick: [{ text: 'Found one.' }],
+		});
+		h.controller.subscribe((e) => {
+			if (e.type === 'agent' && e.agent.status === 'done') release();
+		});
+		await h.controller.send('go');
+		// One run of three requests: the answer went in after the second one's tool results.
+		expect(h.requests.main).toHaveLength(3);
+		const before = texts(h.requests.main![2]!);
+		expect(before[before.length - 1]).toMatch(
+			/^<agent_result [^>]*status="done">\nFound one\./,
+		);
+		const log = (await h.sessions.load(h.controller.session!.id)).map((e) =>
+			e.type === 'user' ? (e.agent ? 'agent' : 'user') : e.type,
+		);
+		expect(log.slice(-4)).toEqual(['tool_call', 'tool_result', 'agent', 'assistant']);
+		// On screen the answer opens a block of its own, after what the main agent did before; it
+		// is no turn of the user's, so there is one turn to rewind.
+		const runs = groupRuns(h.controller.events);
+		expect(runs.map((r) => r.user?.agent?.status ?? 'user')).toEqual(['user', 'done']);
+		expect(h.controller.previewRewind(runs[0]!.key)?.turns).toBe(1);
+		expect(h.controller.isRunning).toBe(false);
+	});
+
+	it('starts a turn of its own for an answer that comes after the main agent has answered', async () => {
+		const h = harness({
+			main: [
+				{ toolCalls: [spawn('later', 'Look.')] },
+				{ text: 'Waiting for the agent.' },
+				{ text: 'It found one.' },
+			],
+			later: [
+				{ toolCalls: [{ name: 'find', args: { query: 'a' } }] },
+				{ text: 'Found one.' },
+			],
+		});
+		const states: string[] = [];
+		h.controller.subscribe((e) => {
+			if (e.type === 'state' && states[states.length - 1] !== e.state) states.push(e.state);
+		});
+		await h.controller.send('go');
+		const replies = (await h.sessions.load(h.controller.session!.id))
+			.filter((e) => e.type === 'assistant')
+			.map((e) => e.content);
+		expect(replies.slice(-1)).toEqual(['It found one.']);
+		expect((await h.agentAnswers()).map((t) => [t.status, t.answer])).toEqual([
+			['done', 'Found one.'],
+		]);
+		// What the main agent says of the answer follows the line that tells of it, and the run ends idle.
+		const runs = groupRuns(h.controller.events);
+		expect(runs).toHaveLength(2);
+		expect(runs[1]!.user?.agent).toMatchObject({ status: 'done' });
+		expect(states[states.length - 1]).toBe('idle');
 	});
 });

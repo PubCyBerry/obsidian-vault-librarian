@@ -1,15 +1,16 @@
 /**
- * Sub-agents (LIB-ADR-017, LIB-FEAT-139): `spawn_agent` runs another Pi Agent in this runtime on a
- * self-contained task and returns its last message. The main agent waits for it the way it waits
- * for any tool, so several calls in one response run side by side. After Codex's `spawn_agent` and
- * Claude Code's agent files, without tools to message, wait for and close agents: a phone has no
- * process to leave running, and a follow-up goes through `resume` instead.
+ * Sub-agents (LIB-ADR-017, LIB-FEAT-139): `spawn_agent` starts another Pi Agent in this runtime on
+ * a self-contained task. The agent works in the background (LIB-ADR-050): the call returns at once
+ * with the agent's id, the main agent and the user go on meanwhile, and the agent's last message
+ * reaches the main agent as a message of its own when the agent has finished. After Codex's
+ * `spawn_agent` and Claude Code's background agents, without tools to message, wait for and close
+ * agents: the run waits by itself, and a follow-up goes through `resume`.
  */
 
 import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
-import type { IndexedEvent } from '../session/session-types';
+import type { AgentOutcome, IndexedEvent } from '../session/session-types';
 import { cutAt, tool } from '../tools/registry';
 import type { ToolCardStatus } from './agent-controller';
 import type { AgentColor, AgentDefinition } from './agent-definitions';
@@ -49,13 +50,48 @@ export interface SubagentState {
 	sessionId: string | null;
 }
 
-const USE = `Start a sub-agent: another Librarian with a fresh context, which works on one self-contained task with its own tools and returns its final answer as the result of this call. What it reads stays out of your context; only its answer comes back.
+const USE = `Start a sub-agent: another Librarian with a fresh context, which works on one self-contained task with its own tools. What it reads stays out of your context; only its final answer comes back.
 
-Use it when the user asks for sub-agents, or when a task splits into independent parts that each take many reads, such as one summary per note across many notes, or a review of your work with fresh eyes. Each call returns only when its agent has finished, so agents started in separate responses run one after another: to run agents side by side, put all their spawn_agent calls in the same response. Do not use it for a question one or two searches answer, and do not hand off the step you need next: do that yourself.
+The agent works in the background. This call returns at once with its agent_id, and the answer arrives later as a message that begins with <agent_result agent_id="…">. Librarian sends you that message when the agent has finished; the user did not write it. Until then go on with work that does not depend on the answer, or, when nothing is left to do, say in a sentence what you are waiting for and end your reply: you are called again as soon as an agent finishes. Do not wait in a loop, do not start the same task again, and do not guess the answer.
+
+Use it when the user asks for sub-agents, or when a task splits into independent parts that each take many reads, such as one summary per note across many notes, or a review of your work with fresh eyes. Agents run side by side, as many at once as the settings allow. Do not use it for a question one or two searches answer, and do not hand off the step you need next: do that yourself.
 
 Write the task so it stands on its own: what to find or change, where to look, and the form of the answer, such as "list each open task with its note path and line". A sub-agent cannot ask you or the user anything, cannot start agents of its own and cannot talk to other sub-agents; pass what one found to another in its task. Give agents that change notes different notes to change.
 
-Each result ends with [agent_id: …]. To give that agent a follow-up with everything it did so far, call spawn_agent again with resume set to that id and the follow-up as task.`;
+To give an agent that has finished a follow-up with everything it did so far, call spawn_agent again with resume set to its agent_id and the follow-up as task.`;
+
+/** How a spawn_agent result begins, now that it says the agent has started, not what it found. */
+const STARTED = 'Started in the background.';
+
+/** What the call returns: the agent is at work, and how its answer will come. */
+export function startNotice(title: string): string {
+	return `${STARTED} The agent "${title}" is working; its answer will arrive as a message that begins with <agent_result>. Go on with other work, or end your reply to wait for it.`;
+}
+
+/** A spawn_agent result that only says the agent started; one from before 2.21.0 is its answer. */
+export function isStartNotice(content: string): boolean {
+	return content.startsWith(STARTED);
+}
+
+/**
+ * The message the main agent gets when an agent has finished (LIB-FEAT-311): its answer, or why
+ * there is none, in a tag that names the agent. `budget` is how long one message may be.
+ */
+export function resultMessage(
+	state: Pick<SubagentState, 'title' | 'agent' | 'sessionId'>,
+	status: AgentOutcome['status'],
+	text: string,
+	budget = Number.POSITIVE_INFINITY,
+): string {
+	const attr = (value: string) => value.replace(/"/g, "'");
+	const open = `<agent_result agent_id="${state.sessionId ?? ''}" title="${attr(state.title)}" agent="${attr(state.agent)}" status="${status}">\n`;
+	return `${open}${fitAnswer(text, '', budget - open.length - 20)}\n</agent_result>`;
+}
+
+/** The answer inside such a message, as the chat shows it on the agent's row. */
+export function answerOf(message: string): string {
+	return /^<agent_result[^>]*>\n([\s\S]*)\n<\/agent_result>$/.exec(message)?.[1] ?? message;
+}
 
 const DEFINITIONS = `Agents are Markdown files under .agents/agents/ in the vault: YAML frontmatter with name and description, and optionally tools and disallowedTools (lists of tool names; a trailing * matches a prefix), model (the ID of a model in Settings, or provider/model; leave it out to use your model), effort, maxTurns, permissionMode (default, plan for read-only, or dontAsk to refuse calls that need approval), skills (preloaded) and color; then the agent's instructions, which replace the Custom system prompt. Read, write and edit them like notes, and delete one with bash rm; changes to them always ask the user.`;
 
@@ -84,9 +120,9 @@ export function fitAnswer(text: string, tail: string, budget: number): string {
 }
 
 /**
- * The tool, listing `agents`, the definitions the main agent may start. `run` does the work; it
- * returns the agent's answer and its session, or throws with why it could not answer. `budget`
- * is how long one result may be (`resultBudget`).
+ * The tool, listing `agents`, the definitions the main agent may start. `run` starts the agent; it
+ * returns what to tell the main agent and the agent's session, or throws with why it could not
+ * start. `budget` is how long one result may be (`resultBudget`).
  */
 export function createSpawnAgentTool(
 	agents: readonly AgentDefinition[],
@@ -132,7 +168,7 @@ export function createSpawnAgentTool(
 		executionMode: 'parallel',
 		async execute(callId, params, signal) {
 			const { text, sessionId } = await run(callId, params, signal);
-			// The id closes the answer so the model can resume the agent, and goes in the log so the
+			// The id closes the result so the model can name the agent, and goes in the log so the
 			// chat can open its conversation later.
 			const id = sessionId ? `\n\n[agent_id: ${sessionId}]` : '';
 			return {

@@ -7,7 +7,9 @@ import { appendStreamDelta, RedrawReveal } from './stream-text';
 
 /**
  * One request and the work it took: the user's message and everything after it until the next
- * one (LIB-FEAT-252). Keyed by the index of that message, which rewinds keep stable.
+ * one (LIB-FEAT-252). Keyed by the index of that message, which rewinds keep stable. The message
+ * that tells the main agent a sub-agent has finished (LIB-FEAT-311) opens a run as well: what the
+ * main agent does with that answer is work of its own, after whatever it said before.
  */
 export interface Run {
 	key: number;
