@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.21.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.20.0...2.21.0) (2026-11-13)
+
+
+### Features
+
+* read pictures, PDFs and the shell's scratch files with the read tool ([#67](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/67)) ([e326e6f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e326e6fa8afc586e45027c93cf8631a67aad39c8))
+* run sub-agents in the background, so the main agent and the user go on meanwhile ([#70](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/70)) ([850cd91](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/850cd9162fd76c00774669918a2f35a2c113db92))
+* show how fast the last response came in the context popover ([#68](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/68)) ([f10093c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f10093c693646d9987d715fc06f406fe3c572ed7))
+* show the work as a coding agent's terminal does, with a thought orb in its header ([#69](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/69)) ([b5853a8](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/b5853a87bd01f9049d3736f58dc020bee22ceb90))
+* take the curl and grep options a model reaches for in the shell ([e326e6f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e326e6fa8afc586e45027c93cf8631a67aad39c8))
+
+
+### Bug Fixes
+
+* keep the start of a long shell output as well as its end ([e326e6f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e326e6fa8afc586e45027c93cf8631a67aad39c8))
+* send thinking back the way the server sent it after a context is rebuilt from the log ([#66](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/66)) ([86d7d1d](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/86d7d1dbce88fa4d75118f77c619522455d3ddb0))
+
 ## [2.20.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.19.0...2.20.0) (2026-09-29)
 
 
