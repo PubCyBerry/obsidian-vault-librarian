@@ -176,10 +176,13 @@ export function assistantEvent(m: AssistantMessage) {
 					totalTokens: m.usage.totalTokens,
 				}
 			: undefined;
-	const thinking = m.content
-		.filter((c): c is Extract<typeof c, { type: 'thinking' }> => c.type === 'thinking')
-		.map((c) => c.thinking)
-		.join('');
+	const thoughts = m.content.filter(
+		(c): c is Extract<typeof c, { type: 'thinking' }> => c.type === 'thinking',
+	);
+	const thinking = thoughts.map((c) => c.thinking).join('');
+	// The Responses API keeps its reasoning items in `responses`; this is the Chat Completions one.
+	const signature =
+		m.api === RESPONSES_API ? undefined : thoughts.find((c) => c.thinkingSignature);
 	const toolCalls: StoredToolCall[] = m.content
 		.filter((c): c is Extract<typeof c, { type: 'toolCall' }> => c.type === 'toolCall')
 		.map((c) => ({
@@ -193,6 +196,14 @@ export function assistantEvent(m: AssistantMessage) {
 		type: 'assistant' as const,
 		content: textOf(m.content),
 		thinking: thinking || undefined,
+		...(signature?.thinkingSignature
+			? {
+					thinkingReplay: {
+						model: `${m.provider}/${m.model}`,
+						signature: signature.thinkingSignature,
+					},
+				}
+			: {}),
 		toolCalls,
 		usage,
 		stopReason: m.stopReason,

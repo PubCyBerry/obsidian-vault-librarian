@@ -1,5 +1,6 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared';
+import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 import type { App } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import { assistantEvent } from '../src/agent/agent-controller';
@@ -12,6 +13,7 @@ import {
 	truncateMiddle,
 } from '../src/context/context-manager';
 import { toPiModel } from '../src/provider/provider-manager';
+import { buildRequestBody } from '../src/provider/transport';
 import { replay } from '../src/session/session-manager';
 import type { SessionEvent } from '../src/session/session-types';
 import { createVaultTools } from '../src/tools/registry';
@@ -294,6 +296,92 @@ describe("Gemini's signature in the session (LIB-TEST-251)", () => {
 		});
 		const call = (messages[1] as { content: { type: string }[] }).content[0];
 		expect(call).toMatchObject({ type: 'toolCall', id: 'c1', thoughtSignature: 'SIG' });
+	});
+});
+
+describe('thinking of a tool loop in a rebuilt context (LIB-TEST-299)', () => {
+	const reply = (
+		signature: string | undefined,
+		thinking = 'Search first.',
+	): AssistantMessage => ({
+		role: 'assistant',
+		content: [
+			{ type: 'thinking', thinking, ...(signature ? { thinkingSignature: signature } : {}) },
+			{ type: 'toolCall', id: 'c1', name: 'grep', arguments: { query: 'x' } },
+		],
+		api: piModel.api,
+		provider: piModel.provider,
+		model: piModel.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: 'toolUse',
+		timestamp: 1,
+	});
+	const loop = (m: AssistantMessage) =>
+		[
+			ev('user', { content: 'find x' }),
+			{ t: '2026-09-21T00:00:00.000Z', ...assistantEvent(m) } as SessionEvent,
+			ev('tool_result', {
+				toolCallId: 'c1',
+				name: 'grep',
+				ok: true,
+				content: 'a.md:1: x',
+				truncated: false,
+			}),
+		].map((event, index) => ({ event, index }));
+	/** The assistant message of the request a rebuilt context sends, as the server receives it. */
+	const sent = async (m: AssistantMessage, to = piModel) => {
+		const { cm } = manager();
+		const messages = await cm.project({ model: to, events: loop(m) });
+		const body = buildRequestBody(
+			to as Parameters<typeof buildRequestBody>[0],
+			normalizeContext({ messages }),
+			{},
+		);
+		return (body.messages as Record<string, unknown>[]).find((x) => x.role === 'assistant')!;
+	};
+
+	it('keeps the field the server sent the thinking in, with the model that wrote it', () => {
+		expect(assistantEvent(reply('reasoning')).thinkingReplay).toEqual({
+			model: 'p/m',
+			signature: 'reasoning',
+		});
+		expect(assistantEvent(reply(undefined)).thinkingReplay).toBeUndefined();
+		// The Responses API keeps its reasoning items another way (LIB-FEAT-247).
+		expect(
+			assistantEvent({ ...reply('{"id":"rs_1"}'), api: RESPONSES_API }).thinkingReplay,
+		).toBeUndefined();
+	});
+
+	it('sends it back in that field to the model that wrote it', async () => {
+		const message = await sent(reply('reasoning'));
+		expect(message.reasoning).toBe('Search first.');
+		expect(message.reasoning_content).toBeUndefined();
+		expect(message.tool_calls).toHaveLength(1);
+	});
+
+	it('sends it as reasoning_content to another model, and from a log without the field', async () => {
+		const other = toPiModel(provider, { ...model, id: 'other' });
+		const message = await sent(reply('reasoning'), other);
+		expect(message.reasoning_content).toBe('Search first.');
+		expect(message.reasoning).toBeUndefined();
+		expect((await sent(reply(undefined))).reasoning_content).toBe('Search first.');
+	});
+
+	it("sends OpenRouter's reasoning details back whole, even without visible thinking", async () => {
+		const details = [{ type: 'reasoning.encrypted', id: 'r1', data: 'SEALED', index: 0 }];
+		const message = await sent(reply(JSON.stringify(details), ''));
+		expect(message.reasoning_details).toEqual(details);
+		// Sealed for the model that wrote it: another one gets none of it.
+		const other = toPiModel(provider, { ...model, id: 'other' });
+		const elsewhere = await sent(reply(JSON.stringify(details), ''), other);
+		expect(elsewhere.reasoning_details).toBeUndefined();
 	});
 });
 
