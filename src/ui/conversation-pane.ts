@@ -1,7 +1,8 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { type App, Component, MarkdownRenderer, Menu, setIcon, TFile } from 'obsidian';
-import type { ToolCardStatus } from '../agent/agent-controller';
+import type { AgentUiState, ToolCardStatus } from '../agent/agent-controller';
 import { SPAWN_AGENT_NAME } from '../agent/subagent';
+import { estimateText } from '../context/context-manager';
 import type { IndexedEvent, SessionEvent, StoredToolCall } from '../session/session-types';
 import { type AgentRowData, renderAgentRow, updateAgentRow } from './agent-rows';
 import {
@@ -12,22 +13,27 @@ import {
 	toolIcon,
 } from './cards';
 import { ATTACHED_BLOCK } from './mentions';
+import { Orb } from './orb';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta, StreamingMarkdown } from './stream-text';
 import {
+	compactCount,
+	firstLine,
 	formatDuration,
 	groupRuns,
 	grow,
+	lastLine,
 	looksLikeAnswer,
 	type PopoverContent,
 	type Run,
 	renderChip,
 	renderMessage,
-	renderSpinner,
 	type Step,
 	type StepPopover,
 	setChipStatus,
+	updateChip,
 	viewOf,
+	workMood,
 } from './work-log';
 
 type ToolResult = Extract<SessionEvent, { type: 'tool_result' }>;
@@ -133,6 +139,22 @@ export class ConversationPane {
 	private activityEl: HTMLElement | null = null;
 	/** Its words as last set, for the header a redraw makes anew. */
 	private activity = '';
+	/**
+	 * The running run's header (LIB-FEAT-308): its orb, its word, and how long the run has taken
+	 * and how many tokens it has written, counted from the log up to the response on its way.
+	 */
+	private head: {
+		orb: Orb;
+		title: HTMLElement;
+		meta: HTMLElement;
+		startedAt: number;
+		tokens: number;
+	} | null = null;
+	/** The agent's state as last told; null where only the stream is known, as in the agent pane. */
+	private mood: AgentUiState | null = null;
+	private agentsBusy = false;
+	/** The response on its way, as an estimate of its tokens. */
+	private liveTokens = 0;
 	/** Each drawn step's popover, by key, to open it again after a redraw. */
 	private popFills = new Map<string, { anchor: HTMLElement; content: () => PopoverContent }>();
 	/** The last saved response as last drawn, to tell when the streaming one has been saved. */
@@ -153,6 +175,8 @@ export class ConversationPane {
 			deps.popover.reposition();
 		});
 		this.watchLinks(el);
+		// The header of a run at work counts its seconds.
+		deps.component.registerInterval(window.setInterval(() => this.renderHead(), 1000));
 	}
 
 	/** Another conversation: nothing drawn so far is worth remembering. */
@@ -166,14 +190,34 @@ export class ConversationPane {
 	 * What the agent is doing now, in the running run's header. A header drawn anew shows it at
 	 * once; words that change after fade in, as streamed text does (LIB-FEAT-099).
 	 */
-	setActivity(text: string): void {
+	setActivity(text: string, state: AgentUiState | null = null, agentsBusy = false): void {
 		this.activity = text;
+		this.mood = state;
+		this.agentsBusy = agentsBusy;
+		this.renderHead();
 		const el = this.activityEl;
 		if (!el || el.textContent === text) return;
 		// A narrow pane cuts it short; the whole text shows on hover.
 		el.setAttr('aria-label', text);
 		if (el.textContent) appendStreamDelta(el, el.textContent, text);
 		else el.setText(text);
+	}
+
+	/** The running run's header as it stands now: its orb's motion, its word, its time and tokens. */
+	private renderHead(): void {
+		const head = this.head;
+		if (!head?.title.isConnected) return;
+		const { verb, orb } = workMood(
+			this.mood,
+			this.live?.thinkingLive === true,
+			this.agentsBusy,
+		);
+		head.orb.set(orb);
+		if (head.title.textContent !== verb)
+			appendStreamDelta(head.title, head.title.textContent ?? '', verb);
+		const tokens = head.tokens + this.liveTokens;
+		const meta = `${formatDuration(Date.now() - head.startedAt)}${tokens ? `, ${compactCount(tokens)} tokens` : ''}`;
+		if (head.meta.textContent !== meta) head.meta.setText(meta);
 	}
 
 	/** A run was drawn as still at work, so it has to be drawn again once it ends. */
@@ -192,6 +236,9 @@ export class ConversationPane {
 		this.el.empty();
 		this.live = null;
 		this.activityEl = null;
+		this.head = null;
+		// What the last response wrote is in the log now, counted from there.
+		this.liveTokens = 0;
 		this.popFills = new Map();
 		this.events = events;
 		this.statusOf = o.status;
@@ -263,13 +310,29 @@ export class ConversationPane {
 		const block = this.el.createDiv({ cls: 'librarian-work' });
 		block.toggleClass('is-running', running);
 		const header = block.createDiv({ cls: 'librarian-work-header' });
-		if (running) renderSpinner(header);
 		const took =
 			view.startedAt !== null && view.endedAt !== null ? view.endedAt - view.startedAt : 0;
-		header.createSpan({
+		// At work: the orb, a word for what it does, and the time and tokens so far (renderHead).
+		// Done: a mark and how long it took.
+		const orb = running ? new Orb(header) : null;
+		if (!orb) setIcon(header.createSpan({ cls: 'librarian-work-mark' }), 'asterisk');
+		const title = header.createSpan({
 			cls: 'librarian-work-title',
 			text: running ? 'Working' : `Worked for ${formatDuration(took)}`,
 		});
+		if (orb) {
+			this.head = {
+				orb,
+				title,
+				meta: header.createSpan({ cls: 'librarian-work-meta' }),
+				startedAt: view.startedAt ?? Date.now(),
+				tokens: run.events.reduce(
+					(n, e) => n + (e.event.type === 'assistant' ? (e.event.usage?.output ?? 0) : 0),
+					0,
+				),
+			};
+			this.renderHead();
+		}
 		const chevron = header.createSpan({ cls: 'librarian-work-chevron' });
 		setIcon(chevron, 'chevron-right');
 		if (running && this.opts.activity)
@@ -343,11 +406,13 @@ export class ConversationPane {
 		if (running) this.folds.seen.add(step.key);
 		switch (step.kind) {
 			case 'thinking':
-				this.stepButton(row, `thinking:${step.key}`, 'brain', 'Thinking', () => ({
-					icon: 'brain',
-					title: 'Thinking',
-					text: step.text,
-				}));
+				this.stepButton(
+					row,
+					`thinking:${step.key}`,
+					'Thinking',
+					() => ({ icon: 'brain', title: 'Thinking', text: step.text }),
+					firstLine(step.text, 100),
+				);
 				break;
 			case 'text':
 				void this.renderMarkdown(renderMessage(row).text, step.text);
@@ -360,7 +425,7 @@ export class ConversationPane {
 					const shown =
 						status(call.id) ??
 						(result ? (result.ok ? 'ok' : 'failed') : running ? 'pending' : 'skipped');
-					const chip = renderChip(row, call, shown);
+					const chip = renderChip(row, call, shown, result?.content ?? null);
 					this.bindPopover(
 						chip,
 						`call:${call.id}`,
@@ -389,6 +454,7 @@ export class ConversationPane {
 				break;
 			}
 			case 'compaction':
+				row.createSpan({ cls: 'librarian-bullet' });
 				row.createSpan({
 					cls: 'librarian-step-note',
 					text: `Context compacted: ${compactTokens(step.before)} to ${compactTokens(step.after)}`,
@@ -397,17 +463,22 @@ export class ConversationPane {
 		}
 	}
 
-	/** A step shown by its icon and a short label; what it holds opens in the popover. */
+	/**
+	 * A step shown by a mark, a short label and the start of what it holds, such as a thinking;
+	 * the whole of it opens in the popover.
+	 */
 	private stepButton(
 		row: HTMLElement,
 		key: string,
-		icon: string,
 		label: string,
 		content: () => PopoverContent,
+		preview: string,
 	): HTMLButtonElement {
 		const button = row.createEl('button', { cls: 'librarian-chip librarian-step-button' });
-		setIcon(button.createSpan({ cls: 'librarian-chip-icon' }), icon);
-		button.createSpan({ cls: 'librarian-chip-name', text: label });
+		setIcon(button.createSpan({ cls: 'librarian-chip-icon' }), 'asterisk');
+		const line = button.createSpan({ cls: 'librarian-chip-line' });
+		line.createSpan({ cls: 'librarian-chip-name', text: label });
+		line.createSpan({ cls: 'librarian-chip-preview', text: preview });
 		this.bindPopover(button, key, content);
 		return button;
 	}
@@ -571,10 +642,9 @@ export class ConversationPane {
 			});
 			const note = live.text && !live.text.answer ? live.text.el : null;
 			live.timeline.insertBefore(live.thinking, note ?? live.tools);
-			const chip = this.stepButton(
+			this.stepButton(
 				live.thinking,
 				'thinking:live',
-				'brain',
 				'Thinking',
 				() => ({
 					icon: 'brain',
@@ -582,11 +652,14 @@ export class ConversationPane {
 					live: current()?.thinkingLive === true,
 					text: current()?.thinkingText ?? '',
 				}),
+				'',
 			);
-			// Turns while the thinking grows, as a running call's chip does, and goes when it stops.
-			renderSpinner(chip.createSpan({ cls: 'librarian-chip-mark' }));
 		}
 		live.thinkingText = thinking;
+		// Its line shows the thought now being written, the newest line of it.
+		const preview = live.thinking?.querySelector<HTMLElement>('.librarian-chip-preview');
+		const newest = lastLine(thinking, 100);
+		if (preview && preview.textContent !== newest) preview.setText(newest);
 		const text = message.content
 			.filter((c) => c.type === 'text')
 			.map((c) => (c as { text: string }).text)
@@ -624,6 +697,8 @@ export class ConversationPane {
 				const name = existing.querySelector<HTMLElement>('.librarian-chip-name');
 				if (name && block.name && name.textContent !== block.name)
 					appendStreamDelta(name, name.textContent ?? '', block.name);
+				// Its arguments grow in the brackets as they arrive.
+				updateChip(existing, call, status);
 				return;
 			}
 			// A chip whose name turned out to be spawn_agent becomes a row, as the log will show it.
@@ -640,7 +715,7 @@ export class ConversationPane {
 				if (joining) (had ? row : card).addClass('librarian-step-new');
 				return;
 			}
-			const chip = renderChip(tools, { id: block.id, name: block.name }, status);
+			const chip = renderChip(tools, call, status);
 			chip.dataset.streamIndex = String(i);
 			if (joining) chip.addClass('librarian-step-new');
 			// Chips stay ahead of the agents' list, as they are drawn from the log.
@@ -663,9 +738,13 @@ export class ConversationPane {
 			);
 		});
 		live.thinkingLive = thinking.length > 0 && !text && calls.length === 0;
-		live.thinking
-			?.querySelector('.librarian-chip-mark')
-			?.toggleClass('is-hidden', !live.thinkingLive);
+		// Its mark pulses while the thinking grows, and rests once the response moves on.
+		live.thinking?.querySelector('.librarian-chip')?.toggleClass('is-live', live.thinkingLive);
+		this.liveTokens =
+			estimateText(thinking) +
+			estimateText(text) +
+			calls.reduce((n, c) => n + estimateText(c.name + JSON.stringify(c.arguments ?? {})), 0);
+		this.renderHead();
 		// An open popover on a step still streaming shows what has arrived since it opened.
 		const popover = this.deps.popover;
 		const open = popover.openKey;

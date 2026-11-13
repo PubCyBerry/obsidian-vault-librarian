@@ -26,7 +26,7 @@ There is no index to build or keep in sync. The agent looks around your vault th
 
 ### Every step in view
 
-Each request gets one work block. It reads **Working** while the agent works and folds into **Worked for** and the time it took. Unfold it for a timeline: the model's thinking, then each tool call as a chip, with calls that ran in parallel side by side. Select a chip to see its arguments and its result.
+Each request gets one work block. While the agent works its header shows a thought orb that moves with what the agent is doing, a word for it (**Thinking**, **Writing**, **Working**, **Waiting**), the seconds so far and the tokens written. It folds into **Worked for** and the time it took. Unfold it for a timeline that reads like a coding agent's terminal: the model's thinking with the start of the thought, then each tool call on a line of its own as `name(what it was given)`, a dot for how it went, and what it came to underneath. Select a line to see its arguments and its result.
 
 <img src="docs/media/timeline.png" width="470" alt="The unfolded timeline with thinking steps and tool chips, and a popover showing the lines a grep call found">
 
@@ -133,7 +133,7 @@ npm run lint     # Biome and ESLint (eslint-plugin-obsidianmd)
 npm test         # vitest
 ```
 
-The agent loop is `@earendil-works/pi-agent-core`; the OpenAI-compatible adapter is `@earendil-works/pi-ai`. Both are pinned. Commits follow Conventional Commits (enforced by commitlint through prek) and releases are cut by release-please.
+The agent loop is `@earendil-works/pi-agent-core`; the OpenAI-compatible adapter is `@earendil-works/pi-ai`. Both are pinned. The shell is [just-bash](https://github.com/vercel-labs/just-bash), and the thought orb is drawn from the frames of [thinking-orbs](https://github.com/Jakubantalik/thinking-orbs) by Jakub Antalik (MIT), through its engine entry, which has no React in it. Commits follow Conventional Commits (enforced by commitlint through prek) and releases are cut by release-please.
 
 The media in this README are recorded from the demo vault in [`docs/demo`](docs/demo). After a UI change, `npm run build && node docs/demo/record.mjs` records them again; the script's header lists what it needs. The tour video at the top is `docs/media/tour.mp4` uploaded to GitHub by dropping it into an issue comment box, since a README plays only videos uploaded that way: upload the new file the same way and replace the address.
 

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { IndexedEvent, SessionEvent } from '../src/session/session-types';
-import { readableResult } from '../src/ui/cards';
-import { firstLine, formatDuration, groupRuns, looksLikeAnswer, viewOf } from '../src/ui/work-log';
+import { describeCall, readableResult, summarizeCall } from '../src/ui/cards';
+import {
+	compactCount,
+	firstLine,
+	formatDuration,
+	groupRuns,
+	lastLine,
+	looksLikeAnswer,
+	viewOf,
+	workMood,
+} from '../src/ui/work-log';
 
 const at = (s: number) => new Date(Date.UTC(2026, 8, 25, 1, 0, s)).toISOString();
 
@@ -109,6 +118,67 @@ describe('work log (LIB-TEST-253)', () => {
 		expect(formatDuration(3_900_000)).toBe('1h 5m');
 		expect(firstLine('\n  Searching the vault.\nThen reading.')).toBe('Searching the vault.');
 		expect(firstLine('x'.repeat(100), 10)).toBe(`${'x'.repeat(10)}…`);
+	});
+
+	it('says what a call was given and what it came to, for its line on the timeline (LIB-TEST-309)', () => {
+		const lines = JSON.stringify({ lines: [{ line: 9 }, { line: 10 }] });
+		expect(describeCall('read', { path: 'a.md', offset: 9 }, lines)).toEqual({
+			gist: 'a.md:9',
+			outcome: 'lines 9 to 10',
+		});
+		expect(describeCall('read', { path: 'a.md' }, null)).toEqual({ gist: 'a.md', outcome: '' });
+		expect(describeCall('read', { path: 'f.png' }, '{"type":"image/png"}').outcome).toBe(
+			'image/png',
+		);
+		expect(describeCall('grep', { query: 'x' }, '{"matches":[1]}')).toEqual({
+			gist: 'x',
+			outcome: '1 match',
+		});
+		expect(describeCall('ls', {}, '{"total":3}')).toEqual({ gist: '/', outcome: '3 entries' });
+		expect(describeCall('write', { path: 'n.md' }, '{"operation":"created"}').outcome).toBe(
+			'created',
+		);
+		expect(describeCall('edit', { path: 'n.md' }, '{"replacements":2}').outcome).toBe(
+			'2 replacements',
+		);
+		// A command by its first line, and its output by its first line and how much more there is.
+		expect(
+			describeCall('bash', { command: '\ncurl -s x | jq .\necho done' }, 'a\n\nb\nc\n'),
+		).toEqual({
+			gist: 'curl -s x | jq .',
+			outcome: 'a, 2 more lines',
+		});
+		expect(describeCall('bash', { command: 'true' }, '').outcome).toBe('');
+		// A failed call says why; another server's tool says how its answer starts.
+		expect(
+			describeCall('read', { path: 'gone.md' }, 'Error: File not found: gone.md\nmore'),
+		).toEqual({
+			gist: 'gone.md',
+			outcome: 'File not found: gone.md',
+		});
+		expect(describeCall('outline__search', { q: 'x' }, 'Found 2 documents\n- a').outcome).toBe(
+			'Found 2 documents',
+		);
+		expect(describeCall('outline__search', { q: 'x' }, '{"ok":true}').outcome).toBe('');
+		// The popover's summary line is unchanged for the tools it knew.
+		expect(summarizeCall('grep', { query: 'x' }, '{"matches":[1,2]}')).toBe('x, 2 matches');
+		expect(summarizeCall('bash', { command: 'ls -la' }, 'total 3')).toBe('ls -la');
+	});
+
+	it('picks the header word and the orb by what the agent does (LIB-TEST-309)', () => {
+		expect(workMood('requesting', false)).toEqual({ verb: 'Thinking', orb: 'breathing' });
+		expect(workMood('streaming', true)).toEqual({ verb: 'Thinking', orb: 'breathing' });
+		expect(workMood('streaming', false)).toEqual({ verb: 'Writing', orb: 'composing' });
+		expect(workMood('tool-running', false)).toEqual({ verb: 'Working', orb: 'working' });
+		expect(workMood('tool-running', false, true).orb).toBe('connecting');
+		expect(workMood('awaiting-approval', true)).toEqual({ verb: 'Waiting', orb: 'listening' });
+		expect(workMood('compacting', false)).toEqual({ verb: 'Compacting', orb: 'shaping' });
+		// A sub-agent's pane knows only the stream.
+		expect(workMood(null, false).verb).toBe('Working');
+		expect(workMood(null, true).verb).toBe('Thinking');
+		expect([850, 1234, 9950, 34_400].map(compactCount)).toEqual(['850', '1.2k', '9.9k', '34k']);
+		expect(lastLine('first\nthe newest line\n')).toBe('the newest line');
+		expect(lastLine('one two three four five', 12)).toBe('four five');
 	});
 
 	it('shows results the way a person reads them in the popover', () => {

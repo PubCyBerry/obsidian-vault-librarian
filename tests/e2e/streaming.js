@@ -4,7 +4,7 @@
 //   __streaming.start('note')     a note, a call and a Markdown answer: the note is a chip from its
 //                                 first word, grows, is kept when it is saved, and the answer is
 //                                 Markdown while it streams
-//   __streaming.start('agents')   an explore sub-agent: its pane's spinner keeps turning and the
+//   __streaming.start('agents')   an explore sub-agent: its pane's header keeps its orb and the
 //                                 pane is not drawn anew while the agent's answer streams, and
 //                                 its row's line fades in what it says next
 //   __streaming.start('command')  a bash call and an ls call whose arguments stream (LIB-TEST-288):
@@ -110,14 +110,6 @@
 		input.dispatchEvent(new Event('input', { bubbles: true }));
 		await sleep(200);
 		$('.librarian-send', chat()).click();
-	}
-
-	/** The spinner's turn in degrees, from its transform. */
-	function angle(el) {
-		const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(el).transform);
-		if (!m) return null;
-		const [a, b] = m[1].split(',').map(Number);
-		return Math.round((Math.atan2(b, a) * 180) / Math.PI);
 	}
 
 	const steps = {
@@ -236,14 +228,13 @@
 			const t0 = performance.now();
 			while (performance.now() - t0 < 15000) {
 				const spinner = $(
-					'.librarian-work.is-running .librarian-work-header .librarian-spinner',
+					'.librarian-work.is-running .librarian-work-header .librarian-orb',
 					body,
 				);
 				if (spinner && !spinners.includes(spinner)) spinners.push(spinner);
 				samples.push({
 					t: Math.round(performance.now() - t0),
 					spinner: spinner ? spinners.indexOf(spinner) : null,
-					angle: spinner ? angle(spinner) : null,
 					status: c.agents.get(row.dataset.agentCallId)?.status,
 					streaming: !!c.agents.get(row.dataset.agentCallId)?.stream,
 					chip: $$('.librarian-message', body).at(-1)?.textContent.length ?? 0,
@@ -255,25 +246,13 @@
 				await sleep(100);
 			}
 			observer.disconnect();
-			// How far the turn moved between two samples, against how far the clock says it should.
+			// The orb reads the page's clock, so one made anew goes on where the last one was. What
+			// is checked is that the header keeps the same one while the agent streams.
 			const steps = samples
 				.map((s, i) => {
 					const p = samples[i - 1];
-					if (!p || s.angle === null || p.angle === null) return null;
-					const moved = (((s.angle - p.angle) % 360) + 360) % 360;
-					const expected = ((((s.t - p.t) * 0.45) % 360) + 360) % 360;
-					const off = Math.min(
-						Math.abs(moved - expected),
-						360 - Math.abs(moved - expected),
-					);
-					return {
-						t: s.t,
-						moved,
-						expected: Math.round(expected),
-						off: Math.round(off),
-						same: s.spinner === p.spinner,
-						streaming: s.streaming,
-					};
+					if (!p || s.spinner === null || p.spinner === null) return null;
+					return { t: s.t, same: s.spinner === p.spinner, streaming: s.streaming };
 				})
 				.filter(Boolean);
 			const streaming = steps.filter((s) => s.streaming);
@@ -282,8 +261,6 @@
 				redraws,
 				samples: samples.length,
 				streamingSamples: streaming.length,
-				// A restart shows as a step far off the clock.
-				offClock: steps.filter((s) => s.off > 40).slice(0, 10),
 				sameWhileStreaming: streaming.every((s) => s.same),
 				rowFaded: samples.some((s) => s.rowFading > 0),
 				steps: steps.slice(0, 40),

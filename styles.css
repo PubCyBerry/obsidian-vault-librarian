@@ -1516,9 +1516,10 @@ body.is-mobile
 	display: none;
 }
 
-/* A request's work (LIB-FEAT-252): a header that says Working, then how long it worked; under it a
-   dotted timeline of steps that folds away; the answer follows the block. Folding animates the
-   body's grid row between 0fr and 1fr, so no height has to be measured. */
+/* A request's work (LIB-FEAT-252): a header that says what the agent is doing, then how long it
+   worked; under it a timeline of steps, a line each, that folds away; the answer follows the
+   block. Folding animates the body's grid row between 0fr and 1fr, so no height has to be
+   measured. */
 
 .librarian-work {
 	--librarian-chip-height: 26px;
@@ -1561,8 +1562,71 @@ body.is-mobile
 	white-space: nowrap;
 }
 
+/* The word of a run at work: a light passes over it, the way a coding agent's terminal shows it is
+   busy. Under reduced motion the word stands still; the orb beside it is the sign of work. */
 .librarian-work.is-running .librarian-work-title {
-	color: var(--text-normal);
+	background:
+		linear-gradient(
+			100deg,
+			var(--text-muted) 0%,
+			var(--text-muted) 40%,
+			var(--text-normal) 50%,
+			var(--text-muted) 60%,
+			var(--text-muted) 100%
+		)
+		0 0 / 300% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	animation: librarian-shimmer 2.4s linear infinite;
+}
+
+@keyframes librarian-shimmer {
+	from {
+		background-position: 100% 0;
+	}
+
+	to {
+		background-position: -50% 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.librarian-work.is-running .librarian-work-title {
+		background: none;
+		color: var(--text-normal);
+		animation: none;
+	}
+}
+
+/* The thought orb of a run at work (orb.ts paints it in this color), and the mark of one done. */
+.librarian-orb {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	color: var(--interactive-accent);
+}
+
+.librarian-work-mark {
+	display: inline-flex;
+	flex: 0 0 20px;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+}
+
+.librarian-work-mark svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* How long the run has taken and how much it has written. The digits keep their width as they count. */
+.librarian-work-meta {
+	flex: 0 0 auto;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 
 .librarian-work-activity {
@@ -1611,51 +1675,30 @@ body.is-mobile
 	display: none;
 }
 
-/* The dotted line runs through a dot on each step. */
+/* The timeline reads as a coding agent's terminal does (LIB-FEAT-308): one line a step, each led
+   by a dot in a column as wide as the header's orb, so the dots stand under it and the words
+   under the header's. */
 .librarian-timeline {
-	position: relative;
+	--librarian-lead: 20px;
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-4-2);
+	gap: var(--size-2-1);
 	min-height: 0;
 	overflow: hidden;
-	padding-left: 22px;
-}
-
-.librarian-timeline::before {
-	content: "";
-	position: absolute;
-	left: 6px;
-	top: calc(var(--librarian-chip-height) / 2);
-	bottom: calc(var(--librarian-chip-height) / 2);
-	border-left: 2px dotted var(--background-modifier-border-hover);
 }
 
 .librarian-step {
-	position: relative;
 	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--size-4-2);
+	flex-direction: column;
 	min-width: 0;
-	min-height: var(--librarian-chip-height);
 }
 
-.librarian-step::before {
-	content: "";
-	position: absolute;
-	left: -20px;
-	top: calc(var(--librarian-chip-height) / 2 - 5px);
-	width: 10px;
-	height: 10px;
-	box-sizing: border-box;
-	border: 2px solid var(--background-modifier-border-hover);
-	border-radius: 50%;
-	background: var(--background-primary);
-}
-
-.librarian-work.is-running .librarian-step:last-child::before {
-	border-color: var(--interactive-accent);
+.librarian-step.is-compaction {
+	flex-direction: row;
+	align-items: flex-start;
+	gap: var(--size-2-2);
+	padding: var(--size-2-1) 0;
+	line-height: 1.5;
 }
 
 .librarian-step-new {
@@ -1679,36 +1722,63 @@ body.is-mobile
 	font-size: var(--font-ui-smaller);
 }
 
-/* A step you can open: a tool call, a thinking, or a note the model wrote between calls. Calls the
-   model made together sit side by side on one step. */
-.librarian .librarian-chip {
+/* The dot that leads a line, level with its first line of text. Its color is the line's to set. */
+.librarian-bullet {
 	display: inline-flex;
+	flex: 0 0 var(--librarian-lead, 20px);
 	align-items: center;
-	gap: var(--size-4-2);
-	max-width: 100%;
+	justify-content: center;
+	width: var(--librarian-lead, 20px);
+	height: 1lh;
+	color: var(--text-faint);
+}
+
+.librarian-bullet::before {
+	content: "";
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: currentColor;
+}
+
+/* A step you can open: a tool call or a thinking. A call reads `name(what it was given)` over what
+   it came to; the whole line is the button. The selector outweighs the app's own button rules,
+   a tablet's padding among them. */
+.librarian .librarian-timeline .librarian-chip {
+	display: grid;
+	grid-template-columns: var(--librarian-lead) minmax(0, 1fr);
+	column-gap: var(--size-2-2);
+	align-items: start;
+	justify-items: start;
+	width: 100%;
 	min-width: 0;
-	height: var(--librarian-chip-height);
-	padding: 0 var(--size-4-2);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: calc(var(--librarian-chip-height) / 2);
-	background: var(--background-primary);
+	height: auto;
+	min-height: var(--librarian-chip-height);
+	padding: var(--size-2-1) var(--size-2-2) var(--size-2-1) 0;
+	border: 0;
+	border-radius: var(--radius-s);
+	background: none;
 	box-shadow: none;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+	text-align: left;
+	white-space: normal;
 	cursor: pointer;
 }
 
-.librarian .librarian-chip:hover,
-.librarian .librarian-chip.is-open {
-	color: var(--text-normal);
-	border-color: var(--background-modifier-border-hover);
+.librarian .librarian-timeline .librarian-chip:hover,
+.librarian .librarian-timeline .librarian-chip.is-open {
 	background: var(--background-modifier-hover);
 }
 
-.librarian-chip-icon,
-.librarian-chip-mark {
+.librarian-chip-icon {
 	display: inline-flex;
-	flex: 0 0 auto;
+	align-items: center;
+	justify-content: center;
+	width: var(--librarian-lead);
+	height: 1lh;
+	color: var(--text-faint);
 }
 
 .librarian-chip svg {
@@ -1716,43 +1786,123 @@ body.is-mobile
 	height: 12px;
 }
 
-.librarian-chip-name {
+.librarian-chip-line,
+.librarian-chip-result {
+	grid-column: 2;
+	max-width: 100%;
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.librarian-chip-name {
+	color: var(--text-normal);
 	font-family: var(--librarian-font-mono);
 }
 
-.librarian-step-button .librarian-chip-name {
-	font-family: inherit;
+.librarian-chip-args {
+	font-family: var(--librarian-font-mono);
 }
 
-/* A note the model wrote between its calls (LIB-FEAT-252), read whole: a chip with the calls'
-   border, radius and muted text, grown to hold its Markdown. Its padding on every side, the room
-   between its icon and its text and the room between its blocks are one size, as the calls' chips
-   keep theirs. While it streams it eases to each new size (grow in work-log.ts), its text laid out
-   at the width it ends at so it does not wrap again meanwhile. The easing stays under reduced
-   motion, as the fade does: only the chip itself grows. */
+.librarian-chip-args:not(:empty)::before {
+	content: "(";
+}
+
+.librarian-chip-args:not(:empty)::after {
+	content: ")";
+}
+
+/* What the call came to, hung from its line by an elbow. */
+.librarian-chip-result {
+	position: relative;
+	padding-left: 16px;
+	color: var(--text-faint);
+}
+
+.librarian-chip-result:empty {
+	display: none;
+}
+
+.librarian-chip-result::before {
+	content: "";
+	position: absolute;
+	left: 2px;
+	top: 0;
+	width: 8px;
+	height: 0.55lh;
+	border-bottom: 1px solid currentColor;
+	border-left: 1px solid currentColor;
+	border-bottom-left-radius: 3px;
+}
+
+/* A thinking: its mark, the word and the start of the thought, said under the breath. */
+.librarian-step-button .librarian-chip-name {
+	color: var(--text-muted);
+	font-family: inherit;
+	font-style: italic;
+}
+
+.librarian-chip-preview {
+	margin-left: var(--size-4-2);
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.librarian-chip.is-live .librarian-chip-icon {
+	color: var(--interactive-accent);
+	animation: librarian-blink 1.2s ease-in-out infinite;
+}
+
+/* How a call went, by the color of its dot; one at work blinks. */
+.librarian-chip.is-pending .librarian-chip-mark,
+.librarian-chip.is-running .librarian-chip-mark {
+	color: var(--interactive-accent);
+	animation: librarian-blink 1.2s ease-in-out infinite;
+}
+
+.librarian-chip.is-ok .librarian-chip-mark {
+	color: var(--text-success);
+}
+
+.librarian-chip.is-awaiting-approval .librarian-chip-mark {
+	color: var(--text-warning);
+}
+
+.librarian-chip.is-failed .librarian-chip-mark,
+.librarian-chip.is-rejected .librarian-chip-mark,
+.librarian-chip.is-blocked .librarian-chip-mark,
+.librarian-chip.is-expired .librarian-chip-mark {
+	color: var(--text-error);
+}
+
+.librarian-chip.is-skipped,
+.librarian-chip.is-blocked,
+.librarian-chip.is-expired {
+	opacity: 0.7;
+}
+
+@keyframes librarian-blink {
+	50% {
+		opacity: 0.25;
+	}
+}
+
+/* A note the model wrote between its calls (LIB-FEAT-252), read whole: a dot and its Markdown in
+   the timeline's muted text. While it streams it eases to each new size (grow in work-log.ts),
+   its text laid out at the width it ends at so it does not wrap again meanwhile. The easing stays
+   under reduced motion, as the fade does: only the note itself grows. */
 .librarian-message {
 	display: flex;
 	align-items: flex-start;
-	gap: var(--size-4-2);
+	gap: var(--size-2-2);
 	box-sizing: border-box;
 	max-width: 100%;
 	min-width: 0;
-	padding: var(--size-4-2);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: calc(var(--librarian-chip-height) / 2);
-	background: var(--background-primary);
+	padding: var(--size-2-1) 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 	line-height: 1.5;
-}
-
-/* Its dot stands level with the first line of the note, as a chip's stands level with the chip. */
-.librarian-step.is-text::before {
-	top: calc(1px + var(--size-4-2) + var(--font-ui-smaller) * 0.75 - 5px);
 }
 
 .librarian-message.is-growing {
@@ -1765,19 +1915,11 @@ body.is-mobile
 }
 
 .librarian-message-icon {
-	display: inline-flex;
-	flex: 0 0 auto;
-	align-items: center;
-	height: 1lh;
+	color: var(--text-muted);
 }
 
-.librarian-message-icon svg {
-	width: 12px;
-	height: 12px;
-}
-
-/* Obsidian's own spacing, set to the chip's one size: its paragraphs, lists and code are a rem
-   apart and its lists sit far in, which a chip's small text makes look loose and uneven. */
+/* Obsidian's own spacing, set to the timeline's small size: its paragraphs, lists and code are a
+   rem apart and its lists sit far in, which small text makes look loose and uneven. */
 .librarian-message-text {
 	--p-spacing: var(--size-4-2);
 	--heading-spacing: var(--size-4-2);
@@ -1800,32 +1942,6 @@ body.is-mobile
 
 .librarian-step-pop-title .librarian-spinner {
 	flex: none;
-}
-
-.librarian-chip-mark .librarian-spinner {
-	width: 10px;
-	height: 10px;
-}
-
-.librarian-chip.is-ok .librarian-chip-mark {
-	color: var(--text-success);
-}
-
-.librarian-chip.is-awaiting-approval .librarian-chip-mark {
-	color: var(--text-warning);
-}
-
-.librarian-chip.is-failed .librarian-chip-mark,
-.librarian-chip.is-rejected .librarian-chip-mark,
-.librarian-chip.is-blocked .librarian-chip-mark,
-.librarian-chip.is-expired .librarian-chip-mark {
-	color: var(--text-error);
-}
-
-.librarian-chip.is-skipped,
-.librarian-chip.is-blocked,
-.librarian-chip.is-expired {
-	opacity: 0.7;
 }
 
 /* What a step holds (LIB-FEAT-252): a header bar with the step's icon, title, summary, status and
@@ -2003,15 +2119,13 @@ body.is-mobile
    a row each: the agent's icon, the run's title and agent, what it does on a second line, and its
    state at the end, marked as the chips mark theirs. A row opens the run's conversation. */
 
-.librarian-step:has(> .librarian-agents) {
-	align-items: flex-start;
-}
-
+/* Under the lines of the calls made with them, in line with their words. */
 .librarian-agents {
 	display: flex;
-	flex: 1 1 100%;
+	flex: 0 0 auto;
 	flex-direction: column;
 	min-width: 0;
+	margin: var(--size-2-1) 0 var(--size-2-1) calc(var(--librarian-lead) + var(--size-2-2));
 	overflow: hidden;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-m);

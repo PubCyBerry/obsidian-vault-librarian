@@ -23,6 +23,7 @@ import { AGENT_STATUS_LABELS, type AgentRowData, liveRow, storedRow } from './ag
 import { renderApprovalCard } from './cards';
 import { Composer } from './composer';
 import { ConversationPane, type PaneDeps } from './conversation-pane';
+import { Orb } from './orb';
 import { steadyLabel } from './segmented';
 import {
 	ConfirmModal,
@@ -30,7 +31,7 @@ import {
 	renderActiveRows,
 	renderSessionList,
 } from './session-list';
-import { activityText, renderSpinner, StepPopover } from './work-log';
+import { activityText, StepPopover } from './work-log';
 
 export const VIEW_TYPE_LIBRARIAN = 'librarian-chat';
 
@@ -581,18 +582,20 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		const nonStreaming = provider
 			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
 			: false;
-		// Sub-agents at work: how far they are, which the rows under it tell one by one.
-		const activity = activityText(
+		// Sub-agents at work: how far they are, which the rows under it tell one by one. Waiting
+		// for the model needs no words of its own: the header's word says Thinking.
+		const agents = [...this.runtime.agents.values()];
+		const activity = activityText(state, agents, nonStreaming ? NO_STREAMING_NOTICE : '');
+		this.main.setActivity(
+			activity,
 			state,
-			[...this.runtime.agents.values()],
-			nonStreaming ? NO_STREAMING_NOTICE : undefined,
+			agents.some((a) => a.status === 'waiting' || a.status === 'running'),
 		);
-		this.main.setActivity(activity);
 		const standalone = state === 'compacting' && !this.runtime.isRunning;
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.main.el.createDiv({ cls: 'librarian-work is-running' });
 			const header = this.compactLineEl.createDiv({ cls: 'librarian-work-header' });
-			renderSpinner(header);
+			new Orb(header, 'shaping');
 			header.createSpan({ cls: 'librarian-work-title', text: 'Compacting context' });
 			this.main.scrollToBottom();
 		} else if (!standalone) {
