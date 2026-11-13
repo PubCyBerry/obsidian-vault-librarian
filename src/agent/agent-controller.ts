@@ -20,6 +20,7 @@ import {
 import type { TransportRouter } from '../provider/transport';
 import { contentHash, replay, type SessionManager } from '../session/session-manager';
 import type {
+	AgentOutcome,
 	IndexedEvent,
 	SessionEvent,
 	SessionEventInput,
@@ -84,6 +85,16 @@ export interface QueuedMessage {
 	text: string;
 	images: string[];
 	now: boolean;
+}
+
+/**
+ * A message on its way to the model as a user message: one the user sent, or with `agent` the
+ * word that a sub-agent has finished (LIB-FEAT-311).
+ */
+interface Outgoing {
+	text: string;
+	images: string[];
+	agent?: AgentOutcome;
 }
 
 /** The result a call gets when a Send now message goes first. */
@@ -246,8 +257,10 @@ export class AgentController {
 	/** Messages sent while a turn runs, oldest first. Memory only: they do not survive a restart. */
 	queue: QueuedMessage[] = [];
 	private queueSeq = 0;
-	/** Send now messages handed to Pi for the next request, logged once Pi adds them. */
-	private readonly steered = new Map<AgentMessage, QueuedMessage>();
+	/** Messages handed to Pi for the next request, logged once Pi adds them. */
+	private readonly steered = new Map<AgentMessage, Outgoing>();
+	/** Ends the wait of a run whose main agent has answered while its sub-agents work on. */
+	private wakeRun: (() => void) | null = null;
 	/** Set while a turn and the queued turns after it run; one run as far as the UI goes. */
 	private driving: Promise<void> | null = null;
 	/** The last request of the turn failed for good, so the queue goes back to the composer. */
@@ -568,9 +581,16 @@ export class AgentController {
 		if (this.driving) {
 			this.queue.push(message);
 			this.emitQueue();
+			// A run that only waits for its sub-agents answers the message now.
+			this.wake();
 			return;
 		}
 		await this.drive(() => this.sendTurn([message]));
+	}
+
+	/** Something the run waits for has come: a sub-agent finished, a message, or Stop. */
+	wake(): void {
+		this.wakeRun?.();
 	}
 
 	/**
@@ -613,8 +633,10 @@ export class AgentController {
 
 	/**
 	 * One run as far as the UI goes: the turn `first` starts, then every queued message as a turn
-	 * of its own while the turns end by themselves. Stop, an error or a session switch hands the
-	 * rest back to the composer.
+	 * of its own while the turns end by themselves. Sub-agents work in the background
+	 * (LIB-ADR-050): the run stays on while any is at work, a queued message is answered
+	 * meanwhile, and each agent that finishes starts a turn with its answer. Stop, an error or a
+	 * session switch ends the agents and hands the queue back to the composer.
 	 */
 	private async drive(first: () => Promise<boolean>): Promise<void> {
 		let finished = () => {};
@@ -622,13 +644,36 @@ export class AgentController {
 			finished = resolve;
 		});
 		this.stopRequested = false;
-		this.halt = new AbortController();
+		const halt = new AbortController();
+		this.halt = halt;
 		// The agents of the run before are in the log now; the chat reads them from there.
 		this.subagents.forget();
 		try {
 			let clean = await first();
-			while (clean && this.queue.length) clean = await this.sendTurn(this.takeNext());
+			while (clean) {
+				if (this.queue.length) clean = await this.sendTurn(this.takeNext());
+				else {
+					const done = this.subagents.takeFinished();
+					if (done.length)
+						clean = await this.sendTurn(
+							done.map((d) => ({ text: d.text, images: [], agent: d.outcome })),
+						);
+					else if (!this.subagents.busy) break;
+					else {
+						// The main agent has answered; its agents work on.
+						this.emit({ type: 'state', state: 'tool-running' });
+						await new Promise<void>((resolve) => {
+							this.wakeRun = resolve;
+						});
+						this.wakeRun = null;
+						clean = !this.stopRequested;
+					}
+				}
+			}
 		} finally {
+			// Agents still at work have nobody left to answer to; the run ends when they have.
+			halt.abort();
+			await this.subagents.settled();
 			const unsent = this.queue.splice(0);
 			this.steered.clear();
 			this.driving = null;
@@ -642,21 +687,15 @@ export class AgentController {
 	}
 
 	/** Sends messages as the next turn. True when the turn ended by itself, so the queue may go on. */
-	private async sendTurn(messages: QueuedMessage[]): Promise<boolean> {
+	private async sendTurn(messages: (QueuedMessage | Outgoing)[]): Promise<boolean> {
 		if (!this.stopRequested && !this.session) await this.startSession(/*keepSelection*/ true);
 		const provider = this.selection?.provider;
 		if (this.stopRequested || !provider || this.deps.secrets.get(provider.secretId) === null) {
-			// Not sent: they go back with the rest of the queue, and the state tells why.
-			this.queue.unshift(...messages);
+			// Not sent: the user's go back with the rest of the queue, and the state tells why.
+			this.queue.unshift(...messages.filter((m): m is QueuedMessage => 'id' in m));
 			return false;
 		}
-		for (const { text, images } of messages) {
-			await this.deps.sessions.append(this.session!.id, {
-				type: 'user',
-				content: text,
-				images: images.length ? images : undefined,
-			});
-		}
+		for (const message of messages) await this.logUser(this.session!.id, message);
 		await this.reloadEvents();
 		const last = messages[messages.length - 1]!;
 		const imageContents = await this.imageContents(last.images);
@@ -667,12 +706,32 @@ export class AgentController {
 		return !this.stopRequested && !this.runFailed;
 	}
 
-	/** Takes the Send now messages out of the queue as user messages for the next request. */
+	/** A message to the model as the session log keeps it. */
+	private async logUser(sessionId: string, message: Outgoing): Promise<void> {
+		await this.deps.sessions.append(sessionId, {
+			type: 'user',
+			content: message.text,
+			images: message.images.length ? message.images : undefined,
+			...(message.agent ? { agent: message.agent } : {}),
+		});
+	}
+
+	/**
+	 * What goes in before the next request of a turn at work: the answers of sub-agents that have
+	 * finished, and the Send now messages out of the queue, as user messages.
+	 */
 	private async takeSteering(): Promise<AgentMessage[]> {
-		const now = this.queue.filter((q) => q.now);
+		const now: Outgoing[] = [
+			...this.subagents
+				.takeFinished()
+				.map((d) => ({ text: d.text, images: [], agent: d.outcome })),
+			...this.queue.filter((q) => q.now),
+		];
 		if (!now.length) return [];
-		this.queue = this.queue.filter((q) => !q.now);
-		this.emitQueue();
+		if (this.queue.some((q) => q.now)) {
+			this.queue = this.queue.filter((q) => !q.now);
+			this.emitQueue();
+		}
 		const out: AgentMessage[] = [];
 		for (const item of now) {
 			const images = await this.imageContents(item.images);
@@ -811,6 +870,7 @@ export class AgentController {
 
 	stop(): void {
 		this.stopRequested = true;
+		this.wake();
 		this.agent?.abort();
 		// A turn parked until the app comes back has nothing to abort; wake it so it can end.
 		this.halt?.abort();
@@ -1189,13 +1249,15 @@ export class AgentController {
 		return this.subagents.agentOfCall(args);
 	}
 
-	/** spawn_agent: runs one sub-agent to its end and returns its last message. */
+	/**
+	 * spawn_agent: starts one sub-agent in the background and returns what to tell the model. The
+	 * agent lives as long as the run does, not the call: Stop ends it.
+	 */
 	runSubagent(
 		callId: string,
 		args: SpawnArgs,
-		signal?: AbortSignal,
 	): Promise<{ text: string; sessionId: string | null }> {
-		return this.subagents.run(callId, args, signal);
+		return this.subagents.start(callId, args, this.halt?.signal);
 	}
 
 	/** The main agent's conversation so far, for a sub-agent that forks it. */
@@ -1320,15 +1382,12 @@ export class AgentController {
 					}
 					await this.reloadEvents();
 				} else if (m.role === 'user') {
-					// Pi just added a Send now message; the prompt that started the turn is logged by send.
+					// Pi just added a Send now message or an agent's answer; the prompt that started
+					// the turn is logged by sendTurn.
 					const item = this.steered.get(m);
 					if (item) {
 						this.steered.delete(m);
-						await this.deps.sessions.append(sessionId, {
-							type: 'user',
-							content: item.text,
-							images: item.images.length ? item.images : undefined,
-						});
+						await this.logUser(sessionId, item);
 						await this.reloadEvents();
 					}
 				}
@@ -1362,7 +1421,8 @@ export class AgentController {
 		const target = this.events.find((e) => e.index === toEventIndex);
 		if (target?.event.type !== 'user') return null;
 		const after = this.events.filter((e) => e.index >= toEventIndex);
-		const turns = after.filter((e) => e.event.type === 'user').length;
+		// An agent's answer is a message to the model, not a turn of the user's.
+		const turns = after.filter((e) => e.event.type === 'user' && !e.event.agent).length;
 		const changes = after
 			.filter(
 				(e): e is IndexedEvent & { event: Extract<SessionEvent, { type: 'snapshot' }> } =>

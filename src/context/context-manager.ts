@@ -525,7 +525,10 @@ export class ContextManager {
 	private retainedUsers(earlier: string[], covered: IndexedEvent[], model: PiModel): string[] {
 		const texts = [
 			...earlier,
-			...covered.flatMap((e) => (e.event.type === 'user' ? [e.event.content] : [])),
+			// An agent's answer is not the user's words; the summary covers it.
+			...covered.flatMap((e) =>
+				e.event.type === 'user' && !e.event.agent ? [e.event.content] : [],
+			),
 		];
 		let left = Math.min(RETAINED_MAX_TOKENS, Math.floor(this.budget(model).usable / 10));
 		const kept: string[] = [];

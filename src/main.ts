@@ -285,8 +285,7 @@ export default class LibrarianPlugin extends Plugin {
 							? [
 									createSpawnAgentTool(
 										agents,
-										(id, args, signal) =>
-											controller.runSubagent(id, args, signal),
+										(id, args) => controller.runSubagent(id, args),
 										resultBudget(this.settings),
 									),
 								]
