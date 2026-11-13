@@ -252,6 +252,7 @@ export default class LibrarianPlugin extends Plugin {
 				hidden,
 				mutation,
 				describe: (path) => this.agentDefs.describe(path) ?? this.skills.describe(path),
+				scratch: (path) => shell.scratch(path),
 			};
 			const shell = new ShellSession({
 				app: this.app,
@@ -325,6 +326,7 @@ export default class LibrarianPlugin extends Plugin {
 				secrets: this.secrets,
 				nestedAgentsMd: new NestedAgentsMd(nestedAgentsMdDeps),
 				agentSlots,
+				scratch: (path) => shell.scratch(path),
 				tools: () => registry.visible(),
 				// Listed skills go in the catalog; deferred ones by name only, for skill_search to find.
 				skillCatalog: () => {

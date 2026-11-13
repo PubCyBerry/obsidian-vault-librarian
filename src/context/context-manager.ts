@@ -16,7 +16,6 @@ import {
 	toToolDeclaration,
 } from '@earendil-works/pi-ai/utils/transcript';
 import type { App } from 'obsidian';
-import { TFile } from 'obsidian';
 import type { PiModel } from '../provider/provider-manager';
 import type {
 	IndexedEvent,
@@ -24,6 +23,7 @@ import type {
 	StoredToolCall,
 	StoredUsage,
 } from '../session/session-types';
+import { loadImage, type ScratchReader } from '../tools/media';
 import { type ContextSettings, type ModelConfig, RESPONSES_API } from '../types';
 
 export interface ContextUsage {
@@ -91,6 +91,7 @@ export interface CompactOptions {
 	reasoning?: PiThinkingLevel;
 	/** Before a turn: the message that starts it stays out of the summary and follows it. */
 	keepLastUser?: boolean;
+	scratch?: ScratchReader;
 	signal?: AbortSignal;
 }
 
@@ -135,7 +136,7 @@ function estimateEvent(event: SessionEvent): number {
 				)
 			);
 		case 'tool_result':
-			return estimateText(event.content) + 4;
+			return estimateText(event.content) + 4 + (event.images?.length ?? 0) * IMAGE_TOKENS;
 		case 'compaction':
 			return (event.retained ?? []).reduce(
 				(n, t) => n + estimateText(t) + 4,
@@ -146,36 +147,13 @@ function estimateEvent(event: SessionEvent): number {
 	}
 }
 
-function readImageBase64(
-	app: App,
-	path: string,
-): Promise<{ data: string; mimeType: string } | null> {
-	const file = app.vault.getAbstractFileByPath(path);
-	if (!(file instanceof TFile)) return Promise.resolve(null);
-	const ext = file.extension.toLowerCase();
-	const mimeType =
-		ext === 'jpg' || ext === 'jpeg'
-			? 'image/jpeg'
-			: ext === 'gif'
-				? 'image/gif'
-				: ext === 'webp'
-					? 'image/webp'
-					: 'image/png';
-	return app.vault.readBinary(file).then((buffer) => {
-		const bytes = new Uint8Array(buffer);
-		let binary = '';
-		for (let i = 0; i < bytes.length; i += 0x8000) {
-			binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-		}
-		return { data: btoa(binary), mimeType };
-	});
-}
-
 export interface ProjectionInput {
 	events: IndexedEvent[];
 	model: PiModel;
 	/** Leave out the trailing user event that `Agent.prompt()` will add itself. */
 	excludeLastUser?: boolean;
+	/** The conversation's shell scratch files, for a picture read from /tmp (LIB-FEAT-303). */
+	scratch?: ScratchReader;
 }
 
 /**
@@ -292,8 +270,8 @@ export class ContextManager {
 					{ type: 'text', text: event.content },
 				];
 				for (const path of event.images ?? []) {
-					const image = await readImageBase64(this.app, path);
-					if (image) content.push({ type: 'image', ...image });
+					const image = await loadImage(this.app, path, input.scratch);
+					if (image) content.push(image);
 					else content.push({ type: 'text', text: `[image missing: ${path}]` });
 				}
 				const msg: UserMessage = {
@@ -344,11 +322,22 @@ export class ContextManager {
 			} else if (event.type === 'tool_result') {
 				if (!pendingCalls.has(event.toolCallId)) continue;
 				pendingCalls.delete(event.toolCallId);
+				const content: ToolResultMessage['content'] = [
+					{ type: 'text', text: event.content },
+				];
+				// The pictures the result showed are read again; one that is gone is said to be.
+				for (const path of event.images ?? [])
+					content.push(
+						(await loadImage(this.app, path, input.scratch)) ?? {
+							type: 'text',
+							text: `[image missing: ${path}; read it again if it is needed]`,
+						},
+					);
 				const msg: ToolResultMessage = {
 					role: 'toolResult',
 					toolCallId: resultId(event.toolCallId),
 					toolName: event.name,
-					content: [{ type: 'text', text: event.content }],
+					content,
 					isError: !event.ok,
 					timestamp: ts,
 				};
@@ -564,7 +553,7 @@ export class ContextManager {
 		streamFn: StreamFn,
 		opts: CompactOptions,
 	): Promise<string> {
-		let history = await this.project({ events, model });
+		let history = await this.project({ events, model, scratch: opts.scratch });
 		// The tools stay declared, switched off, so the request starts as the cached one did. A
 		// server that refuses that is asked once more without tools, as Codex asks; a busy or
 		// failing server (429, 5xx) is not.

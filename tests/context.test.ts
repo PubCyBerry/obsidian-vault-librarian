@@ -322,6 +322,47 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 		expect(user.content[1]?.mimeType).toBe('image/png');
 		expect(user.content[2]?.text).toContain('gone.png');
 	});
+
+	it('shows the pictures a tool result held again, from the vault or the scratch files (LIB-TEST-304)', async () => {
+		const { cm, app } = manager();
+		app.vault.seedBinary('figs/a.jpg', new Uint8Array([1, 2, 3]).buffer);
+		const events = [
+			ev('user', { content: 'look at them' }),
+			ev('assistant', {
+				content: '',
+				toolCalls: [
+					{ id: 'c1', name: 'read', args: { path: 'figs/a.jpg' } },
+					{ id: 'c2', name: 'read', args: { path: '/tmp/b.png' } },
+					{ id: 'c3', name: 'read', args: { path: '/tmp/gone.png' } },
+				],
+			}),
+			...['figs/a.jpg', '/tmp/b.png', '/tmp/gone.png'].map((path, i) =>
+				ev('tool_result', {
+					toolCallId: `c${i + 1}`,
+					name: 'read',
+					ok: true,
+					content: `{"path":"${path}"}`,
+					truncated: false,
+					images: [path],
+				}),
+			),
+		].map((event, index) => ({ event, index }));
+		const messages = await cm.project({
+			model: piModel,
+			events,
+			scratch: async (path) => (path === '/tmp/b.png' ? new Uint8Array([9]) : null),
+		});
+		const results = messages.slice(2) as {
+			content: { type: string; text?: string; mimeType?: string }[];
+		}[];
+		expect(results.map((r) => r.content.map((c) => c.type))).toEqual([
+			['text', 'image'],
+			['text', 'image'],
+			['text', 'text'],
+		]);
+		expect(results[0]!.content[1]!.mimeType).toBe('image/jpeg');
+		expect(results[2]!.content[1]!.text).toContain('image missing: /tmp/gone.png');
+	});
 });
 
 describe("Gemini's signature in the session (LIB-TEST-251)", () => {

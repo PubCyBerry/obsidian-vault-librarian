@@ -36,6 +36,7 @@ import {
 	MAX_BACKGROUND_RESUMES,
 	messageOf,
 	RETRY_DELAY_MS,
+	resultImages,
 	rewriteProviderError,
 	textOf,
 	withErrorPrefix,
@@ -440,6 +441,7 @@ export class SubagentRunner {
 				ok: !m.isError,
 				content: withErrorPrefix(textOf(m.content), m.isError),
 				truncated: this.c.truncatedResults.delete(m.toolCallId),
+				...resultImages(m),
 			});
 		}
 	}

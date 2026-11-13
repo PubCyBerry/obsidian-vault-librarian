@@ -174,6 +174,32 @@ beforeEach(() => {
 	// each test builds its own harness
 });
 
+describe('a picture the model reads (LIB-TEST-304)', () => {
+	it('goes to the model with the result, into the log by its path, and into the next turn again', async () => {
+		const h = harness(
+			[
+				{ toolCalls: [{ name: 'read', args: { path: 'figs/chart.png' } }] },
+				{ text: 'A bar chart.' },
+				{ text: 'Three bars.' },
+			],
+			{ read: 'always_allow' },
+		);
+		h.app.vault.seedBinary('figs/chart.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer);
+		await h.controller.send('what is in figs/chart.png?');
+		const kinds = (request: number) => {
+			const result = h.requests[request]!.messages.find((m) => m.role === 'toolResult');
+			return ((result?.content ?? []) as { type: string }[]).map((c) => c.type);
+		};
+		// The request after the call carries the picture beside the text.
+		expect(kinds(1)).toEqual(['text', 'image']);
+		const stored = (await sessionEvents(h)).find((e) => e.type === 'tool_result');
+		expect(stored).toMatchObject({ ok: true, images: ['figs/chart.png'] });
+		// The next turn is built from the log, and reads the picture again.
+		await h.controller.send('how many bars?');
+		expect(kinds(2)).toEqual(['text', 'image']);
+	});
+});
+
 describe('agent loop through Pi (LIB-TEST-030, LIB-TEST-038, LIB-TEST-088)', () => {
 	it('runs find then read then answers, feeding tool results back into the next request', async () => {
 		const h = harness([

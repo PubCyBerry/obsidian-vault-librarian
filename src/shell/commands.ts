@@ -1,9 +1,8 @@
 import type { Command, CommandContext, ExecResult } from 'just-bash/browser';
 import { defineCommand } from 'just-bash/browser';
 import type { App } from 'obsidian';
-import { Platform, requestUrl } from 'obsidian';
-import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
-import { latin1, toBytes } from './vault-fs';
+import { Platform } from 'obsidian';
+import { pdfText } from '../tools/media';
 
 export const NO_CLI = 'obsidian: the command registry is not available in this version';
 
@@ -24,233 +23,6 @@ export interface CommandDeps {
 
 /** A command the settings or the user refused. 126 is the shell's "found but not runnable". */
 export const REFUSED = 126;
-
-// curl
-
-const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
-
-interface CurlArgs {
-	url: string;
-	method: string;
-	headers: Record<string, string>;
-	body?: string;
-	silent: boolean;
-	include: boolean;
-	output?: string;
-	failOnError: boolean;
-	maxTimeMs?: number;
-}
-
-export class CurlUsageError extends Error {}
-
-/** Parses the curl options we support; anything else is an error rather than a silent difference. */
-export function parseCurl(argv: string[]): CurlArgs {
-	const out: CurlArgs = {
-		url: '',
-		method: '',
-		headers: {},
-		silent: false,
-		include: false,
-		failOnError: false,
-	};
-	const value = (i: number, flag: string): string => {
-		const v = args[i];
-		if (v === undefined) throw new CurlUsageError(`option ${flag} needs a value`);
-		return v;
-	};
-	// curl lets short flags be bundled, as in `curl -sfL`; split them before reading the options.
-	const args: string[] = [];
-	for (const arg of argv) {
-		if (/^-[a-zA-Z]{2,}$/.test(arg)) args.push(...[...arg.slice(1)].map((c) => `-${c}`));
-		else args.push(arg);
-	}
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i] as string;
-		switch (arg) {
-			case '-s':
-			case '--silent':
-				out.silent = true;
-				break;
-			case '-i':
-			case '--include':
-				out.include = true;
-				break;
-			case '-f':
-			case '--fail':
-				out.failOnError = true;
-				break;
-			case '-L':
-			case '--location':
-				break; // requestUrl already follows redirects
-			case '-I':
-			case '--head':
-				out.method = 'HEAD';
-				out.include = true;
-				break;
-			case '-X':
-			case '--request':
-				out.method = value(++i, arg).toUpperCase();
-				break;
-			case '-o':
-			case '--output':
-				out.output = value(++i, arg);
-				break;
-			case '--max-time':
-				out.maxTimeMs = Number(value(++i, arg)) * 1000;
-				break;
-			case '-H':
-			case '--header': {
-				const header = value(++i, arg);
-				const at = header.indexOf(':');
-				if (at > 0) out.headers[header.slice(0, at).trim()] = header.slice(at + 1).trim();
-				break;
-			}
-			case '-d':
-			case '--data':
-			case '--data-raw':
-				out.body = value(++i, arg);
-				break;
-			default:
-				if (arg.startsWith('-')) throw new CurlUsageError(`unknown option ${arg}`);
-				out.url = arg;
-		}
-	}
-	if (!out.method) out.method = out.body === undefined ? 'GET' : 'POST';
-	if (!out.url) throw new CurlUsageError('no URL specified');
-	let parsed: URL;
-	try {
-		parsed = new URL(out.url);
-	} catch {
-		throw new CurlUsageError(`could not resolve host: ${out.url}`);
-	}
-	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-		throw new CurlUsageError(`unsupported protocol: ${parsed.protocol.replace(':', '')}`);
-	return out;
-}
-
-/**
- * curl over Obsidian's requestUrl, which skips CORS on both desktop and phone. The response body
- * reaches stdout exactly as the server sent it: shaping it is the pipeline's job, not ours.
- */
-export function createCurl(deps: CommandDeps): Command {
-	return defineCommand('curl', async (argv, ctx): Promise<ExecResult> => {
-		let args: CurlArgs;
-		try {
-			args = parseCurl(argv);
-		} catch (error) {
-			const message = error instanceof CurlUsageError ? error.message : String(error);
-			return { stdout: '', stderr: `curl: ${message}\n`, exitCode: 2 };
-		}
-		// No permission of its own: the bash call that wrote this line was approved with the URL
-		// in plain sight, so a second card for the same request would only repeat the question.
-		return await fetchIt(args, deps, ctx);
-	});
-}
-
-async function fetchIt(
-	args: CurlArgs,
-	deps: CommandDeps,
-	ctx: Pick<CommandContext, 'fs' | 'cwd'>,
-): Promise<ExecResult> {
-	{
-		const send = () =>
-			withTimeout(
-				requestUrl({
-					url: args.url,
-					method: args.method,
-					headers: args.headers,
-					body: args.body,
-					throw: false,
-				}),
-				args.maxTimeMs,
-				deps.signal,
-			);
-		const startedAt = Date.now();
-		let response: Awaited<ReturnType<typeof send>>;
-		try {
-			response = await send();
-		} catch (error) {
-			const away = wasHiddenSince(startedAt);
-			// The app was frozen mid-request: repeat it once, but only when repeating is safe.
-			if (!away || !IDEMPOTENT.has(args.method)) return fail(error, args, away);
-			try {
-				// Stop ends this wait too, even one that starts after Stop released the others.
-				await whenVisible(deps.signal);
-				response = await send();
-			} catch (retryError) {
-				return fail(retryError, args, away);
-			}
-		}
-		const head = args.include
-			? `HTTP ${response.status}\n${Object.entries(response.headers ?? {})
-					.map(([k, v]) => `${k}: ${String(v)}`)
-					.join('\n')}\n\n`
-			: '';
-		const body = args.method === 'HEAD' ? new Uint8Array() : bodyOf(response);
-		// Bytes, not text: an image read as text comes out with U+FFFD in place of its bytes.
-		const out = toBytes(head);
-		const all = new Uint8Array(out.length + body.length);
-		all.set(out);
-		all.set(body, out.length);
-		if (args.output) {
-			await ctx.fs.writeFile(ctx.fs.resolvePath(ctx.cwd, args.output), all);
-			return { stdout: '', stderr: '', exitCode: 0 };
-		}
-		if (args.failOnError && response.status >= 400)
-			return {
-				stdout: head,
-				stderr: args.silent ? '' : `curl: (22) HTTP ${response.status}\n`,
-				exitCode: 22,
-			};
-		return { stdout: latin1(all), stdoutKind: 'bytes', stderr: '', exitCode: 0 };
-	}
-}
-
-/** Obsidian's response decodes `text` on read; the raw bytes are in `arrayBuffer`. */
-function bodyOf(response: { text?: string; arrayBuffer?: ArrayBuffer }): Uint8Array {
-	if (response.arrayBuffer) return new Uint8Array(response.arrayBuffer);
-	return toBytes(response.text ?? '');
-}
-
-function fail(error: unknown, args: CurlArgs, away: boolean): ExecResult {
-	const reason = error instanceof Error ? error.message : String(error);
-	const timedOut = reason === TIMED_OUT;
-	const note = away && !IDEMPOTENT.has(args.method) ? `\ncurl: ${AWAY_UNKNOWN}` : '';
-	return {
-		stdout: '',
-		stderr: args.silent ? '' : `curl: (${timedOut ? 28 : 7}) ${reason}${note}\n`,
-		exitCode: timedOut ? 28 : 7,
-	};
-}
-
-const TIMED_OUT = 'operation timed out';
-
-function withTimeout<T>(
-	work: Promise<T>,
-	ms: number | undefined,
-	signal?: AbortSignal,
-): Promise<T> {
-	if (!ms && !signal) return work;
-	return new Promise<T>((resolve, reject) => {
-		let settled = false;
-		const finish = (fn: () => void) => {
-			if (settled) return;
-			settled = true;
-			if (timer !== undefined) window.clearTimeout(timer);
-			signal?.removeEventListener('abort', onAbort);
-			fn();
-		};
-		const onAbort = () => finish(() => reject(new Error('aborted')));
-		const timer = ms
-			? window.setTimeout(() => finish(() => reject(new Error(TIMED_OUT))), ms)
-			: undefined;
-		signal?.addEventListener('abort', onAbort);
-		work.then(
-			(v) => finish(() => resolve(v)),
-			(e: unknown) => finish(() => reject(e instanceof Error ? e : new Error(String(e)))),
-		);
-	});
-}
 
 // obsidian
 
@@ -372,6 +144,49 @@ export function createObsidian(deps: CommandDeps): Command {
 			// The handlers throw plain strings, which is how the real CLI reports a refusal.
 			const message = error instanceof Error ? error.message : String(error);
 			return { stdout: '', stderr: `obsidian: ${message}\n`, exitCode: 1 };
+		}
+	});
+}
+
+// pdftotext
+
+/**
+ * pdftotext by Obsidian's own PDF.js (LIB-FEAT-303): `pdftotext FILE.pdf -` writes the text to
+ * stdout, a name in place of `-` to that file, and neither to FILE.txt, as the real one does.
+ */
+export function createPdfToText(): Command {
+	return defineCommand('pdftotext', async (argv, ctx): Promise<ExecResult> => {
+		let first = 1;
+		let last = Number.POSITIVE_INFINITY;
+		const operands: string[] = [];
+		for (let i = 0; i < argv.length; i++) {
+			const arg = argv[i] as string;
+			if (arg === '-f') first = Number(argv[++i]);
+			else if (arg === '-l') last = Number(argv[++i]);
+			// An encoding or a line ending to skip; the text comes out one way here.
+			else if (arg === '-enc' || arg === '-eol') i++;
+			// -layout, -raw, -nopgbrk, -q: likewise.
+			else if (arg === '-' || !arg.startsWith('-')) operands.push(arg);
+		}
+		const [input, output] = operands;
+		if (!input || !(first >= 1) || !(last >= first))
+			return {
+				stdout: '',
+				stderr: 'Usage: pdftotext [-f first] [-l last] FILE.pdf [text file | -]\n',
+				exitCode: 99,
+			};
+		const at = (path: string) => ctx.fs.resolvePath(ctx.cwd, path);
+		try {
+			const { text } = await pdfText(await ctx.fs.readFileBuffer(at(input)), first, last);
+			if (output === '-') return { stdout: `${text}\n`, stderr: '', exitCode: 0 };
+			await ctx.fs.writeFile(
+				at(output ?? `${input.replace(/\.pdf$/i, '')}.txt`),
+				`${text}\n`,
+			);
+			return { stdout: '', stderr: '', exitCode: 0 };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { stdout: '', stderr: `pdftotext: ${message}\n`, exitCode: 1 };
 		}
 	});
 }

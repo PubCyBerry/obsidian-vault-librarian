@@ -2,8 +2,10 @@ import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Bash } from 'just-bash/browser';
 import type { App } from 'obsidian';
 import { Type } from 'typebox';
-import { throwIfAborted, tool } from '../tools/registry';
-import { createCurl, createObsidian, REFUSED } from './commands';
+import { cutAt, throwIfAborted, tool } from '../tools/registry';
+import { createObsidian, createPdfToText, REFUSED } from './commands';
+import { createCurl } from './curl';
+import { createGrep } from './grep';
 import { VAULT_ROOT, VaultFs } from './vault-fs';
 
 /** stdout and stderr together; a shell's output matters most at the end. */
@@ -33,12 +35,15 @@ export interface ShellDeps {
 	};
 }
 
-const DESCRIPTION = `Run a shell command. This is a POSIX shell inside Obsidian, not your operating system: there is no git, node, python or network except through the commands below, and nothing outside this vault is visible.
+const DESCRIPTION = `Run a shell command. This is a POSIX shell inside Obsidian, not your operating system: there is no git, node, python, uv, npx or network except through the commands below, and nothing outside this vault is visible.
 
-The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls.
+The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls. The read tool opens /tmp files too, pictures and PDFs included. An output too long for one result comes back as its start and its end, with the whole of it saved under /tmp.
 
-Two commands are specific to Obsidian:
-- curl sends an HTTP request to any URL and writes the response body to stdout exactly as the server sent it. Pipe it through grep, sed or jq to keep only what you need, or use -o to save it.
+grep has no lookahead, lookbehind or backreferences. For the text around a match in a page that is one long line, use grep -o '.{0,300}needle.{0,300}' with -E, or grep -ob for byte offsets.
+
+Three commands are specific to Obsidian:
+- curl sends an HTTP request to any URL and writes the response body to stdout exactly as the server sent it. Pipe it through grep, sed or jq to keep only what you need, or use -o to save it. The usual options work, among them -H, -d, --data-urlencode, --json, -G, -u, -A, -b, -o, -O, -D, -w, -f, -i, -I and -m; -F does not.
+- pdftotext FILE.pdf - writes the text of a PDF to stdout, or to a file named instead of -, with -f and -l for the first and last page.
 - obsidian runs an Obsidian command, such as \`obsidian search query=... limit=5\`, \`obsidian command id=<command id>\` or \`obsidian backlinks path=<note> format=json\`. Run \`obsidian help\` to see what this vault offers. To look at the app itself, \`obsidian dev:errors\`, \`dev:console\`, \`dev:dom selector=...\` and \`dev:css selector=...\` read its errors, console, DOM and styles, and \`dev:screenshot path=...\` saves a PNG of the window (to /tmp when no path is given).
 
 Prefer the read, write and edit tools for ordinary note work: they show sources with line numbers and can be undone. Use this when you need to combine steps, filter a large result, or reach the web.`;
@@ -100,7 +105,12 @@ export class ShellSession {
 		return new Bash({
 			fs: this.filesystem(),
 			cwd: VAULT_ROOT,
-			customCommands: [createCurl(deps), createObsidian(deps)],
+			customCommands: [
+				createCurl(deps),
+				createObsidian(deps),
+				createGrep(),
+				createPdfToText(),
+			],
 			executionLimits: {
 				maxExecutionTimeMs: timeoutSeconds * 1000,
 				maxOutputSize: MAX_OUTPUT_BYTES,
@@ -147,18 +157,37 @@ export class ShellSession {
 		return head + (await this.fit(bash, output));
 	}
 
-	/** Keeps the tail, which is where a pipeline's answer is, and parks the whole thing in /tmp. */
+	/**
+	 * A long output keeps its start and its end, cut at line breaks: a table or a header is at the
+	 * start and an error at the end, and which one was wanted is not known here (LIB-FEAT-302).
+	 * The whole of it is parked in /tmp.
+	 */
 	private async fit(bash: Bash, output: string): Promise<string> {
-		const limit = Math.max(1000, this.deps.resultLimit() - 200);
+		const limit = Math.max(1000, this.deps.resultLimit() - 300);
 		if (output.length <= limit) return output;
 		const path = `/tmp/bash-${++this.saved}.out`;
 		try {
 			await bash.exec(`cat > ${path}`, { stdin: output });
 		} catch {
-			// Saving is a convenience; a failure here must not lose the tail we can still show.
+			// Saving is a convenience; a failure here must not lose the parts we can still show.
 		}
-		const cut = output.length - limit;
-		return `[earlier ${cut} characters are in ${path}; read them with head, grep or sed]\n${output.slice(cut)}`;
+		const half = Math.floor(limit / 2);
+		let head = cutAt(output, half);
+		const lastBreak = head.lastIndexOf('\n');
+		if (lastBreak > half / 2) head = head.slice(0, lastBreak + 1);
+		let tail = output.slice(output.length - half);
+		const firstBreak = tail.indexOf('\n');
+		if (firstBreak >= 0 && firstBreak < half / 2) tail = tail.slice(firstBreak + 1);
+		const left = output.length - head.length - tail.length;
+		return `${head}${head.endsWith('\n') ? '' : '\n'}[${left} characters left out here; the whole output is in ${path}: read it with the read tool, or with head, grep or sed]\n${tail}`;
+	}
+
+	/** A scratch file's bytes, for the read tool; null when there is no file at that path. */
+	async scratch(path: string): Promise<Uint8Array | null> {
+		const fs = this.filesystem();
+		return (await fs.exists(path)) && (await fs.stat(path)).isFile
+			? await fs.readFileBuffer(path)
+			: null;
 	}
 }
 

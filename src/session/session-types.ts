@@ -108,6 +108,8 @@ export type SessionEvent =
 			truncated: boolean;
 			/** spawn_agent: the session of the sub-agent that gave this answer (LIB-FEAT-139). */
 			agentSession?: string;
+			/** read: the pictures the result showed the model, by path (LIB-FEAT-303). */
+			images?: string[];
 	  }
 	| {
 			t: string;

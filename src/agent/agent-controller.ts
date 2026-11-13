@@ -7,7 +7,6 @@ import {
 import type { AssistantMessage, ImageContent } from '@earendil-works/pi-ai';
 
 import type { App } from 'obsidian';
-import { TFile } from 'obsidian';
 import type { CompactionResult, ContextManager, ContextUsage } from '../context/context-manager';
 import type { ToolPermissionManager } from '../permissions/tool-permission-manager';
 import {
@@ -27,6 +26,7 @@ import type {
 	SessionMetadata,
 } from '../session/session-types';
 import type { SecretStore } from '../storage/secret-store';
+import { loadImage, type ScratchReader } from '../tools/media';
 import { withFileMutationQueue } from '../tools/mutation-queue';
 import { isBinaryPath, isWritableHiddenPath } from '../tools/path-policy';
 import { cutAt } from '../tools/registry';
@@ -43,6 +43,7 @@ import {
 	freshLimits,
 	messageOf,
 	RETRY_DELAY_MS,
+	resultImages,
 	rewriteProviderError,
 	TurnRecovery,
 	textOf,
@@ -150,6 +151,8 @@ export interface ControllerDeps {
 	hiddenFilesChanged?: (paths: string[]) => Promise<unknown>;
 	/** Places for sub-agents, one set for every session on the device (LIB-FEAT-274). */
 	agentSlots?: Slots;
+	/** The conversation's shell scratch files, for a picture the model read from /tmp. */
+	scratch?: ScratchReader;
 }
 
 /** A snapshot's afterHash when the change removed the note; no content hash looks like it. */
@@ -687,25 +690,8 @@ export class AgentController {
 	private async imageContents(images: string[]): Promise<ImageContent[]> {
 		const out: ImageContent[] = [];
 		for (const path of images) {
-			const file = this.deps.app.vault.getAbstractFileByPath(path);
-			if (!(file instanceof TFile)) continue;
-			const bytes = new Uint8Array(await this.deps.app.vault.readBinary(file));
-			let binary = '';
-			for (let i = 0; i < bytes.length; i += 0x8000)
-				binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-			const ext = file.extension.toLowerCase();
-			out.push({
-				type: 'image',
-				data: btoa(binary),
-				mimeType:
-					ext === 'jpg' || ext === 'jpeg'
-						? 'image/jpeg'
-						: ext === 'gif'
-							? 'image/gif'
-							: ext === 'webp'
-								? 'image/webp'
-								: 'image/png',
-			});
+			const image = await loadImage(this.deps.app, path, this.deps.scratch);
+			if (image) out.push(image);
 		}
 		return out;
 	}
@@ -731,6 +717,7 @@ export class AgentController {
 			excludeLastUser: opts.excludeLastUser,
 			systemPrompt: await this.systemPrompt(),
 			tools: this.exposedTools(),
+			scratch: this.deps.scratch,
 		});
 		this.usage = prepared.usage;
 		this.emit({ type: 'usage', usage: this.usage });
@@ -804,6 +791,7 @@ export class AgentController {
 					model,
 					systemPrompt: await this.systemPrompt(),
 					tools: this.exposedTools(),
+					scratch: this.deps.scratch,
 				});
 				this.agent = createAgent(again.messages, again.tools);
 				this.emit({ type: 'state', state: 'requesting' });
@@ -865,6 +853,7 @@ export class AgentController {
 								: this.effectiveThinkingLevel,
 						keepLastUser: opts.keepLastUser,
 						signal: this.agent?.signal,
+						scratch: this.deps.scratch,
 					},
 				);
 			} catch (error) {
@@ -1063,7 +1052,9 @@ export class AgentController {
 		else limits.failures.delete(key);
 
 		this.pendingSnapshots.delete(toolCallId);
-		return { content: [{ type: 'text' as const, text }], isError };
+		// A picture the tool read goes to the model with the text (LIB-FEAT-303).
+		const images = content.filter((c): c is ImageContent => c.type === 'image');
+		return { content: [{ type: 'text' as const, text }, ...images], isError };
 	}
 
 	// Rewind snapshots. Both run inside the tool's per-file mutation queue, so a parallel batch
@@ -1234,6 +1225,7 @@ export class AgentController {
 					model,
 					systemPrompt: prompt,
 					tools,
+					scratch: this.deps.scratch,
 				});
 				messages = prepared.messages;
 			}
@@ -1315,6 +1307,7 @@ export class AgentController {
 						content: withErrorPrefix(textOf(m.content), m.isError),
 						truncated: this.truncatedResults.delete(m.toolCallId),
 						...(typeof agentSession === 'string' ? { agentSession } : {}),
+						...resultImages(m),
 					});
 					const current = this.toolStatus.get(m.toolCallId);
 					if (

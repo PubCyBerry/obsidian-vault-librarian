@@ -1,10 +1,12 @@
 import type { App } from 'obsidian';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CurlUsageError, cliHandlers, parseCurl } from '../src/shell/commands';
+import { cliHandlers } from '../src/shell/commands';
+import { CurlUsageError, parseCurl } from '../src/shell/curl';
+import { aroundOf, spread, widenRepeats } from '../src/shell/grep';
 import { createShellTool, ShellSession } from '../src/shell/shell-tool';
 import { normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
-import { Platform, requestUrlMock } from './obsidian-stub';
+import { Platform, pdfJsMock, requestUrlMock } from './obsidian-stub';
 
 interface Asked {
 	name: string;
@@ -121,12 +123,146 @@ describe('the shell over the vault (LIB-TEST-174)', () => {
 		expect(await run('echo 한글 > /tmp/k && cat /tmp/k && wc -c < /tmp/k')).toBe('한글\n7\n');
 	});
 
-	it('keeps the tail of a long result and parks the rest in /tmp', async () => {
+	it('keeps the start and the end of a long result and parks the whole in /tmp (LIB-TEST-305)', async () => {
 		const { run } = shell();
 		const out = await run('seq 1 20000');
 		expect(out).toContain('/tmp/bash-1.out');
-		expect(out.trimEnd().endsWith('20000')).toBe(true);
+		// A table is at the start and an error at the end: both stay, whole lines each.
+		expect(out.startsWith('1\n2\n3\n')).toBe(true);
+		expect(out.trimEnd().endsWith('19999\n20000')).toBe(true);
+		expect(out).toMatch(/\n\[\d+ characters left out here; the whole output is in/);
+		expect(out.length).toBeLessThanOrEqual(8000);
 		expect(await run('tail -1 /tmp/bash-1.out')).toBe('20000\n');
+		expect(await run('wc -l < /tmp/bash-1.out')).toBe('20000\n');
+	});
+});
+
+describe('grep past what the bundled one takes (LIB-TEST-305)', () => {
+	const page = `<html>${'x'.repeat(3000)}<title>The Title</title>${'y'.repeat(3000)}<p>needle here</p></html>`;
+	function files() {
+		const s = shell();
+		s.app.vault.seed('notes/k.md', 'alpha\nbeta gamma\nGAMMA delta\n한글 줄\nlast line\n');
+		s.app.vault.seed('one.html', page);
+		s.app.vault.seed(
+			'near.txt',
+			'aXbXc........X..\nno hit\nX at start and X again far away X\n',
+		);
+		return s;
+	}
+
+	it('prints byte offsets with -b, of the line or with -o of each match', async () => {
+		const { run } = files();
+		expect(await run('grep -b beta notes/k.md')).toBe('6:beta gamma\n');
+		expect(await run('grep -obi gamma notes/k.md')).toBe('11:gamma\n17:GAMMA\n');
+		// Bytes, not characters: the line starts after 29 bytes, and line numbers go first.
+		expect(await run('grep -nb 한글 notes/k.md')).toBe('4:29:한글 줄\n');
+		expect(await run('grep -ob needle one.html')).toBe('6033:needle\n');
+		expect(await run('cat notes/k.md | grep -b last')).toBe('40:last line\n');
+		expect(await run('grep -b alpha notes/k.md one.html')).toBe('notes/k.md:0:alpha\n');
+		expect(await run('grep -rob GAMMA notes')).toBe('notes/k.md:17:GAMMA\n');
+		expect(await run('grep -b zzz notes/k.md; echo "rc=$?"')).toBe('rc=1\n');
+	});
+
+	it('takes the options that change nothing here, and names one file with -H', async () => {
+		const { run } = files();
+		expect(await run('grep --color=never -a -s alpha notes/k.md')).toBe('alpha\n');
+		expect(await run('grep -Hn gamma notes/k.md')).toBe('notes/k.md:2:beta gamma\n');
+		expect(await run('grep -Hc a notes/k.md')).toBe('notes/k.md:4\n');
+		expect(await run('grep -A1 -Hn beta notes/k.md')).toBe(
+			'notes/k.md:2:beta gamma\nnotes/k.md-3-GAMMA delta\n',
+		);
+		expect(await run('grep -e alpha -e last notes/k.md')).toBe('alpha\nlast line\n');
+		expect(await run("echo 'a-b' | grep -e -b")).toBe('a-b\n');
+		expect(await run("echo 'a-b' | grep -- '-b'")).toBe('a-b\n');
+		expect(await run('grep --regexp=alpha --max-count=1 notes/k.md')).toBe('alpha\n');
+	});
+
+	it('widens a repeat count the engine would refuse', async () => {
+		expect(widenRepeats('x{2500}', 'ere')).toBe('x{1000}x{1000}x{500}');
+		expect(widenRepeats('[^<]{0,1500}y', 'ere')).toBe('[^<]{0,1000}[^<]{0,500}y');
+		expect(widenRepeats('a\\{1200,\\}', 'bre')).toBe('a\\{1000\\}a\\{200\\}a*');
+		expect(widenRepeats('(ab){1,1001}', 'ere')).toBe('(ab){1}(ab){0,1000}');
+		// What fits stays as written, as does a brace that is no count and a class holding one.
+		expect(widenRepeats('a{3}b{2,1000}{x}[{2000}]', 'ere')).toBe('a{3}b{2,1000}{x}[{2000}]');
+		expect(widenRepeats('(a{1500})+', 'ere')).toBe('(a{1000}a{500})+');
+		const { run } = files();
+		expect(await run("grep -oE 'x{2500,}<title>' one.html | wc -c")).toBe('3008\n');
+		expect(await run("grep -oE '[xy]{1500}' one.html | wc -l")).toBe('4\n');
+	});
+
+	it('cuts the text around a match itself, where the engine would take minutes', async () => {
+		expect(aroundOf('.{0,300}needle.{0,200}', 'ere')).toEqual({
+			core: 'needle',
+			before: 300,
+			after: 200,
+		});
+		expect(aroundOf('.\\{0,30\\}needle', 'bre')).toEqual({
+			core: 'needle',
+			before: 30,
+			after: 0,
+		});
+		// Alternatives, a lazy count, an anchor or a literal dot would not mean the same without the ends.
+		for (const p of ['.{0,3}a|b', '.{0,3}?a', 'a$.{0,3}', 'a\\.{0,3}', '.{2,3}a', 'needle'])
+			expect(aroundOf(p, 'ere')).toBeNull();
+		expect(
+			spread(
+				[
+					{ start: 1, end: 2 },
+					{ start: 3, end: 4 },
+					{ start: 13, end: 14 },
+				],
+				{ core: 'X', before: 2, after: 3 },
+				16,
+			),
+		).toEqual([
+			{ start: 0, end: 5 },
+			{ start: 11, end: 16 },
+		]);
+		const { run, app } = files();
+		expect(await run("grep -oE '.{0,2}X.{0,3}' near.txt")).toBe(
+			'aXbXc\n..X..\nX at\nd X ag\ny X\n',
+		);
+		expect(await run("grep -obE '.{0,2}X.{0,3}' near.txt | head -2")).toBe(
+			'0:aXbXc\n11:..X..\n',
+		);
+		// Without -o the ends change nothing about which lines match.
+		expect(await run("grep -cE '.{0,2}X.{0,3}' near.txt")).toBe('2\n');
+		expect(await run("grep -o 'needle.\\{0,2500\\}' one.html")).toBe(
+			'needle here</p></html>\n',
+		);
+		expect(await run("grep -oE '.{0,3000}needle' one.html | wc -c")).toBe('3007\n');
+		// A megabyte on one line, as a minified page is: answered at once.
+		const filler = '<div class="a">lorem ipsum dolor</div>'.repeat(13000);
+		app.vault.seed('big.html', `${filler}<p>needle here</p>${filler}`);
+		const started = Date.now();
+		expect(await run("grep -oE '.{0,2500}needle.{0,2500}' big.html | wc -c")).toBe('5007\n');
+		expect(Date.now() - started).toBeLessThan(3000);
+	});
+
+	it('says what its engine lacks when it refuses a pattern', async () => {
+		const { run } = files();
+		const out = await run("grep -oP '(?<=<title>)[^<]+' one.html");
+		expect(out).toContain('invalid regular expression');
+		expect(out).toContain('no lookahead, lookbehind or backreferences');
+	});
+});
+
+describe('pdftotext (LIB-TEST-305)', () => {
+	it('writes the text of a PDF to stdout or to a file, a range of pages when asked', async () => {
+		pdfJsMock.pages = [['Title', 'first page'], ['second page'], ['third']];
+		const { run, app } = shell();
+		app.vault.seedBinary('papers/p.pdf', new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer);
+		expect(await run('pdftotext papers/p.pdf - | grep -n page')).toBe(
+			'1:--- page 1 ---\n3:first page\n4:--- page 2 ---\n5:second page\n6:--- page 3 ---\n',
+		);
+		expect(await run('pdftotext -layout -f 2 -l 2 papers/p.pdf -')).toBe(
+			'--- page 2 ---\nsecond page\n',
+		);
+		expect(await run('pdftotext papers/p.pdf /tmp/p.txt && wc -l < /tmp/p.txt')).toBe('7\n');
+		expect(await run('pdftotext nope.pdf -')).toContain('pdftotext: ');
+		expect(await run('pdftotext')).toContain('Usage: pdftotext');
+		pdfJsMock.pages = null;
+		expect(await run('pdftotext papers/p.pdf -')).toContain('Invalid PDF structure');
 	});
 });
 
@@ -203,6 +339,114 @@ describe('curl (LIB-TEST-175)', () => {
 		});
 		// The approved bash call already showed this URL, so the request asks nothing further.
 		expect(asked).toEqual([]);
+	});
+
+	it('reads clustered short options with their values, and the options that change nothing (LIB-TEST-305)', () => {
+		expect(parseCurl(['-sSfL', '-XPOST', '-m5', 'https://a.test/'])).toMatchObject({
+			silent: true,
+			showError: true,
+			failOnError: true,
+			method: 'POST',
+			maxTimeMs: 5000,
+		});
+		expect(
+			parseCurl([
+				'--compressed',
+				'-k',
+				'--retry',
+				'3',
+				'--connect-timeout',
+				'5',
+				'--no-progress-meter',
+				'https://a.test/',
+			]),
+		).toMatchObject({ url: 'https://a.test/', method: 'GET' });
+		expect(
+			parseCurl([
+				'-u',
+				'me:pw',
+				'-A',
+				'UA/1',
+				'-e',
+				'https://r.test/',
+				'-b',
+				'k=v',
+				'-r',
+				'0-9',
+				'https://a.test/',
+			]).headers,
+		).toEqual({
+			Authorization: 'Basic bWU6cHc=',
+			'User-Agent': 'UA/1',
+			Referer: 'https://r.test/',
+			Cookie: 'k=v',
+			Range: 'bytes=0-9',
+		});
+		// Several -d join into one form body; -G puts them in the query, encoded where asked.
+		expect(parseCurl(['-d', 'a=1', '-d', 'b=2', 'https://a.test/p'])).toMatchObject({
+			method: 'POST',
+			body: 'a=1&b=2',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		});
+		expect(
+			parseCurl(['-G', '--data-urlencode', 'q=한 글', '-d', 'n=1', 'https://a.test/s']),
+		).toMatchObject({ method: 'GET', url: 'https://a.test/s?q=%ED%95%9C%20%EA%B8%80&n=1' });
+		expect(parseCurl(['--json', '{"a":1}', 'https://a.test/j'])).toMatchObject({
+			method: 'POST',
+			body: '{"a":1}',
+			headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+		});
+		expect(parseCurl(['-O', 'https://a.test/dir/file%20one.txt']).output).toBe('file one.txt');
+		expect(() => parseCurl(['-O', 'https://a.test/'])).toThrow(/no length/);
+		expect(() => parseCurl(['https://a.test/', 'https://b.test/'])).toThrow(/one URL/);
+		expect(() => parseCurl(['-b', 'cookies.txt', 'https://a.test/'])).toThrow(/cookie files/);
+		expect(() => parseCurl(['-F', 'a=b', 'https://a.test/'])).toThrow(/unknown option -F/);
+		expect(() => parseCurl(['-H'])).toThrow(/needs a value/);
+	});
+
+	it('reads -d from a file or stdin, and reports with -w, -D and -v (LIB-TEST-305)', async () => {
+		const seen: Record<string, unknown>[] = [];
+		requestUrlMock.impl = async (req) => {
+			seen.push(req as Record<string, unknown>);
+			return { status: 200, headers: { 'content-type': 'text/plain' }, text: 'body' };
+		};
+		const { run } = shell();
+		await run(
+			`echo '{"z":9}' | curl -s -d @- -H 'Content-Type: application/json' https://x.test/`,
+		);
+		expect(seen[0]).toMatchObject({ method: 'POST', body: '{"z":9}' });
+		await run(
+			`printf 'l1\\nl2\\n' > /tmp/d.txt; curl -s --data-binary @/tmp/d.txt https://x.test/`,
+		);
+		expect(seen[1]).toMatchObject({ body: 'l1\nl2\n' });
+		// -d drops a file's line breaks, as curl does.
+		await run('curl -s -d @/tmp/d.txt https://x.test/');
+		expect(seen[2]).toMatchObject({ body: 'l1l2' });
+		expect(await run('curl -s -d @/tmp/none.txt https://x.test/')).toContain('Exit code: 26');
+		expect(
+			await run(
+				`curl -s -o /dev/null -w '%{http_code} %{content_type} %{size_download}\\n' https://x.test/`,
+			),
+		).toBe('200 text/plain 4\n');
+		expect(await run('ls /dev/null 2>&1 | head -1')).not.toBe('/dev/null\n');
+		expect(await run('curl -s -D - -o /dev/null https://x.test/')).toBe(
+			'HTTP 200\ncontent-type: text/plain\n\n',
+		);
+		expect(await run('curl -sv https://x.test/ 2>&1')).toBe(
+			'body> GET https://x.test/\n>\n< HTTP 200\n< content-type: text/plain\n<\n',
+		);
+		expect(await run('curl -sO https://x.test/dir/got.txt && cat got.txt')).toBe('body');
+	});
+
+	it('leaves the file alone when -f fails, and keeps the body with --fail-with-body', async () => {
+		requestUrlMock.impl = async () => ({ status: 500, headers: {}, text: 'broken' });
+		const { run } = shell();
+		expect(await run('curl -sf -o /tmp/e.txt https://x.test/; echo "rc=$?"; ls /tmp')).toBe(
+			'rc=22\n',
+		);
+		expect(await run('curl -sS --fail-with-body https://x.test/')).toBe(
+			'Exit code: 22\nbrokencurl: (22) The requested URL returned error: 500\n',
+		);
 	});
 
 	it('shows the status only when asked', async () => {

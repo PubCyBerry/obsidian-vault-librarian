@@ -4,6 +4,7 @@ import { checkPath, isHiddenPath } from '../src/tools/path-policy';
 import { createVaultTools } from '../src/tools/registry';
 import { mergeSettings } from '../src/types';
 import { FakeApp } from './fake-app';
+import { pdfJsMock } from './obsidian-stub';
 
 let app: FakeApp;
 let tools: ReturnType<typeof createVaultTools>;
@@ -272,7 +273,9 @@ describe('any file type (LIB-TEST-129)', () => {
 		]);
 		const read = await run('read', { path: '10-projects/alpha/board.canvas' });
 		expect((read.lines as { text: string }[])[0]!.text).toContain('"nodes"');
-		await expect(run('read', { path: '10-projects/alpha/pic.png' })).rejects.toThrow(
+		// A picture is read as a picture (LIB-TEST-304); other binaries are not read.
+		app.vault.seedBinary('00-inbox/sound.mp3', new ArrayBuffer(4));
+		await expect(run('read', { path: '00-inbox/sound.mp3' })).rejects.toThrow(
 			/Not a text file/,
 		);
 		await run('write', { path: '10-projects/alpha/notes.txt', content: 'plain' });
@@ -389,5 +392,74 @@ describe('tool audit 2026-09-25 (LIB-TEST-267)', () => {
 		app.vault.seed('crlf.md', 'one\r\ntwo\r\nthree');
 		await run('edit', { path: 'crlf.md', old_text: 'one\ntwo', new_text: 'ONE\nTWO' });
 		expect(app.vault.text('crlf.md')).toBe('ONE\r\nTWO\r\nthree');
+	});
+});
+
+describe('read past notes: pictures, PDFs and scratch files (LIB-TEST-304)', () => {
+	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+
+	it('returns a picture as the picture, with its path for the session log', async () => {
+		app.vault.seedBinary('figs/chart.PNG', png.buffer);
+		const result = await tool('read').execute(
+			'id',
+			{ path: 'figs/chart.PNG' } as never,
+			undefined,
+		);
+		expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({
+			path: 'figs/chart.PNG',
+			type: 'image/png',
+			bytes: 6,
+		});
+		expect(result.content[1]).toEqual({
+			type: 'image',
+			mimeType: 'image/png',
+			data: 'iVBOR/8A',
+		});
+		expect(result.details).toEqual({ images: ['figs/chart.PNG'] });
+		app.vault.seedBinary('figs/photo.jpg', new ArrayBuffer(5_000_001));
+		await expect(run('read', { path: 'figs/photo.jpg' })).rejects.toThrow(/over 5 MB/);
+		await expect(run('read', { path: 'figs/none.webp' })).rejects.toThrow(/File not found/);
+	});
+
+	it('returns a PDF as the text of its pages, and says when it has none', async () => {
+		app.vault.seedBinary('papers/p.pdf', new ArrayBuffer(8));
+		pdfJsMock.pages = [['Title', 'first page'], ['second page']];
+		const read = await run('read', { path: 'papers/p.pdf' });
+		expect(read.pages).toBe(2);
+		expect((read.lines as { line: number; text: string }[]).map((l) => l.text)).toEqual([
+			'--- page 1 ---',
+			'Title',
+			'first page',
+			'--- page 2 ---',
+			'second page',
+		]);
+		// It reads on by line like a note.
+		const from = await run('read', { path: 'papers/p.pdf', offset: 4, limit: 1 });
+		expect(from.lines).toEqual([{ line: 4, text: '--- page 2 ---' }]);
+		pdfJsMock.pages = [[], []];
+		expect((await run('read', { path: 'papers/p.pdf' })).note).toMatch(/may be scans/);
+	});
+
+	it('opens what the shell saved under /tmp, and nothing else outside the vault', async () => {
+		const files = new Map<string, Uint8Array>([
+			['/tmp/page.html', new TextEncoder().encode('<p>one</p>\n<p>둘</p>')],
+			['/tmp/fig.png', png],
+		]);
+		tools = createVaultTools({
+			app: app as unknown as App,
+			settings: () => mergeSettings({}),
+			scratch: async (path) => files.get(path) ?? null,
+		});
+		const page = await run('read', { path: '/tmp/page.html', offset: 2 });
+		expect(page).toMatchObject({
+			path: '/tmp/page.html',
+			lines: [{ line: 2, text: '<p>둘</p>' }],
+		});
+		const fig = await tool('read').execute('id', { path: '/tmp/fig.png' } as never, undefined);
+		expect(fig.content[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
+		expect(fig.details).toEqual({ images: ['/tmp/fig.png'] });
+		await expect(run('read', { path: '/tmp/none.txt' })).rejects.toThrow(/File not found/);
+		await expect(run('read', { path: '/tmp/../vault/AGENTS.md' })).rejects.toThrow(/Absolute/);
+		await expect(run('read', { path: '/etc/passwd' })).rejects.toThrow(/Absolute/);
 	});
 });
