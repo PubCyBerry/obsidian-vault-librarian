@@ -178,17 +178,26 @@ describe('how long a response took (LIB-TEST-307)', () => {
 	const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 	it('times each request to its first piece and to its end, and shows the last one', async () => {
+		let release = () => {};
+		const hold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const h = harness(
 			[
 				{
 					toolCalls: [{ name: 'find', args: { query: 'a' } }],
 					usage: { input: 10, output: 5 },
 				},
-				{ text: 'done', usage: { input: 30, output: 12 }, hold: wait(40) },
+				{ text: 'done', usage: { input: 30, output: 12 }, hold },
 			],
 			{ find: 'always_allow' },
 		);
-		await h.controller.send('find a');
+		const sent = h.controller.send('find a');
+		// The second request is out: its answer is held back from here, not from the first one.
+		while (h.requests.length < 2) await wait(5);
+		await wait(50);
+		release();
+		await sent;
 		const replies = (await sessionEvents(h)).filter((e) => e.type === 'assistant');
 		expect(replies).toHaveLength(2);
 		for (const reply of replies) {
