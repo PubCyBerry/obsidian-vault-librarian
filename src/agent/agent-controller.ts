@@ -249,6 +249,9 @@ export class AgentController {
 	private driving: Promise<void> | null = null;
 	/** The last request of the turn failed for good, so the queue goes back to the composer. */
 	private runFailed = false;
+	/** When the request now on its way went out, and when its first piece came (LIB-FEAT-306). */
+	private requestSentAt = 0;
+	private firstPieceAt = 0;
 
 	constructor(readonly deps: ControllerDeps) {
 		this.approvals = new ApprovalQueue({
@@ -518,7 +521,28 @@ export class AgentController {
 	}
 
 	private streamFn(): StreamFn {
-		return this.streamFor(this.selection!, () => this.effectiveThinkingLevel);
+		const send = this.streamFor(this.selection!, () => this.effectiveThinkingLevel);
+		return (model, context, options) => {
+			this.requestSentAt = Date.now();
+			this.firstPieceAt = 0;
+			return send(model, context, options);
+		};
+	}
+
+	/**
+	 * How long the response that just ended took. A response that came whole, over requestUrl,
+	 * has no first piece to time.
+	 */
+	private responseTiming(): { ttft?: number; total: number } | undefined {
+		if (!this.requestSentAt) return undefined;
+		const provider = this.selection?.provider;
+		const streamed =
+			this.firstPieceAt > 0 &&
+			(!provider || this.deps.transport.effectiveMode(provider) !== 'requestUrl');
+		return {
+			...(streamed ? { ttft: this.firstPieceAt - this.requestSentAt } : {}),
+			total: Date.now() - this.requestSentAt,
+		};
 	}
 
 	streamFor(sel: ActiveSelection, level: ThinkingLevel | (() => ThinkingLevel)): StreamFn {
@@ -1241,6 +1265,8 @@ export class AgentController {
 			case 'message_start':
 			case 'message_update':
 				if (event.message.role === 'assistant') {
+					if (event.type === 'message_update' && !this.firstPieceAt)
+						this.firstPieceAt = Date.now();
 					if (this.state !== 'streaming')
 						this.emit({ type: 'state', state: 'streaming' });
 					this.emit({ type: 'stream', message: event.message });
@@ -1254,7 +1280,8 @@ export class AgentController {
 					if (m.stopReason === 'error') {
 						if (this.recovery.plan(m, this.selection?.model.contextWindow)) break;
 					} else this.recovery.arrived();
-					const entry = assistantEvent(m);
+					const timing = this.responseTiming();
+					const entry = { ...assistantEvent(m), ...(timing ? { timing } : {}) };
 					const toolCalls = entry.toolCalls;
 					await this.deps.sessions.append(sessionId, entry);
 					for (const call of toolCalls) {

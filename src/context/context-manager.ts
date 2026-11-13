@@ -33,8 +33,18 @@ export interface ContextUsage {
 	safetyMarginTokens: number;
 	availableInputTokens: number;
 	usageRatio: number;
-	/** The token counts of the last response the server reported, or null before the first one. */
-	lastResponse: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+	/**
+	 * The token counts of the last response the server reported, or null before the first one,
+	 * with how long that request took here, in milliseconds, when it was timed (LIB-FEAT-306).
+	 */
+	lastResponse: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		ttft?: number;
+		total?: number;
+	} | null;
 	state: 'normal' | 'warning' | 'critical';
 }
 
@@ -45,6 +55,16 @@ export interface ContextUsage {
 export function cacheHitRatio(last: ContextUsage['lastResponse']): number | null {
 	const prompt = last ? last.input + last.cacheRead + last.cacheWrite : 0;
 	return last && prompt > 0 ? last.cacheRead / prompt : null;
+}
+
+/**
+ * Output tokens a second while the last response streamed: its output over the time from its
+ * first piece to its end. Null when it did not stream or was not timed.
+ */
+export function outputSpeed(last: ContextUsage['lastResponse']): number | null {
+	if (!last || last.ttft === undefined || last.total === undefined) return null;
+	const seconds = (last.total - last.ttft) / 1000;
+	return seconds > 0 && last.output > 0 ? last.output / seconds : null;
 }
 
 export interface PreparedContext {
@@ -377,12 +397,17 @@ export class ContextManager {
 
 	/** The last assistant usage with any tokens in it, or null before the first response. */
 	lastReported(events: IndexedEvent[]): StoredUsage | null {
+		return this.lastResponse(events)?.usage ?? null;
+	}
+
+	/** The last response whose usage the server reported. */
+	private lastResponse(events: IndexedEvent[]) {
 		const { rest } = ContextManager.visible(events);
 		for (let i = rest.length - 1; i >= 0; i--) {
 			const e = rest[i]!.event;
 			if (e.type !== 'assistant' || !e.usage) continue;
 			const u = e.usage;
-			if (u.totalTokens || u.input + u.cacheRead + u.output > 0) return u;
+			if (u.totalTokens || u.input + u.cacheRead + u.output > 0) return e;
 		}
 		return null;
 	}
@@ -400,13 +425,15 @@ export class ContextManager {
 	}
 
 	usage(events: IndexedEvent[], model: PiModel): ContextUsage {
-		const u = this.lastReported(events);
+		const response = this.lastResponse(events);
+		const u = response?.usage;
 		const last = u
 			? {
 					input: u.input,
 					output: u.output,
 					cacheRead: u.cacheRead,
 					cacheWrite: u.cacheWrite ?? 0,
+					...response.timing,
 				}
 			: null;
 		return this.usageFor(this.reportedUsed(events), model, last);

@@ -10,7 +10,7 @@ import {
 } from 'obsidian';
 import type { AgentController, QueuedMessage } from '../agent/agent-controller';
 import type { ComposerDraft } from '../agent/session-hub';
-import { type ContextUsage, cacheHitRatio } from '../context/context-manager';
+import { type ContextUsage, cacheHitRatio, outputSpeed } from '../context/context-manager';
 import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { skillKey } from '../skills/skill-manager';
@@ -521,11 +521,24 @@ export class Composer {
 			line.createSpan({ text: label });
 			line.createSpan({ text: n === undefined ? '-' : formatTokens(n) });
 		}
+		// How fast that response came (LIB-FEAT-306): to its first piece, while it streamed, in all.
+		const speed = outputSpeed(last);
+		const seconds = (ms: number | undefined) =>
+			ms === undefined ? '-' : `${(ms / 1000).toFixed(2)} s`;
+		for (const [label, value] of [
+			['TTFT', seconds(last?.ttft)],
+			['Output speed', speed === null ? '-' : `${speed.toFixed(1)} tok/s`],
+			['Response time', seconds(last?.total)],
+		] as const) {
+			const line = this.popoverEl.createDiv({ cls: 'librarian-popover-row' });
+			line.createSpan({ text: label });
+			line.createSpan({ text: value });
+		}
 		this.popoverEl.createDiv({
 			cls: 'librarian-popover-detail',
 			text:
 				usage.usedTokens > 0
-					? 'As reported by the server for the last response.'
+					? 'Counts as the server reported them for the last response, times as measured here.'
 					: 'Updates when the server reports the first response.',
 		});
 		if (usage.state !== 'normal') {
