@@ -86,7 +86,7 @@ export const BUILT_IN_AGENTS: readonly AgentDefinition[] = [
 	{
 		name: EXPLORE_AGENT,
 		description:
-			'Finds and reads notes to answer one specific question, and changes nothing. Run several side by side for independent questions.',
+			'Finds and reads notes to answer one specific question, and changes nothing. It has no bash, so no curl and no Obsidian commands. Run several side by side for independent questions.',
 		prompt: null,
 		permissionMode: 'plan',
 		location: null,
