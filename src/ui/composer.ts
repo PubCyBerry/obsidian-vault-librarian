@@ -510,16 +510,14 @@ export class Composer {
 		this.popoverEl.createDiv({
 			text: `Cache hit: ${hit === null ? 'not reported' : `${(hit * 100).toFixed(1)}%`}`,
 		});
-		// The four counts the server reports for a response, as it reported them for the last one.
+		// What the session has taken in and written so far, every response added up (LIB-FEAT-319).
 		for (const [label, n] of [
-			['Input', last?.input],
-			['Output', last?.output],
-			['Cache read', last?.cacheRead],
-			['Cache write', last?.cacheWrite],
+			['Input tokens', usage.session.input],
+			['Output tokens', usage.session.output],
 		] as const) {
 			const line = this.popoverEl.createDiv({ cls: 'librarian-popover-row' });
 			line.createSpan({ text: label });
-			line.createSpan({ text: n === undefined ? '-' : formatTokens(n) });
+			line.createSpan({ text: n > 0 ? formatTokens(n) : '-' });
 		}
 		// How fast that response came (LIB-FEAT-306): to its first piece, while it streamed, in all.
 		const speed = outputSpeed(last);
@@ -538,7 +536,7 @@ export class Composer {
 			cls: 'librarian-popover-detail',
 			text:
 				usage.usedTokens > 0
-					? 'Counts as the server reported them for the last response, times as measured here.'
+					? 'Input and output tokens are totals for this session. Cache hit and times are for the last response.'
 					: 'Updates when the server reports the first response.',
 		});
 		if (usage.state !== 'normal') {

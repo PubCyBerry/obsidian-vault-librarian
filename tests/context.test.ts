@@ -251,6 +251,28 @@ describe('projection (LIB-TEST-058, LIB-TEST-059, LIB-TEST-060)', () => {
 		expect(cacheHitRatio({ input: 0, output: 5, cacheRead: 0, cacheWrite: 0 })).toBeNull();
 	});
 
+	it('adds up what every response of the session took in and wrote (LIB-TEST-320)', () => {
+		const { cm } = manager();
+		const meta = ev('meta', { session: { id: 's' } });
+		const reply = (usage: Record<string, number>) =>
+			ev('assistant', { content: 'r', toolCalls: [], usage });
+		const events = replay([
+			meta,
+			// The whole prompt counts as input: 200 fresh, 600 read from the cache, 200 written to it.
+			reply({ input: 200, output: 40, cacheRead: 600, cacheWrite: 200, totalTokens: 1040 }),
+			// A session written before cache write was kept.
+			reply({ input: 300, output: 5, cacheRead: 100, totalTokens: 405 }),
+			// A response that did not arrive reported nothing.
+			ev('assistant', { content: 'cut', toolCalls: [], stopReason: 'error' }),
+		]);
+		const usage = cm.usage(events, piModel);
+		expect(usage.session).toEqual({ input: 1400, output: 45 });
+		// The ring and the last response still read the last one alone.
+		expect(usage.usedTokens).toBe(405);
+		expect(usage.lastResponse?.input).toBe(300);
+		expect(cm.usage(replay([meta]), piModel).session).toEqual({ input: 0, output: 0 });
+	});
+
 	it('carries how long the last response took, and its output speed while it streamed (LIB-TEST-307)', () => {
 		const { cm } = manager();
 		const reply = (timing?: { ttft?: number; total: number }) =>
