@@ -220,6 +220,24 @@ export function grow(
 	};
 }
 
+/**
+ * Makes `children` the children of `parent`, in that order. One that stands in its place already
+ * is not touched, so it keeps its focus, its scroll and a fade it is in; the others are put in,
+ * and what else the parent held is taken out.
+ */
+export function place(parent: HTMLElement, children: readonly Node[]): void {
+	let at = parent.firstChild;
+	for (const child of children) {
+		if (child === at) at = at.nextSibling;
+		else parent.insertBefore(child, at);
+	}
+	while (at) {
+		const next = at.nextSibling;
+		at.remove();
+		at = next;
+	}
+}
+
 /** A call as the timeline shows it: what it is named and, as far as they have come, its arguments. */
 export interface ChipCall {
 	id: string;
@@ -248,6 +266,9 @@ export function renderChip(
 	line.createSpan({ cls: 'librarian-chip-args' });
 	chip.createSpan({ cls: 'librarian-chip-result' });
 	updateChip(chip, call, status, result);
+	// Made with all it holds, it shows at once: only words that come after fade in.
+	for (const piece of Array.from(chip.querySelectorAll('.librarian-reveal')))
+		piece.removeClass('librarian-reveal');
 	return chip;
 }
 

@@ -31,6 +31,7 @@ import {
 	lastLine,
 	looksLikeAnswer,
 	type PopoverContent,
+	place,
 	type Run,
 	renderChip,
 	renderMessage,
@@ -51,20 +52,36 @@ const CHIP_ICONS: Record<string, string> = {
 	skill_content: 'sparkles',
 };
 
-/** Which runs of a conversation are open or folded, and which steps were already shown. */
+/** Which runs of a conversation are open or folded. */
 interface Folds {
 	/** Finished runs the user opened. */
 	open: Set<number>;
 	/** The user folded the running run. */
 	runningFolded: boolean;
-	/** The run being worked on as last drawn, to fold it once it finishes. */
+	/** The run being worked on as last drawn, to draw it again once it finishes. */
 	runningKey: number | null;
-	/** Steps of the running run already shown, so only new ones animate in. */
-	seen: Set<string>;
 }
 
 function newFolds(): Folds {
-	return { open: new Set(), runningFolded: false, runningKey: null, seen: new Set() };
+	return { open: new Set(), runningFolded: false, runningKey: null };
+}
+
+/**
+ * A run's work block on the page. A drawing goes on with the block the last one left instead of
+ * making another, so a line that is already there neither blinks nor comes in again.
+ */
+interface Block {
+	el: HTMLElement;
+	header: HTMLElement;
+	timeline: HTMLElement;
+	/** When the message that asked for the run was sent: another message is another run. */
+	asked: string;
+	/** As its header was last made: at work, with an orb, or done; null before the first. */
+	running: boolean | null;
+	orb: Orb | null;
+	title: HTMLElement | null;
+	meta: HTMLElement | null;
+	activity: HTMLElement | null;
 }
 
 /**
@@ -172,6 +189,15 @@ export class ConversationPane {
 	/** The messages that told the main agent a sub-agent had finished, by its spawn_agent call. */
 	private told = new Map<string, Extract<SessionEvent, { type: 'user' }>>();
 	private streamTimer: number | null = null;
+	/**
+	 * What the drawing under way has put on the page, by what it is, with what it shows; `last` is
+	 * what the one before it did. An element that still shows the same is kept where it stands.
+	 */
+	private kept = new Map<string, { el: HTMLElement; sig: string }>();
+	private last = new Map<string, { el: HTMLElement; sig: string }>();
+	/** The work blocks, by their run, in the same two generations. */
+	private blocks = new Map<number, Block>();
+	private lastBlocks = new Map<number, Block>();
 
 	constructor(
 		readonly el: HTMLElement,
@@ -181,6 +207,13 @@ export class ConversationPane {
 		el.addEventListener('scroll', () => {
 			this.followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 			deps.popover.reposition();
+		});
+		// One listener for every line that opens a popover: a line kept from one drawing to the
+		// next opens what it holds now, without listening twice.
+		el.addEventListener('click', (e) => {
+			const anchor = (e.target as HTMLElement).closest<HTMLElement>('[data-pop-key]');
+			const fill = this.popFills.get(anchor?.dataset.popKey ?? '');
+			if (anchor && fill) deps.popover.toggle(anchor, fill.content);
 		});
 		this.watchLinks(el);
 		// The header of a run at work counts its seconds.
@@ -237,11 +270,36 @@ export class ConversationPane {
 		if (this.streamTimer !== null) window.clearTimeout(this.streamTimer);
 	}
 
-	/** Draws the whole log again, keeping the folds, the open popover and the reading position. */
+	/**
+	 * The element the last drawing made for `key`, as long as it still shows `sig`; else one made
+	 * anew. Kept, it stays where it stands: nothing blinks, and no fade or entrance plays again.
+	 */
+	private keep(
+		key: string,
+		sig: string,
+		make: () => HTMLElement,
+	): { el: HTMLElement; made: boolean } {
+		const had = this.last.get(key);
+		const made = had?.sig !== sig;
+		const el = had && !made ? had.el : make();
+		this.kept.set(key, { el, sig });
+		return { el, made };
+	}
+
+	/**
+	 * Draws the log, keeping the folds, the open popover and the reading position. What the last
+	 * drawing put on the page stays there as long as it shows the same: only what the log has
+	 * gained or changed since is made or updated (LIB-FEAT-315).
+	 */
 	draw(events: IndexedEvent[], o: DrawOptions): void {
 		const atBottom = this.followBottom;
 		const scroll = this.el.scrollTop;
-		this.el.empty();
+		// The response that was on its way has shown its steps already: saved, they do not come in again.
+		const streamed = this.live?.response != null;
+		this.last = this.kept;
+		this.kept = new Map();
+		this.lastBlocks = this.blocks;
+		this.blocks = new Map();
 		this.live = null;
 		this.activityEl = null;
 		this.head = null;
@@ -258,9 +316,19 @@ export class ConversationPane {
 		if (popover.openKey === 'thinking:live' && lastAssistant > this.lastAssistant)
 			popover.openKey = `thinking:${lastAssistant}:thinking`;
 		this.lastAssistant = lastAssistant;
-		if (o.emptyText && !events.length)
-			this.el.createDiv({ cls: 'librarian-sessions-empty', text: o.emptyText });
-		this.drawRuns(events, o.running, o.status);
+		const nodes: HTMLElement[] = [];
+		const emptyText = o.emptyText;
+		if (emptyText && !events.length)
+			nodes.push(
+				this.keep('empty', emptyText, () =>
+					createDiv({ cls: 'librarian-sessions-empty', text: emptyText }),
+				).el,
+			);
+		nodes.push(...this.drawRuns(events, o.running, o.status, streamed));
+		// What is left of a response on its way, an approval card or an error goes with this.
+		place(this.el, nodes);
+		this.last = new Map();
+		this.lastBlocks = new Map();
 		const stream = o.stream === undefined ? this.pendingStream : o.stream;
 		if (stream) this.stream(stream, o.status);
 		popover.reopen(
@@ -272,7 +340,12 @@ export class ConversationPane {
 	}
 
 	/** Every run of a conversation: the message that asked, the work block, the answer. */
-	private drawRuns(events: IndexedEvent[], stageRunning: boolean, status: DrawOptions['status']) {
+	private drawRuns(
+		events: IndexedEvent[],
+		stageRunning: boolean,
+		status: DrawOptions['status'],
+		streamed: boolean,
+	): HTMLElement[] {
 		const results = new Map<string, ToolResult>();
 		this.told = new Map();
 		for (const { event } of events) {
@@ -283,14 +356,14 @@ export class ConversationPane {
 		const runs = groupRuns(events);
 		const folds = this.folds;
 		const running = stageRunning ? (runs[runs.length - 1]?.key ?? null) : null;
-		const finished =
-			folds.runningKey !== null && folds.runningKey !== running ? folds.runningKey : null;
 		if (running !== folds.runningKey) folds.runningFolded = false;
 		folds.runningKey = running;
+		const nodes: HTMLElement[] = [];
 		for (const run of runs) {
-			if (run.user) this.renderUser(run.key, run.user);
-			this.renderRun(run, results, run.key === running, run.key === finished, status);
+			if (run.user) nodes.push(...this.drawUser(run.key, run.user));
+			nodes.push(...this.drawRun(run, results, run.key === running, status, streamed));
 		}
+		return nodes;
 	}
 
 	/** The newest saved thinking step: where a live thinking popover goes once its stream ends. */
@@ -301,102 +374,157 @@ export class ConversationPane {
 		return found;
 	}
 
+	/** A work block with nothing in it yet: its header, which folds it, and its timeline. */
+	private makeBlock(key: number, asked: string): Block {
+		// On the page from the start: an orb reads its color there and moves only while it is on it.
+		const el = this.el.createDiv({ cls: 'librarian-work' });
+		const header = el.createDiv({ cls: 'librarian-work-header' });
+		const timeline = el
+			.createDiv({ cls: 'librarian-work-body' })
+			.createDiv({ cls: 'librarian-timeline' });
+		const toggle = () => {
+			// Nothing to unfold: a quick answer.
+			if (el.hasClass('is-empty')) return;
+			const opening = el.hasClass('is-collapsed');
+			el.toggleClass('is-collapsed', !opening);
+			header.setAttr('aria-expanded', String(opening));
+			if (el.hasClass('is-running')) this.folds.runningFolded = !opening;
+			else if (opening) this.folds.open.add(key);
+			else this.folds.open.delete(key);
+			if (!opening) this.deps.popover.close();
+		};
+		header.addEventListener('click', toggle);
+		header.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				toggle();
+			}
+		});
+		return {
+			el,
+			header,
+			timeline,
+			asked,
+			running: null,
+			orb: null,
+			title: null,
+			meta: null,
+			activity: null,
+		};
+	}
+
+	/**
+	 * The block's header for a run at work or a run done. At work: the orb, a word for what it does,
+	 * and the time and tokens so far (renderHead). Done: a mark and how long it took.
+	 */
+	private makeHeader(block: Block, running: boolean): void {
+		const header = block.header;
+		header.empty();
+		block.orb = running ? new Orb(header) : null;
+		if (!block.orb) setIcon(header.createSpan({ cls: 'librarian-work-mark' }), 'asterisk');
+		block.title = header.createSpan({
+			cls: 'librarian-work-title',
+			text: running ? 'Working' : '',
+		});
+		block.meta = running ? header.createSpan({ cls: 'librarian-work-meta' }) : null;
+		setIcon(header.createSpan({ cls: 'librarian-work-chevron' }), 'chevron-right');
+		block.activity =
+			running && this.opts.activity
+				? header.createSpan({
+						cls: 'librarian-work-activity',
+						text: this.activity,
+						attr: { 'aria-label': this.activity },
+					})
+				: null;
+		block.running = running;
+	}
+
 	/**
 	 * One request's work (LIB-FEAT-252): a header that says Working, then how long it worked, a
-	 * dotted timeline of what it did that folds under the header, and the answer below. The
-	 * running run stays open until the user folds it; a finished one folds, animated when it has
-	 * just finished, and stays open once the user opens it.
+	 * timeline of what it did that folds under the header, and the answer below. The running run
+	 * stays open until the user folds it; a finished one folds, and stays open once the user opens
+	 * it. The run's block from the last drawing is gone on with: its header is made again only when
+	 * the run starts or ends, and its timeline gains the steps it lacks.
 	 */
-	private renderRun(
+	private drawRun(
 		run: Run,
 		results: Map<string, ToolResult>,
 		running: boolean,
-		justFinished: boolean,
 		status: DrawOptions['status'],
-	) {
+		streamed: boolean,
+	): HTMLElement[] {
 		const view = viewOf(run);
 		// Before the first message there may be only a model change: nothing to show.
-		if (!run.user && !view.steps.length && !view.errors.length && view.answer === null) return;
+		if (!run.user && !view.steps.length && !view.errors.length && view.answer === null)
+			return [];
 		// Agents that finished together are told of one after another: the work follows the last.
-		if (run.user?.agent && !run.events.length && !running) return;
-		const hasSteps = view.steps.length > 0;
-		const folds = this.folds;
-		const block = this.el.createDiv({ cls: 'librarian-work' });
-		block.toggleClass('is-running', running);
-		const header = block.createDiv({ cls: 'librarian-work-header' });
-		const took =
-			view.startedAt !== null && view.endedAt !== null ? view.endedAt - view.startedAt : 0;
-		// At work: the orb, a word for what it does, and the time and tokens so far (renderHead).
-		// Done: a mark and how long it took.
-		const orb = running ? new Orb(header) : null;
-		if (!orb) setIcon(header.createSpan({ cls: 'librarian-work-mark' }), 'asterisk');
-		const title = header.createSpan({
-			cls: 'librarian-work-title',
-			text: running ? 'Working' : `Worked for ${formatDuration(took)}`,
-		});
-		if (orb) {
+		if (run.user?.agent && !run.events.length && !running) return [];
+		const asked = run.user?.t ?? '';
+		const had = this.lastBlocks.get(run.key);
+		// One taken off the page, as when the agent pane is closed, has an orb that stopped: made anew.
+		const block =
+			had?.asked === asked && had.el.isConnected ? had : this.makeBlock(run.key, asked);
+		this.blocks.set(run.key, block);
+		const { el, header } = block;
+		if (block.running !== running) {
+			this.makeHeader(block, running);
+			el.toggleClass('is-running', running);
+			// A block that was open at work folds here, eased by its transition.
+			el.toggleClass(
+				'is-collapsed',
+				running ? this.folds.runningFolded : !this.folds.open.has(run.key),
+			);
+		}
+		if (running && block.orb && block.title && block.meta) {
 			this.head = {
-				orb,
-				title,
-				meta: header.createSpan({ cls: 'librarian-work-meta' }),
+				orb: block.orb,
+				title: block.title,
+				meta: block.meta,
 				startedAt: view.startedAt ?? Date.now(),
 				tokens: run.events.reduce(
 					(n, e) => n + (e.event.type === 'assistant' ? (e.event.usage?.output ?? 0) : 0),
 					0,
 				),
 			};
+			this.activityEl = block.activity;
 			this.renderHead();
+		} else if (block.title) {
+			const took =
+				view.startedAt !== null && view.endedAt !== null
+					? view.endedAt - view.startedAt
+					: 0;
+			const text = `Worked for ${formatDuration(took)}`;
+			if (block.title.textContent !== text) block.title.setText(text);
 		}
-		const chevron = header.createSpan({ cls: 'librarian-work-chevron' });
-		setIcon(chevron, 'chevron-right');
-		if (running && this.opts.activity)
-			this.activityEl = header.createSpan({
-				cls: 'librarian-work-activity',
-				text: this.activity,
-				attr: { 'aria-label': this.activity },
-			});
-		const body = block.createDiv({ cls: 'librarian-work-body' });
-		const timeline = body.createDiv({ cls: 'librarian-timeline' });
-		for (const step of view.steps) this.renderStep(timeline, step, results, running, status);
-		const userOpened = folds.open.has(run.key);
-		const open = running ? !folds.runningFolded : userOpened || justFinished;
-		block.toggleClass('is-collapsed', !open);
+		// A step new to a block already on the page comes in, unless a stream has just shown it.
+		const fresh = running && had === block && !streamed;
+		place(
+			block.timeline,
+			view.steps.map((step) => this.drawStep(step, results, running, status, fresh)),
+		);
 		// Nothing to unfold: a quick answer, or a run that has not done anything yet.
-		block.toggleClass('is-empty', !hasSteps && !running);
-		if (hasSteps || running) {
+		const folds = view.steps.length > 0 || running;
+		el.toggleClass('is-empty', !folds);
+		if (folds) {
 			header.setAttr('role', 'button');
 			header.setAttr('tabindex', '0');
-			header.setAttr('aria-expanded', String(open));
-			const toggle = () => {
-				const opening = block.hasClass('is-collapsed');
-				block.toggleClass('is-collapsed', !opening);
-				header.setAttr('aria-expanded', String(opening));
-				if (running) folds.runningFolded = !opening;
-				else if (opening) folds.open.add(run.key);
-				else folds.open.delete(run.key);
-				if (!opening) this.deps.popover.close();
-			};
-			header.addEventListener('click', toggle);
-			header.addEventListener('keydown', (e) => {
-				if (e.key === 'Enter' || e.key === ' ') {
-					e.preventDefault();
-					toggle();
-				}
-			});
-		}
-		if (justFinished && !userOpened)
-			window.requestAnimationFrame(() => {
-				block.addClass('is-collapsed');
-				header.setAttr('aria-expanded', 'false');
-			});
-		if (view.answer !== null) {
-			const answer = this.el.createDiv({ cls: 'librarian-msg librarian-msg-assistant' });
-			void this.renderMarkdown(answer.createDiv(), view.answer);
-		}
+			header.setAttr('aria-expanded', String(!el.hasClass('is-collapsed')));
+		} else
+			for (const name of ['role', 'tabindex', 'aria-expanded']) header.removeAttribute(name);
+		const nodes = [el];
+		const answer = view.answer;
+		if (answer !== null)
+			nodes.push(
+				this.keep(`answer:${run.key}`, answer, () => {
+					const el = createDiv({ cls: 'librarian-msg librarian-msg-assistant' });
+					void this.renderMarkdown(el.createDiv(), answer);
+					return el;
+				}).el,
+			);
 		if (running)
 			this.live = {
-				block,
-				timeline,
+				block: el,
+				timeline: block.timeline,
 				response: null,
 				thinking: null,
 				thinkingText: '',
@@ -405,31 +533,51 @@ export class ConversationPane {
 				tools: null,
 				calls: [],
 			};
-		for (const message of view.errors) this.renderStoredError(message);
+		view.errors.forEach((message, i) => {
+			nodes.push(
+				this.keep(`error:${run.key}:${i}`, message, () => {
+					const el = createDiv({ cls: 'librarian-error is-stored' });
+					el.createDiv({ text: message });
+					return el;
+				}).el,
+			);
+		});
+		return nodes;
 	}
 
-	private renderStep(
-		timeline: HTMLElement,
+	/**
+	 * One step's row on the timeline: the one the last drawing left, with what its calls hold now,
+	 * or a new one. `fresh` is a row that comes in.
+	 */
+	private drawStep(
 		step: Step,
 		results: Map<string, ToolResult>,
 		running: boolean,
 		status: DrawOptions['status'],
-	) {
-		const row = timeline.createDiv({ cls: `librarian-step is-${step.kind}` });
-		if (running && !this.folds.seen.has(step.key)) row.addClass('librarian-step-new');
-		if (running) this.folds.seen.add(step.key);
+		fresh: boolean,
+	): HTMLElement {
+		const sig =
+			step.kind === 'tools'
+				? step.calls.map((c) => c.id).join()
+				: step.kind === 'compaction'
+					? `${step.before}:${step.after}`
+					: step.text;
+		const { el: row, made } = this.keep(`step:${step.key}`, sig, () =>
+			createDiv({
+				cls: `librarian-step is-${step.kind}${fresh ? ' librarian-step-new' : ''}`,
+			}),
+		);
 		switch (step.kind) {
-			case 'thinking':
-				this.stepButton(
-					row,
-					`thinking:${step.key}`,
-					'Thinking',
-					() => ({ icon: 'brain', title: 'Thinking', text: step.text }),
-					firstLine(step.text, 100),
-				);
+			case 'thinking': {
+				const key = `thinking:${step.key}`;
+				const content = () => ({ icon: 'brain', title: 'Thinking', text: step.text });
+				const button = row.querySelector<HTMLElement>('button');
+				if (button) this.bindPopover(button, key, content);
+				else this.stepButton(row, key, 'Thinking', content, firstLine(step.text, 100));
 				break;
+			}
 			case 'text':
-				void this.renderMarkdown(renderMessage(row).text, step.text);
+				if (made) void this.renderMarkdown(renderMessage(row).text, step.text);
 				break;
 			case 'tools': {
 				for (const call of step.calls) {
@@ -439,9 +587,13 @@ export class ConversationPane {
 					const shown =
 						status(call.id) ??
 						(result ? (result.ok ? 'ok' : 'failed') : running ? 'pending' : 'skipped');
-					const chip = renderChip(row, call, shown, result?.content ?? null);
+					const had = row.querySelector<HTMLElement>(
+						`.librarian-chip[data-tool-call-id="${CSS.escape(call.id)}"]`,
+					);
+					// A line already there says what its call has come to since: only that fades in.
+					if (had) updateChip(had, call, shown, result?.content ?? null);
 					this.bindPopover(
-						chip,
+						had ?? renderChip(row, call, shown, result?.content ?? null),
 						`call:${call.id}`,
 						this.toolContent(() => ({
 							toolCallId: call.id,
@@ -457,21 +609,26 @@ export class ConversationPane {
 				// to say what it is doing, which a chip has no room for (LIB-FEAT-140).
 				const agents = step.calls.filter((c) => c.name === SPAWN_AGENT_NAME);
 				if (agents.length) {
-					const card = row.createDiv({ cls: 'librarian-agents' });
-					for (const call of agents)
-						renderAgentRow(
-							card,
-							this.deps.agentRowOf(
-								call,
-								agentResultOf(results.get(call.id), this.told.get(call.id)),
-								running,
-							),
-							this.deps.openAgent,
+					const card =
+						row.querySelector<HTMLElement>('.librarian-agents') ??
+						row.createDiv({ cls: 'librarian-agents' });
+					for (const call of agents) {
+						const data = this.deps.agentRowOf(
+							call,
+							agentResultOf(results.get(call.id), this.told.get(call.id)),
+							running,
 						);
+						const had = card.querySelector<HTMLElement>(
+							`.librarian-agent-row[data-agent-call-id="${CSS.escape(call.id)}"]`,
+						);
+						if (had) updateAgentRow(had, data);
+						else renderAgentRow(card, data, this.deps.openAgent);
+					}
 				}
 				break;
 			}
 			case 'compaction':
+				if (!made) break;
 				row.createSpan({ cls: 'librarian-bullet' });
 				row.createSpan({
 					cls: 'librarian-step-note',
@@ -479,6 +636,7 @@ export class ConversationPane {
 				});
 				break;
 		}
+		return row;
 	}
 
 	/**
@@ -501,12 +659,13 @@ export class ConversationPane {
 		return button;
 	}
 
+	/** The line opens `content` in the popover: the pane's click listener looks it up by `key`. */
 	private bindPopover(anchor: HTMLElement, key: string, content: () => PopoverContent) {
 		anchor.dataset.popKey = key;
 		anchor.setAttr('aria-haspopup', 'dialog');
-		anchor.setAttr('aria-expanded', 'false');
+		// A line kept with its popover open stays marked so.
+		if (!anchor.hasAttribute('aria-expanded')) anchor.setAttr('aria-expanded', 'false');
 		this.popFills.set(key, { anchor, content });
-		anchor.addEventListener('click', () => this.deps.popover.toggle(anchor, content));
 	}
 
 	/** A tool call's popover: its name, summary and status over what it was given and got back. */
@@ -542,41 +701,52 @@ export class ConversationPane {
 		});
 	}
 
-	renderStoredError(message: string): void {
-		const block = this.el.createDiv({ cls: 'librarian-error is-stored' });
-		block.createDiv({ text: message });
-	}
-
 	/**
 	 * A message on the right: the user's in the chat, the main agent's in the agent pane, which a
 	 * caption above names. Only the chat's own messages rewind.
 	 */
-	private renderUser(index: number, event: Extract<SessionEvent, { type: 'user' }>) {
+	private drawUser(index: number, event: Extract<SessionEvent, { type: 'user' }>): HTMLElement[] {
+		const sig = `${event.t}\n${event.content}`;
 		// Not the user's words: a sub-agent finished and the main agent was told (LIB-FEAT-311).
 		// One line says so, and opens that agent's conversation.
-		if (event.agent) {
-			const { callId, status } = event.agent;
-			const title = /title="([^"]*)"/.exec(event.content)?.[1] || 'Agent';
-			const line = this.el.createEl('button', { cls: 'librarian-agent-told' });
-			setIcon(line.createSpan({ cls: 'librarian-agent-told-icon' }), 'bot');
-			line.createSpan({
-				text: `${title} ${status === 'done' ? 'finished' : status === 'stopped' ? 'stopped early' : 'failed'}`,
-			});
-			line.addEventListener('click', () => this.deps.openAgent(callId));
-			return;
-		}
-		if (this.opts.asker)
-			this.el.createDiv({ cls: 'librarian-msg-asker', text: this.opts.asker });
-		const wrap = this.el.createDiv({ cls: 'librarian-msg librarian-msg-user' });
-		renderBubble(this.deps.app, wrap, event.content, event.images ?? []);
-		const rewind = this.opts.rewind;
-		if (!rewind) return;
-		const button = wrap.createEl('button', {
-			cls: 'clickable-icon librarian-rewind',
-			attr: { 'aria-label': 'Rewind to here' },
-		});
-		setIcon(button, 'undo-2');
-		button.addEventListener('click', () => rewind(index));
+		const agent = event.agent;
+		if (agent)
+			return [
+				this.keep(`user:${index}`, sig, () => {
+					const title = /title="([^"]*)"/.exec(event.content)?.[1] || 'Agent';
+					const line = createEl('button', { cls: 'librarian-agent-told' });
+					setIcon(line.createSpan({ cls: 'librarian-agent-told-icon' }), 'bot');
+					line.createSpan({
+						text: `${title} ${agent.status === 'done' ? 'finished' : agent.status === 'stopped' ? 'stopped early' : 'failed'}`,
+					});
+					line.addEventListener('click', () => this.deps.openAgent(agent.callId));
+					return line;
+				}).el,
+			];
+		const nodes: HTMLElement[] = [];
+		const asker = this.opts.asker;
+		if (asker)
+			nodes.push(
+				this.keep(`asker:${index}`, asker, () =>
+					createDiv({ cls: 'librarian-msg-asker', text: asker }),
+				).el,
+			);
+		nodes.push(
+			this.keep(`user:${index}`, sig, () => {
+				const wrap = createDiv({ cls: 'librarian-msg librarian-msg-user' });
+				renderBubble(this.deps.app, wrap, event.content, event.images ?? []);
+				const rewind = this.opts.rewind;
+				if (!rewind) return wrap;
+				const button = wrap.createEl('button', {
+					cls: 'clickable-icon librarian-rewind',
+					attr: { 'aria-label': 'Rewind to here' },
+				});
+				setIcon(button, 'undo-2');
+				button.addEventListener('click', () => rewind(index));
+				return wrap;
+			}).el,
+		);
+		return nodes;
 	}
 
 	/** The response on its way, drawn at most every 120 ms; null when it ended. */

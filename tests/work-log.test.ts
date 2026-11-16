@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import type { IndexedEvent, SessionEvent } from '../src/session/session-types';
 import { describeCall, readableResult, summarizeCall } from '../src/ui/cards';
@@ -8,6 +9,7 @@ import {
 	groupRuns,
 	lastLine,
 	looksLikeAnswer,
+	place,
 	viewOf,
 	workMood,
 } from '../src/ui/work-log';
@@ -237,5 +239,30 @@ describe('text on its way (LIB-TEST-271)', () => {
 			'x'.repeat(401),
 		])
 			expect(looksLikeAnswer(answer)).toBe(true);
+	});
+});
+
+describe('a drawing that keeps what is on the page (LIB-TEST-316)', () => {
+	it('leaves the children that stand in their place alone, puts the new in and takes the rest out', () => {
+		const parent = document.createElement('div');
+		const [a, b, c, stale, d] = ['a', 'b', 'c', 'stale', 'd'].map((id) => {
+			const el = document.createElement('p');
+			el.id = id;
+			return el;
+		}) as [HTMLElement, HTMLElement, HTMLElement, HTMLElement, HTMLElement];
+		parent.append(a, b, stale);
+		// A child put in again would start its fade or its entrance over: only the new ones are.
+		const put: string[] = [];
+		const insert = parent.insertBefore.bind(parent);
+		parent.insertBefore = ((node: HTMLElement, before: Node | null) => {
+			put.push(node.id);
+			return insert(node, before);
+		}) as typeof parent.insertBefore;
+		place(parent, [a, b, c, d]);
+		expect(Array.from(parent.children).map((el) => el.id)).toEqual(['a', 'b', 'c', 'd']);
+		expect(put).toEqual(['c', 'd']);
+		expect(stale.isConnected).toBe(false);
+		place(parent, []);
+		expect(parent.childElementCount).toBe(0);
 	});
 });
