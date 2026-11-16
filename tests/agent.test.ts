@@ -229,10 +229,8 @@ describe('agent loop through Pi (LIB-TEST-030, LIB-TEST-038, LIB-TEST-088)', () 
 		const system = third[0] as { content: string };
 		expect(system.content.startsWith('You are Librarian')).toBe(true);
 		expect(system.content).toContain('# Vault root AGENTS.md\n\nAnswer in Korean.');
-		expect(system.content).toMatch(/prefer find then read/);
-		expect(system.content).toMatch(
-			/Do not conclude information is absent after only one failed search/,
-		);
+		expect(system.content).toMatch(/use find, then read/);
+		expect(system.content).toMatch(/before you conclude that the vault does not hold it/);
 		expect(h.controller.state).toBe('idle');
 		expect(h.controller.usage?.usedTokens).toBeGreaterThan(300);
 		expect(h.controller.findReadLine('notes/a.md', 2)).toBe('beta');
