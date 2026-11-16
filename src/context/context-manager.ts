@@ -45,6 +45,12 @@ export interface ContextUsage {
 		ttft?: number;
 		total?: number;
 	} | null;
+	/**
+	 * The tokens every response in the session's log took in and wrote, added up (LIB-FEAT-319).
+	 * `input` is the whole prompt of each request, what the server read from or wrote to its cache
+	 * included.
+	 */
+	session: { input: number; output: number };
 	state: 'normal' | 'warning' | 'critical';
 }
 
@@ -425,13 +431,22 @@ export class ContextManager {
 					...response.timing,
 				}
 			: null;
-		return this.usageFor(this.reportedUsed(events), model, last);
+		// Every response the log holds, those a compaction has since summarized among them.
+		const session = { input: 0, output: 0 };
+		for (const { event } of events) {
+			if (event.type !== 'assistant' || !event.usage) continue;
+			const { input, output, cacheRead, cacheWrite = 0 } = event.usage;
+			session.input += input + cacheRead + cacheWrite;
+			session.output += output;
+		}
+		return this.usageFor(this.reportedUsed(events), model, last, session);
 	}
 
 	usageFor(
 		used: number,
 		model: Pick<ModelConfig, 'contextWindow' | 'maxTokens'>,
 		lastResponse: ContextUsage['lastResponse'] = null,
+		session: ContextUsage['session'] = { input: 0, output: 0 },
 	): ContextUsage {
 		const s = this.settings();
 		const { reserved, margin, usable } = this.budget(model);
@@ -444,6 +459,7 @@ export class ContextManager {
 			availableInputTokens: usable,
 			usageRatio: ratio,
 			lastResponse,
+			session,
 			state: ratio >= s.compactAt ? 'critical' : ratio >= s.warningAt ? 'warning' : 'normal',
 		};
 	}
