@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.22.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.21.0...2.22.0) (2026-11-16)
+
+
+### Features
+
+* show the session's input and output tokens in the context popover ([#74](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/74)) ([8f65823](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/8f658235d71c888078b04305d5d3894d997d4da1))
+
+
+### Bug Fixes
+
+* bring the default system prompt up to date with background sub-agents ([#75](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/75)) ([e81852c](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e81852c9d0a8c7a884fc8c1098bce6b31eed621f))
+* keep the lines of a work block on the page when a step is added ([#73](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/73)) ([be0b268](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/be0b268989d4c2fb9220d28219cf52706a5528d3))
+
 ## [2.21.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.20.0...2.21.0) (2026-11-13)
 
 
