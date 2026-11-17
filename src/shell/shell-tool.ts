@@ -3,7 +3,7 @@ import { Bash } from 'just-bash/browser';
 import type { App } from 'obsidian';
 import { Type } from 'typebox';
 import { cutAt, throwIfAborted, tool } from '../tools/registry';
-import { createObsidian, createPdfToText, REFUSED } from './commands';
+import { createObsidian, createPdfToText, createTr, REFUSED } from './commands';
 import { createCurl } from './curl';
 import { createGrep } from './grep';
 import { VAULT_ROOT, VaultFs } from './vault-fs';
@@ -47,6 +47,21 @@ Three commands are specific to Obsidian:
 - obsidian runs an Obsidian command, such as \`obsidian search query=... limit=5\`, \`obsidian command id=<command id>\` or \`obsidian backlinks path=<note> format=json\`. Run \`obsidian help\` to see what this vault offers. To look at the app itself, \`obsidian dev:errors\`, \`dev:console\`, \`dev:dom selector=...\` and \`dev:css selector=...\` read its errors, console, DOM and styles, and \`dev:screenshot path=...\` saves a PNG of the window (to /tmp when no path is given).
 
 Prefer the read, write and edit tools for ordinary note work: they show sources with line numbers and can be undone. Use this when you need to combine steps, filter a large result, or reach the web.`;
+
+/**
+ * The output as a terminal shows it. just-bash hands back bytes that are not all UTF-8, such as a
+ * binary file with Korean names in it, one character per byte, so every name came out garbled. A
+ * stretch of such characters that holds a UTF-8 sequence or a C1 control, which text never has,
+ * is read as UTF-8, a stray byte showing as U+FFFD; text whose Latin-1 letters form no sequence,
+ * such as `café`, stays as it is.
+ */
+export function terminalText(out: string): string {
+	return out.replace(/[\u0080-\u00ff][^\u0100-\uffff]*/g, (run) => {
+		const read = new TextDecoder().decode(Uint8Array.from(run, (c) => c.charCodeAt(0)));
+		const c1 = [...run].some((c) => c.charCodeAt(0) < 0xa0 && c.charCodeAt(0) > 0x7f);
+		return /[^\p{ASCII}\ufffd]/u.test(read) || c1 ? read : run;
+	});
+}
 
 /**
  * The shell for one conversation. The limits belong to the `Bash` instance, so each call builds
@@ -110,6 +125,7 @@ export class ShellSession {
 				createObsidian(deps),
 				createGrep(),
 				createPdfToText(),
+				createTr(),
 			],
 			executionLimits: {
 				maxExecutionTimeMs: timeoutSeconds * 1000,
@@ -149,7 +165,7 @@ export class ShellSession {
 			await this.closeSnapshots();
 		}
 		if (signal?.aborted) throw new Error(STOPPED);
-		const said = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+		const said = terminalText(`${result.stdout ?? ''}${result.stderr ?? ''}`);
 		// rm -f and `|| true` swallow a refused change; say it, so it is not taken for done.
 		const unsaid = this.filesystem().refusals.filter((r) => !said.includes(r));
 		const output = said + unsaid.map((r) => `bash: not changed: ${r}\n`).join('');

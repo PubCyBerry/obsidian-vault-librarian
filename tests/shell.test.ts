@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { cliHandlers } from '../src/shell/commands';
 import { CurlUsageError, parseCurl } from '../src/shell/curl';
 import { aroundOf, spread, widenRepeats } from '../src/shell/grep';
-import { createShellTool, ShellSession } from '../src/shell/shell-tool';
+import { createShellTool, ShellSession, terminalText } from '../src/shell/shell-tool';
 import { normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
 import { Platform, pdfJsMock, requestUrlMock } from './obsidian-stub';
@@ -121,6 +121,36 @@ describe('the shell over the vault (LIB-TEST-174)', () => {
 		expect(asked[0]).toEqual({ name: 'write', args: { path: 't.bin' } });
 		// Text still goes in and out as UTF-8.
 		expect(await run('echo 한글 > /tmp/k && cat /tmp/k && wc -c < /tmp/k')).toBe('한글\n7\n');
+	});
+
+	it('shows the names in a binary file as a terminal does, and splits it at NUL with tr (LIB-TEST-324)', async () => {
+		const { run, session } = shell();
+		await run('true');
+		const utf8 = (s: string) => [...new TextEncoder().encode(s)];
+		// The shape of a git index: binary fields around UTF-8 paths, each ended by NUL.
+		const index = Uint8Array.from([
+			...utf8('DIRC'),
+			0x8f,
+			0xff,
+			0x30,
+			0,
+			...utf8('11-areas/인물/김경수.md'),
+			0,
+			0xfe,
+			0,
+			...utf8('20-wiki/개념.md'),
+			0,
+		]);
+		// biome-ignore lint/suspicious/noExplicitAny: the scratch file is put in place directly
+		await (session as any).filesystem().writeFile('/tmp/idx', index);
+		expect(await run("tr '\\0' '\\n' < /tmp/idx | grep -aE '^(11|20)-'")).toBe(
+			'11-areas/인물/김경수.md\n20-wiki/개념.md\n',
+		);
+		expect(await run("tr '\\000' '\\n' < /tmp/idx | head -1")).toBe('DIRC\ufffd\ufffd0\n');
+		expect(await run("tr '\\\\' / <<< 'a\\b0'")).toBe('a/b0\n');
+		// Latin-1 letters that make no UTF-8 sequence are text, not bytes.
+		expect(terminalText('caf\u00e9 \u00ff')).toBe('caf\u00e9 \u00ff');
+		expect(terminalText(`${String.fromCharCode(...utf8('인물'))}\u00ff`)).toBe('인물\ufffd');
 	});
 
 	it('keeps the start and the end of a long result and parks the whole in /tmp (LIB-TEST-305)', async () => {
