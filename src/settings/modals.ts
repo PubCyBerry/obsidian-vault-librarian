@@ -1084,8 +1084,8 @@ export function runModels(plugin: LibrarianPlugin): { value: string; label: stri
 
 const FROM: Record<RunSource, string> = {
 	agent: '',
-	file: ', from its file',
-	default: ', from the defaults',
+	file: ' (its file)',
+	default: ' (defaults)',
 };
 
 /**
