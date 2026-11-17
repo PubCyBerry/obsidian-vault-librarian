@@ -744,6 +744,17 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		heading.createSpan({ cls: 'librarian-agent-heading-title' });
 		heading.createSpan({ cls: 'librarian-agent-type' });
 		this.agentHeadEl.createSpan({ cls: 'librarian-agent-state' });
+		// This agent alone: it answers with what it has, and the main agent goes on (issue #77).
+		const stop = this.agentHeadEl.createEl('button', {
+			cls: 'clickable-icon librarian-agent-stop is-hidden',
+			attr: { 'aria-label': 'Stop this agent' },
+		});
+		setIcon(stop, 'square');
+		stop.addEventListener('click', () => {
+			const run = this.agentCall ? this.runtime.agents.get(this.agentCall) : undefined;
+			run?.stop?.();
+			stop.addClass('is-hidden');
+		});
 		const body = this.agentEl.createDiv({ cls: 'librarian-messages librarian-agent-body' });
 		this.agentPane = new ConversationPane(body, deps, { asker: 'Main agent' });
 	}
@@ -866,6 +877,10 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			state.setText(AGENT_STATUS_LABELS[data.status]);
 		}
 		const running = live ? live.status === 'waiting' || live.status === 'running' : false;
+		head.querySelector('.librarian-agent-stop')?.toggleClass(
+			'is-hidden',
+			!(running && live?.stop),
+		);
 		const events = live ? live.events : (this.agentStored?.events ?? []);
 		const status = (id: string) => live?.toolStatus.get(id);
 		// Drawn again only when its log, its state or a call's state moved. The response on its way

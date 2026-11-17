@@ -9,6 +9,7 @@ import {
 	agentKey,
 	BUILT_IN_AGENTS,
 	parseAgentMd,
+	runSettingsOf,
 	toolsFor,
 } from '../src/agent/agent-definitions';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
@@ -118,6 +119,7 @@ function harness(
 	);
 	const requests: Record<string, Parameters<StreamFn>[1][]> = {};
 	const models: Record<string, string[]> = {};
+	const temperatures: { run: string; value: number | undefined }[] = [];
 	const streamFn: StreamFn = (model, context, options) => {
 		const run = runOf(context);
 		if (!isTitleRequest(context)) {
@@ -155,7 +157,12 @@ function harness(
 			),
 	);
 	const transport = {
-		createStreamFn: () => streamFn,
+		// The temperature each request goes out with, by run (LIB-TEST-330).
+		createStreamFn: (_p: unknown, resolve: () => { options: { temperature?: number } }) =>
+			((model, context, options) => {
+				temperatures.push({ run: runOf(context), value: resolve().options.temperature });
+				return streamFn(model, context, options);
+			}) as StreamFn,
 		effectiveMode: () => 'fetch',
 		hasFallenBack: () => false,
 	} as unknown as TransportRouter;
@@ -228,6 +235,7 @@ function harness(
 		events,
 		requests,
 		models,
+		temperatures,
 		sessions,
 		settings,
 		permissions,
@@ -333,7 +341,7 @@ describe('sub-agents (LIB-TEST-141)', () => {
 				broken: [{ stopReason: 'error', errorMessage: 'HTTP 500 from the server' }],
 			},
 			{},
-			{ maxIterations: 1 },
+			{ subagentDefaults: { maxTurns: 1 } },
 		);
 		await h.controller.send('go');
 		const spawned = (await h.toolResults()).filter((r) => r.name === 'spawn_agent');
@@ -346,7 +354,8 @@ describe('sub-agents (LIB-TEST-141)', () => {
 		const told = new Map((await h.agentAnswers()).map((t) => [t.callId, t]));
 		expect(agents.map((a) => told.get(a.callId)?.answer)).toEqual([
 			'Found in notes/a.md:1',
-			'The agent stopped before it wrote an answer.\n\n[Stopped after 1 tool iterations]',
+			// Stopped by its limit, it was asked once more and answered with what it had.
+			'never\n\n[Stopped after 1 tool iterations]',
 			'HTTP 500 from the server',
 		]);
 		expect(agents.map((a) => told.get(a.callId)?.status)).toEqual([
@@ -620,10 +629,11 @@ describe('agent definitions (LIB-TEST-270)', () => {
 		expect(system).not.toContain('You are Librarian');
 		// Read, Grep and Glob in Claude Code's names: Glob is find here.
 		expect(declared(first).sort()).toEqual(['find', 'grep', 'read']);
-		expect(h.models.style).toEqual(['small', 'small']);
+		// Two turns, then the request that asks for what it has.
+		expect(h.models.style).toEqual(['small', 'small', 'small']);
 		const [told] = await h.agentAnswers();
 		expect(told).toMatchObject({ status: 'stopped' });
-		expect(told!.answer).toMatch(/\[Stopped after 2 tool iterations\]/);
+		expect(told!.answer).toBe('never\n\n[Stopped after 2 tool iterations]');
 	});
 
 	it('warns about a model Settings lacks and runs that agent on the main model', async () => {
@@ -1175,5 +1185,173 @@ describe('sub-agents in the background (LIB-TEST-312)', () => {
 		expect(runs).toHaveLength(2);
 		expect(runs[1]!.user?.agent).toMatchObject({ status: 'done' });
 		expect(states[states.length - 1]).toBe('idle');
+	});
+});
+
+describe('sub-agents that do not end (issue #77, LIB-TEST-328)', () => {
+	const until = async (what: () => boolean) => {
+		for (let i = 0; i < 400 && !what(); i++) await new Promise((r) => setTimeout(r, 5));
+		expect(what()).toBe(true);
+	};
+
+	it('stops an agent that gets the same result again and again, and it answers with what it has', async () => {
+		const grep = { name: 'grep', args: { query: 'beta' } };
+		const h = harness({
+			main: [
+				{ toolCalls: [spawn('loop', 'Find beta.')] },
+				{ text: 'Waiting.' },
+				{ text: 'ok' },
+			],
+			loop: [
+				{ toolCalls: [grep] },
+				{ toolCalls: [grep] },
+				{ toolCalls: [grep] },
+				{ text: 'notes/a.md:2 holds beta.' },
+			],
+		});
+		await h.controller.send('go');
+		// Three greps, then the request that asks it to answer from what it found.
+		expect(h.requests.loop).toHaveLength(4);
+		expect(texts(h.requests.loop![3]!).slice(-1)[0]).toMatch(
+			/^Stopped: the same tool call returned the same result 3 times\. Do not call any more tools/,
+		);
+		const [told] = await h.agentAnswers();
+		expect(told).toMatchObject({ status: 'stopped' });
+		expect(told!.answer).toBe(
+			'notes/a.md:2 holds beta.\n\n[Stopped: the same tool call returned the same result 3 times]',
+		);
+	});
+
+	it('stops at the default turn limit with no limit of its own', async () => {
+		expect(mergeSettings({}).subagentDefaults.maxTurns).toBe(50);
+		const read = (i: number) => ({
+			toolCalls: [{ name: 'read', args: { path: 'notes/a.md', limit: i + 1 } }],
+		});
+		const h = harness(
+			{
+				main: [
+					{ toolCalls: [spawn('long', 'Read on.')] },
+					{ text: 'Waiting.' },
+					{ text: 'ok' },
+				],
+				long: [read(0), read(1), read(2), { text: 'Read three ways.' }],
+			},
+			{},
+			{ subagentDefaults: { maxTurns: 3 } },
+		);
+		await h.controller.send('go');
+		const [told] = await h.agentAnswers();
+		expect(told!.answer).toBe('Read three ways.\n\n[Stopped after 3 tool iterations]');
+	});
+
+	it('Stop on one agent ends its request; it answers with what it has and the run goes on', async () => {
+		const h = harness({
+			main: [
+				{ toolCalls: [spawn('slow', 'Read on.')] },
+				{ text: 'Waiting.' },
+				{ text: 'Got it.' },
+			],
+			slow: [
+				// Held until the request is stopped.
+				{
+					toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }],
+					hold: new Promise(() => {}),
+				},
+				{ text: 'Partial: notes/a.md holds beta.' },
+			],
+		});
+		const run = h.controller.send('go');
+		await until(() => h.requests.slow?.length === 1);
+		const agent = [...h.controller.agents.values()][0]!;
+		agent.stop!();
+		await run;
+		const [told] = await h.agentAnswers();
+		expect(told).toMatchObject({ status: 'stopped' });
+		expect(told!.answer).toBe('Partial: notes/a.md holds beta.\n\n[Stopped by the user]');
+		// The main agent heard of it and answered: only this agent stopped.
+		expect(h.requests.main).toHaveLength(3);
+		expect(agent.stop).toBeUndefined();
+	});
+
+	it('Stop on an agent waiting for a place keeps it from starting', async () => {
+		const h = harness(
+			{
+				main: [
+					{ toolCalls: [spawn('first', 'Take long.'), spawn('second', 'Wait.')] },
+					{ text: 'Waiting.' },
+					{ text: 'ok' },
+				],
+				first: [{ text: 'First done.', hold: new Promise(() => {}) }],
+				second: [{ text: 'never' }],
+			},
+			{},
+			{ maxSubagents: 1 },
+		);
+		const run = h.controller.send('go');
+		await until(() => [...h.controller.agents.values()].length === 2);
+		const [first, second] = [...h.controller.agents.values()];
+		await until(() => second!.status === 'waiting' && second!.stop !== undefined);
+		second!.stop!();
+		await until(() => second!.status === 'stopped');
+		first!.stop!();
+		await run;
+		expect(h.requests.second).toBeUndefined();
+		const answers = new Map((await h.agentAnswers()).map((a) => [a.callId, a.answer]));
+		expect(answers.get(second!.callId)).toBe('Stopped by the user before it started.');
+	});
+});
+
+describe('what a sub-agent runs with (LIB-TEST-330)', () => {
+	const explore = BUILT_IN_AGENTS.find((a) => a.name === 'explore')!;
+
+	it('takes each value from its entry in Settings, its file, then the defaults', () => {
+		const file = parseAgentMd(
+			'---\nname: critic\ndescription: Reviews.\nmodel: p/small\ntemperature: 0.7\n---\nReview.',
+			'.agents/agents/critic.md',
+		).agent!;
+		const s = {
+			subagentDefaults: { maxTurns: 50, effort: 'low' as const },
+			subagentSettings: { critic: { temperature: 0.1 } },
+		};
+		expect(runSettingsOf(file, s)).toEqual({
+			model: { value: 'p/small', from: 'file' },
+			effort: { value: 'low', from: 'default' },
+			temperature: { value: 0.1, from: 'agent' },
+			maxTurns: { value: 50, from: 'default' },
+		});
+		// Nothing says: the main agent's model and level, the provider's temperature.
+		expect(runSettingsOf(explore, { subagentDefaults: {}, subagentSettings: {} })).toEqual({
+			model: { value: undefined, from: null },
+			effort: { value: undefined, from: null },
+			temperature: { value: undefined, from: null },
+			maxTurns: { value: undefined, from: null },
+		});
+		expect(
+			parseAgentMd('---\nname: a\ndescription: b\ntemperature: hot\n---\n', 'x.md').agent!
+				.warnings,
+		).toEqual(['temperature is not a number from 0 to 2']);
+	});
+
+	it('runs a built-in agent on the model and temperature its entry in Settings gives', async () => {
+		const h = harness(
+			{
+				main: [
+					{ toolCalls: [spawn('look', 'Look.', { agent: 'explore' })] },
+					{ text: 'Waiting.' },
+					{ text: 'ok' },
+				],
+				look: [{ text: 'Seen.' }],
+			},
+			{ 'agent:explore': 'always_allow' },
+			{
+				subagentDefaults: { maxTurns: 50, temperature: 0.9 },
+				subagentSettings: { explore: { model: 'p/small', temperature: 0.2 } },
+			},
+		);
+		await h.controller.send('go');
+		expect(h.models.look).toEqual(['small']);
+		expect(h.temperatures.filter((t) => t.run === 'look').map((t) => t.value)).toEqual([0.2]);
+		// The main agent keeps the provider's.
+		expect(h.temperatures.find((t) => t.run === 'main')?.value).toBeUndefined();
 	});
 });

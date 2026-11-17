@@ -2321,7 +2321,14 @@ body.is-mobile
 	border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.librarian.is-mobile .librarian-agent-head .librarian-agent-back {
+/* Stops this agent alone, in the color the chat's Stop has (issue #77). */
+.librarian-agent-stop {
+	flex: 0 0 auto;
+	color: var(--text-error);
+}
+
+.librarian.is-mobile .librarian-agent-head .librarian-agent-back,
+.librarian.is-mobile .librarian-agent-head .librarian-agent-stop {
 	min-width: 44px;
 	min-height: 44px;
 }

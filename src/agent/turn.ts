@@ -7,6 +7,11 @@ import { appIsHidden } from '../visibility';
 /** What ends an agent's loop early: failures by call, turns that called tools, and why it ended. */
 export interface LoopLimits {
 	failures: Map<string, number>;
+	/**
+	 * By call, the hash of what it last returned and how many times in a row it returned that
+	 * (issue #77): a call that keeps getting the same answer is a loop.
+	 */
+	repeats: Map<string, { result: number; count: number }>;
 	iterations: number;
 	stopReason: string | null;
 	/** Turns with tool calls allowed, when not the setting's: a sub-agent's maxTurns. */
@@ -14,7 +19,14 @@ export interface LoopLimits {
 }
 
 export function freshLimits(): LoopLimits {
-	return { failures: new Map(), iterations: 0, stopReason: null };
+	return { failures: new Map(), repeats: new Map(), iterations: 0, stopReason: null };
+}
+
+/** FNV-1a over a result's text: enough to tell one result from another, without keeping it. */
+export function hashText(text: string): number {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+	return h >>> 0;
 }
 
 /**

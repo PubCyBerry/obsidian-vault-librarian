@@ -17,7 +17,7 @@ import { resultBudget } from '../tools/registry';
 import type { ThinkingLevel } from '../types';
 import { wasHiddenSince, whenVisible } from '../visibility';
 import type { AgentController, ToolCardStatus } from './agent-controller';
-import { type AgentDefinition, GENERAL_AGENT, toolsFor } from './agent-definitions';
+import { type AgentDefinition, GENERAL_AGENT, runSettingsOf, toolsFor } from './agent-definitions';
 import { systemPromptOf } from './prompt';
 import {
 	forkMessages,
@@ -44,6 +44,11 @@ import {
 	textOf,
 	withErrorPrefix,
 } from './turn';
+
+/** What an agent stopped by a limit or by the user is asked last, with its tools switched off. */
+export function wrapUpPrompt(reason: string): string {
+	return `${reason}. Do not call any more tools. Answer the task now with what you have found so far: what you established, with the notes it rests on, and what is left undone.`;
+}
 
 /**
  * Runs sub-agents for the controller (LIB-FEAT-139): each spawn_agent call gets a Pi Agent of its
@@ -201,15 +206,27 @@ export class SubagentRunner {
 	): Promise<void> {
 		let text: string;
 		let held = false;
+		// The user's Stop while it waits for a place: it does not start (issue #77).
+		const waiting = new AbortController();
+		const onRunAbort = () => waiting.abort();
+		signal?.addEventListener('abort', onRunAbort);
+		state.stop = () => waiting.abort();
 		try {
-			await this.slots.take(signal);
+			await this.slots.take(waiting.signal);
 			held = true;
 			text = await this.drive(state, def, forked, signal);
 		} catch (error) {
-			state.status = 'failed';
-			text = signal?.aborted ? 'Operation aborted' : rewriteProviderError(messageOf(error));
+			const stoppedByUser = waiting.signal.aborted && !signal?.aborted;
+			state.status = stoppedByUser ? 'stopped' : 'failed';
+			text = stoppedByUser
+				? 'Stopped by the user before it started.'
+				: signal?.aborted
+					? 'Operation aborted'
+					: rewriteProviderError(messageOf(error));
 			await this.log(state, { type: 'error', stage: 'provider', message: text });
 		} finally {
+			signal?.removeEventListener('abort', onRunAbort);
+			delete state.stop;
 			state.stream = null;
 			if (held) this.slots.release();
 		}
@@ -235,20 +252,37 @@ export class SubagentRunner {
 				throw new Error(`The agent ${id} is still working. Wait for its answer first.`);
 	}
 
-	/** The model an agent runs on and its thinking level: its definition's, else the main ones. */
-	private agentModel(def: AgentDefinition): { selection: ActiveSelection; level: ThinkingLevel } {
+	/**
+	 * What an agent runs with (LIB-FEAT-329): its entry in Settings, its file or the sub-agent
+	 * defaults say the model, the thinking level, the temperature and the turn limit; where none
+	 * says, the main agent's model and level, the provider's temperature and the main limit.
+	 */
+	private agentModel(def: AgentDefinition): {
+		selection: ActiveSelection;
+		level: ThinkingLevel;
+		temperature: number | undefined;
+		maxTurns: number;
+	} {
 		const c = this.c;
+		const s = c.deps.settings();
+		const run = runSettingsOf(def, s);
 		// A model Settings lacks falls back to the main one, as the definition's scan warned.
+		const ref = run.model.value;
 		const selection =
-			(def.model && findModel(c.deps.providers.listSelectable(), def.model)) || c.selection!;
+			(ref && findModel(c.deps.providers.listSelectable(), ref)) || c.selection!;
 		if (c.deps.secrets.get(selection.provider.secretId) === null)
 			throw new Error(`No API key for ${selection.provider.name} on this device.`);
 		const levels = selectableThinkingLevels(selection.model);
 		// Neither fits: as close to off as the model goes, which is off when it can stop thinking.
 		const level =
-			[def.effort, c.thinkingLevel].find((l) => l && levels.includes(l)) ??
+			[run.effort.value, c.thinkingLevel].find((l) => l && levels.includes(l)) ??
 			clampThinkingLevel(selection.model, 'off');
-		return { selection, level };
+		return {
+			selection,
+			level,
+			temperature: run.temperature.value,
+			maxTurns: run.maxTurns.value ?? s.maxIterations,
+		};
 	}
 
 	/**
@@ -287,7 +321,7 @@ export class SubagentRunner {
 		signal?: AbortSignal,
 	): Promise<string> {
 		const c = this.c;
-		const { selection, level } = this.agentModel(def);
+		const { selection, level, temperature, maxTurns } = this.agentModel(def);
 		const model = toPiModel(selection.provider, selection.model);
 		// A resumed agent goes on from its own log, which the chat shows whole.
 		const prior = state.sessionId
@@ -312,9 +346,12 @@ export class SubagentRunner {
 		const history = prior.length
 			? await c.deps.context.project({ events: prior, model, scratch: c.deps.scratch })
 			: forked;
-		const limits: LoopLimits = { ...freshLimits(), max: def.maxTurns };
+		const limits: LoopLimits = { ...freshLimits(), max: maxTurns };
 		const nested = c.deps.nestedAgentsMd?.fork(forked.length > 0);
 		let requestStart = Date.now();
+		// After a limit or the user's Stop: one last request, tools declared but switched off.
+		let wrapping = false;
+		const send = c.streamFor(selection, level, temperature);
 		const agent = new Agent({
 			initialState: {
 				model,
@@ -322,10 +359,20 @@ export class SubagentRunner {
 				tools: tools(),
 				messages: leading ? [leading, ...history] : history,
 			},
-			streamFn: c.streamFor(selection, level),
+			streamFn: (m, context, options) =>
+				send(m, context, wrapping ? { ...options, toolChoice: 'none' } : options),
 			toolExecution: c.deps.settings().toolExecution,
 			beforeToolCall: (ctx, sig) =>
-				this.beforeToolCall(state, def, ctx.toolCall.id, ctx.toolCall.name, ctx.args, sig),
+				wrapping
+					? Promise.resolve({ block: true, reason: 'Answer now, without tools.' })
+					: this.beforeToolCall(
+							state,
+							def,
+							ctx.toolCall.id,
+							ctx.toolCall.name,
+							ctx.args,
+							sig,
+						),
 			afterToolCall: (ctx, sig) =>
 				c.afterToolCall(
 					ctx.toolCall.id,
@@ -340,6 +387,7 @@ export class SubagentRunner {
 			// No compaction here: an agent whose context fills up stops and answers with the rest.
 			finishTurn: (ctx, sig) =>
 				sig?.aborted === true ||
+				wrapping ||
 				c.shouldStopAfterTurn(ctx.toolResults.length, limits, false) ||
 				(ctx.toolResults.length > 0 && this.contextFull(ctx.message, model, limits))
 					? { action: 'end' }
@@ -360,6 +408,10 @@ export class SubagentRunner {
 		});
 		const onAbort = () => agent.abort();
 		signal?.addEventListener('abort', onAbort);
+		state.stop = () => {
+			limits.stopReason ??= 'Stopped by the user';
+			agent.abort();
+		};
 		try {
 			// Stop may have come while the agent was being set up, before anyone listened.
 			if (signal?.aborted) throw new Error('Operation aborted');
@@ -383,6 +435,16 @@ export class SubagentRunner {
 				agent.state.messages = agent.state.messages.slice(0, -1);
 				await agent.continue();
 			}
+			// A limit or the user's Stop ended it (issue #77): it answers once more, without
+			// tools, with what it has, so its work reaches the main agent.
+			if (limits.stopReason && !signal?.aborted) {
+				await this.log(state, { type: 'error', stage: 'tool', message: limits.stopReason });
+				const end = agent.state.messages[agent.state.messages.length - 1];
+				if (end?.role === 'assistant' && end.stopReason === 'aborted')
+					agent.state.messages = agent.state.messages.slice(0, -1);
+				wrapping = true;
+				await agent.prompt(wrapUpPrompt(limits.stopReason));
+			}
 		} finally {
 			signal?.removeEventListener('abort', onAbort);
 		}
@@ -390,16 +452,20 @@ export class SubagentRunner {
 		const last = [...agent.state.messages]
 			.reverse()
 			.find((m): m is AssistantMessage => m.role === 'assistant');
+		if (limits.stopReason) {
+			state.status = 'stopped';
+			// An answer that failed or was stopped too leaves the reason alone.
+			const said =
+				last?.stopReason === 'error' || last?.stopReason === 'aborted'
+					? ''
+					: textOf(last?.content ?? []).trim();
+			return `${said || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`;
+		}
 		if (last?.stopReason === 'error')
 			throw new Error(
 				rewriteProviderError(last.errorMessage ?? 'Request failed', c.keyless(selection)),
 			);
 		const text = textOf(last?.content ?? []).trim();
-		if (limits.stopReason) {
-			state.status = 'stopped';
-			await this.log(state, { type: 'error', stage: 'tool', message: limits.stopReason });
-			return `${text || 'The agent stopped before it wrote an answer.'}\n\n[${limits.stopReason}]`;
-		}
 		state.status = 'done';
 		return text || 'The agent finished without an answer.';
 	}

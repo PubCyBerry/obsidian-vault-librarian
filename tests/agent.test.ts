@@ -607,8 +607,11 @@ describe('guards', () => {
 	});
 
 	it('LIB-TEST-192: with no iteration limit set, a long tool run goes on to its answer', async () => {
-		const read = { toolCalls: [{ name: 'read', args: { path: 'notes/a.md' } }] };
-		const h = harness([...Array.from({ length: 12 }, () => read), { text: 'done' }], {
+		// Each call another: the same call with the same result again is a loop (LIB-TEST-328).
+		const read = (i: number) => ({
+			toolCalls: [{ name: 'read', args: { path: 'notes/a.md', limit: i + 1 } }],
+		});
+		const h = harness([...Array.from({ length: 12 }, (_, i) => read(i)), { text: 'done' }], {
 			read: 'always_allow',
 		});
 		expect(mergeSettings({}).maxIterations).toBe(0);
@@ -617,6 +620,30 @@ describe('guards', () => {
 		expect(h.events.some((e) => e.type === 'notice' && e.message.startsWith('Stopped'))).toBe(
 			false,
 		);
+	});
+
+	it('LIB-TEST-328: the same call with the same result stops at the limit, and says so before', async () => {
+		const grep = { name: 'grep', args: { query: 'beta' } };
+		const h = harness(
+			[
+				{ toolCalls: [grep, { name: 'read', args: { path: 'notes/a.md' } }] },
+				{ toolCalls: [grep] },
+				{ toolCalls: [grep] },
+				{ text: 'never' },
+			],
+			{ grep: 'always_allow', read: 'always_allow' },
+		);
+		await h.controller.send('find beta');
+		// Two repeats in, the model is told; the third stops the run as the failure limit would.
+		expect(h.requests).toHaveLength(3);
+		expect(lastText(h.requests[2]!.messages)).toMatch(
+			/This exact call has returned this same result 2 times/,
+		);
+		const notice = h.events.find((e) => e.type === 'notice' && e.message.startsWith('Stopped'));
+		expect(notice).toMatchObject({
+			message:
+				'Stopped: the same tool call returned the same result 3 times. Send a message to continue.',
+		});
 	});
 
 	it('LIB-TEST-032: Stop cancels the request and skips tools that have not started', async () => {

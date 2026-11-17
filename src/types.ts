@@ -61,6 +61,18 @@ export const TOOL_NAMES: readonly ToolName[] = [
 	'skill_search',
 ];
 
+/** How a sub-agent runs (LIB-FEAT-329); an absent field leaves it to the next that says. */
+export interface AgentRunSettings {
+	/** `<provider id>/<model id>`, or a model id or name; absent means the main agent's model. */
+	model?: string;
+	/** Absent means the main agent's thinking level. */
+	effort?: ThinkingLevel;
+	/** Absent means the provider's. */
+	temperature?: number;
+	/** Turns with tool calls before it stops and answers with what it has; 0 means no limit. */
+	maxTurns?: number;
+}
+
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
 	'off',
 	'minimal',
@@ -174,6 +186,10 @@ export interface LibrarianSettings {
 	repeatedFailureLimit: number;
 	/** Sub-agents that run at once; further spawn_agent calls wait for a slot (LIB-FEAT-139). */
 	maxSubagents: number;
+	/** What every sub-agent runs with where neither its entry nor its file says (LIB-FEAT-329). */
+	subagentDefaults: AgentRunSettings;
+	/** Per agent name, set under Sub-agents in Settings; it goes before what the agent's file says. */
+	subagentSettings: Record<string, AgentRunSettings>;
 	useVaultAgentsMd: boolean;
 	/**
 	 * The Custom system prompt, which every request starts with ahead of the vault root AGENTS.md.
@@ -264,6 +280,9 @@ export const DEFAULT_SETTINGS: LibrarianSettings = {
 	maxIterations: 0,
 	repeatedFailureLimit: 3,
 	maxSubagents: 3,
+	// An agent that runs into its limit answers with what it has, and can be resumed (issue #77).
+	subagentDefaults: { maxTurns: 50 },
+	subagentSettings: {},
 	useVaultAgentsMd: true,
 	context: {
 		warningAt: 0.7,
@@ -303,6 +322,8 @@ export function mergeSettings(stored: unknown): LibrarianSettings {
 		context: { ...DEFAULT_SETTINGS.context, ...(s.context ?? {}) },
 		mcpServers: (s.mcpServers ?? []).map((m) => ({ ...m, toolHashes: m.toolHashes ?? {} })),
 		webdav: { ...DEFAULT_SETTINGS.webdav, ...(s.webdav ?? {}) },
+		subagentDefaults: { ...DEFAULT_SETTINGS.subagentDefaults, ...(s.subagentDefaults ?? {}) },
+		subagentSettings: { ...(s.subagentSettings ?? {}) },
 		providers: (s.providers ?? []).map((p) => ({
 			...p,
 			compat: p.compat ?? {},
