@@ -473,6 +473,10 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			case 'usage':
 				this.composer.renderUsage(event.usage);
 				break;
+			// The head hears of it from the hub; a Recent row only from the list drawn again.
+			case 'title':
+				if (this.historyMode) void this.renderSessions();
+				break;
 			case 'notice':
 				this.showNotice(event.message);
 				break;

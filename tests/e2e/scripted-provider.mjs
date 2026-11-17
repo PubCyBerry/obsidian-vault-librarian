@@ -68,6 +68,9 @@ function script(messages) {
 	const lastUser = messages.findLastIndex((m) => m.role === 'user');
 	const results = messages.slice(lastUser + 1).filter((m) => m.role === 'tool').length;
 	const asked = textOf(messages[lastUser]?.content);
+	// The request that names a session from its first message (LIB-FEAT-325).
+	if (textOf(system?.content).startsWith('You name chat sessions'))
+		return { text: 'Scripted session' };
 	if (sub)
 		return results === 0
 			? {

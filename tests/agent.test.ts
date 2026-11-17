@@ -1,5 +1,5 @@
 import type { App } from 'obsidian';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	ACTIVE_TURN_KEY,
 	ACTIVE_TURNS_KEY,
@@ -11,6 +11,7 @@ import {
 } from '../src/agent/agent-controller';
 import { NestedAgentsMd } from '../src/agent/nested-agents-md';
 import { DEFAULT_SYSTEM_PROMPT, PromptManager } from '../src/agent/prompt';
+import { cleanTitle } from '../src/agent/session-title';
 import { ContextManager, HANDOFF_PROMPT } from '../src/context/context-manager';
 import { ToolPermissionManager } from '../src/permissions/tool-permission-manager';
 import { ProviderManager } from '../src/provider/provider-manager';
@@ -47,7 +48,7 @@ function harness(
 	turns: ScriptedTurn[],
 	perms: Partial<Record<string, ToolPermission>> = {},
 	extra: Record<string, unknown> = {},
-	opts: { script?: boolean; seed?: Record<string, string> } = {},
+	opts: { script?: boolean; seed?: Record<string, string>; title?: string } = {},
 ): Harness {
 	const app = new FakeApp();
 	app.vault.seed('AGENTS.md', 'Answer in Korean.');
@@ -73,7 +74,7 @@ function harness(
 	for (const [tool, p] of Object.entries(perms))
 		settings.toolPermissions.byTool[tool as 'ls'] = p!;
 	app.secrets.set('vault-librarian-p', 'key');
-	const { streamFn, requests, sentOptions } = scriptedStream(turns);
+	const { streamFn, requests, sentOptions } = scriptedStream(turns, opts.title);
 	const sessions = new SessionManager(app as unknown as App, '.obsidian/plugins/vault-librarian');
 	const permissions = new ToolPermissionManager(
 		() => settings,
@@ -406,6 +407,35 @@ describe('approval flow', () => {
 		};
 		expect(result.isError).toBe(true);
 		expect(result.content[0]!.text).toMatch(/not found|blocked/);
+	});
+});
+
+describe('a session named from its first message (LIB-TEST-326)', () => {
+	it('asks the model once for a name and keeps it as the session title', async () => {
+		const h = harness(
+			[{ text: 'Done.' }, { text: 'Again.' }],
+			{},
+			{},
+			{ title: '"Weekly notes cleanup."' },
+		);
+		await h.controller.send(
+			'Tidy my weekly notes\n<attached_note path="Weekly/W46.md">long text</attached_note>',
+		);
+		await vi.waitFor(() => expect(h.events.some((e) => e.type === 'title')).toBe(true));
+		expect(h.controller.session?.title).toBe('Weekly notes cleanup');
+		const renames = (await sessions(h)).filter((e) => e.type === 'rename');
+		expect(renames).toMatchObject([{ title: 'Weekly notes cleanup' }]);
+		// The second message is not the first: no other name is asked for.
+		await h.controller.send('and the monthly ones');
+		expect(h.events.filter((e) => e.type === 'title')).toHaveLength(1);
+		// The main requests got their turns; the name came aside.
+		expect(h.requests).toHaveLength(2);
+	});
+
+	it('reads a title out of what a model wraps it in', () => {
+		expect(cleanTitle('**Title: "Fix the shell"**\nmore')).toBe('Fix the shell');
+		expect(cleanTitle('# 주간 노트 정리.')).toBe('주간 노트 정리');
+		expect(cleanTitle('  ')).toBe('');
 	});
 });
 

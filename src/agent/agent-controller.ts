@@ -37,6 +37,7 @@ import type { AgentDefinition } from './agent-definitions';
 import { ApprovalQueue, type ApprovalRequest, type CallOrigin } from './approval-queue';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { type PromptManager, systemPromptOf } from './prompt';
+import { generateTitle } from './session-title';
 import type { Slots, SpawnArgs, SubagentState } from './subagent';
 import { SubagentRunner } from './subagent-runner';
 import {
@@ -131,7 +132,9 @@ export type ControllerEvent =
 	/** Queued messages the run did not send (Stop, an error, a session switch): back to the composer. */
 	| { type: 'unsent'; messages: QueuedMessage[] }
 	/** A sub-agent of this run started, moved on or ended (LIB-FEAT-140). */
-	| { type: 'agent'; agent: SubagentState };
+	| { type: 'agent'; agent: SubagentState }
+	/** The session got the name its first message suggested (LIB-FEAT-325). */
+	| { type: 'title'; title: string };
 
 export interface ControllerDeps {
 	app: App;
@@ -695,8 +698,11 @@ export class AgentController {
 			this.queue.unshift(...messages.filter((m): m is QueuedMessage => 'id' in m));
 			return false;
 		}
+		const first = !this.events.some((e) => e.event.type === 'user');
 		for (const message of messages) await this.logUser(this.session!.id, message);
 		await this.reloadEvents();
+		// The run does not wait for its name.
+		if (first) void this.nameSession(this.session!.id, messages[0]!.text);
 		const last = messages[messages.length - 1]!;
 		const imageContents = await this.imageContents(last.images);
 		await this.runTurn({
@@ -704,6 +710,27 @@ export class AgentController {
 			start: (agent) => agent.prompt(last.text, imageContents),
 		});
 		return !this.stopRequested && !this.runFailed;
+	}
+
+	/**
+	 * Names the session from its first message (LIB-FEAT-325) with the session's model at its
+	 * lowest thinking level. A name the user gave meanwhile stays; a failure leaves the start of
+	 * the message as the name, as before.
+	 */
+	private async nameSession(sessionId: string, text: string): Promise<void> {
+		const sel = this.selection;
+		if (!sel) return;
+		const title = await generateTitle(
+			this.streamFor(sel, clampThinkingLevel(sel.model, 'off')),
+			toPiModel(sel.provider, sel.model),
+			text,
+		).catch(() => null);
+		if (!title) return;
+		const events = await this.deps.sessions.load(sessionId).catch(() => null);
+		if (!events || events.some((e) => e.type === 'rename')) return;
+		await this.deps.sessions.rename(sessionId, title);
+		if (this.session?.id === sessionId) this.session.title = title;
+		this.emit({ type: 'title', title });
 	}
 
 	/** A message to the model as the session log keeps it. */

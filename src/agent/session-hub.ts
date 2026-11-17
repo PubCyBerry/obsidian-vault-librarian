@@ -300,7 +300,9 @@ export class SessionHub {
 					this.unsent.set(id, [...(this.unsent.get(id) ?? []), ...e.messages]);
 				return;
 			}
+			// A new name too: the chats' heads and the session list say it.
 			case 'session':
+			case 'title':
 				this.changed();
 				return;
 			case 'stream':

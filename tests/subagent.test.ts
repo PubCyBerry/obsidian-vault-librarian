@@ -39,7 +39,7 @@ import { mergeSettings, newModel, newProvider, type ToolPermission } from '../sr
 import { agentResultOf, storedRow } from '../src/ui/agent-rows';
 import { groupRuns } from '../src/ui/work-log';
 import { FakeApp } from './fake-app';
-import { type ScriptedTurn, scriptedStream } from './scripted-stream';
+import { isTitleRequest, type ScriptedTurn, scriptedStream } from './scripted-stream';
 
 /** The run a request is for: a sub-agent's system prompt names its title, the main agent's none. */
 function runOf(context: Parameters<StreamFn>[1]): string {
@@ -120,8 +120,10 @@ function harness(
 	const models: Record<string, string[]> = {};
 	const streamFn: StreamFn = (model, context, options) => {
 		const run = runOf(context);
-		requests[run] = [...(requests[run] ?? []), context];
-		models[run] = [...(models[run] ?? []), model.id];
+		if (!isTitleRequest(context)) {
+			requests[run] = [...(requests[run] ?? []), context];
+			models[run] = [...(models[run] ?? []), model.id];
+		}
 		const scripted = streams[run];
 		return scripted
 			? scripted.streamFn(model, context, options)
