@@ -21,6 +21,8 @@ import {
 	type AgentDefinition,
 	agentCapabilities,
 	agentKey,
+	describeRun,
+	runSettingsOf,
 } from '../agent/agent-definitions';
 import { DEFAULT_SYSTEM_PROMPT, systemPromptOf } from '../agent/prompt';
 import type LibrarianPlugin from '../main';
@@ -35,17 +37,26 @@ import type { SessionSummary } from '../session/session-types';
 import { SKILL_SEARCH_NAME, SKILLS_GROUP_ID, type Skill, skillKey } from '../skills/skill-manager';
 import { PASSPHRASE_ID } from '../storage/secret-store';
 import { TOOL_SEARCH_NAME } from '../tools/tool-registry';
-import type { McpServerConfig, ProviderConfig, ToolPermission } from '../types';
+import {
+	DEFAULT_SETTINGS,
+	type McpServerConfig,
+	type ProviderConfig,
+	type ToolPermission,
+} from '../types';
 import { segment, setChecked, steadyLabel } from '../ui/segmented';
 import { ConfirmModal, confirmDeleteSession, renameSession } from '../ui/session-list';
 import { WEBDAV_SECRET_ID, WebDavClient } from '../webdav/webdav-client';
 import { settingsFromBackup } from './backup';
 import {
+	AgentRunModal,
 	BackupFileModal,
 	keptWhere,
 	McpServerEditorModal,
 	numberInput,
 	ProviderEditorModal,
+	RUN_ROWS,
+	runControl,
+	runModels,
 	SkillEditorModal,
 } from './modals';
 
@@ -357,8 +368,8 @@ export class LibrarianSettingTab extends PluginSettingTab {
 								),
 						},
 						{
-							name: 'Repeated failure limit',
-							desc: 'Stop when the same tool call fails this many times.',
+							name: 'Repeated call limit',
+							desc: 'Stop when the same tool call fails, or returns the same result, this many times in a row. Sub-agents stop too and answer with what they have.',
 							render: (setting) =>
 								numberInput(
 									setting,
@@ -1120,6 +1131,11 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				],
 			},
 			{
+				type: 'group',
+				heading: 'Defaults',
+				items: this.runDefaultRows(),
+			},
+			{
 				type: 'list',
 				heading: 'Agents',
 				extraButtons: [
@@ -1174,6 +1190,14 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				setting.nameEl.prepend(icon);
 				const can = agentCapabilities(agent);
 				if (can) setting.descEl.createDiv({ cls: 'librarian-agent-caps', text: can });
+				// What it runs with now, wherever each value comes from (LIB-FEAT-329).
+				const run = runSettingsOf(agent, this.plugin.settings);
+				setting.descEl.createDiv({
+					cls: 'librarian-agent-caps',
+					text: RUN_ROWS.map(
+						(r) => `${r.name}: ${describeRun(r.key, run[r.key].value)}`,
+					).join('. '),
+				});
 				const where = setting.descEl.createDiv({ cls: 'librarian-skill-path' });
 				setIcon(
 					where.createSpan({ cls: 'librarian-skill-path-icon' }),
@@ -1181,8 +1205,55 @@ export class LibrarianSettingTab extends PluginSettingTab {
 				);
 				where.createSpan({ text: agent.location ?? 'Built in' });
 				this.permissionControl(setting, agentKey(agent.name), hooks);
+				setting.addExtraButton((b) =>
+					b
+						.setIcon('sliders-horizontal')
+						.setTooltip('Run settings')
+						.onClick(() =>
+							new AgentRunModal(this.app, this.plugin, agent, () =>
+								this.refresh(),
+							).open(),
+						),
+				);
 			},
 		};
+	}
+
+	/**
+	 * What every sub-agent runs with where neither its own settings nor its file says
+	 * (LIB-FEAT-329). An empty Max turns goes back to its default.
+	 */
+	private runDefaultRows(): Row[] {
+		const s = this.plugin.settings;
+		const models = runModels(this.plugin);
+		const fallback: Record<string, string> = {
+			model: 'Same as the main agent',
+			effort: 'Same as the main agent',
+			temperature: "Provider's",
+			maxTurns: String(DEFAULT_SETTINGS.subagentDefaults.maxTurns),
+		};
+		return RUN_ROWS.map(
+			(row): Row => ({
+				name: row.name,
+				desc: row.desc,
+				render: (setting) =>
+					runControl(
+						setting,
+						row.key,
+						s.subagentDefaults[row.key],
+						fallback[row.key] ?? '',
+						models,
+						async (v) => {
+							const next: Record<string, unknown> = { ...s.subagentDefaults };
+							if (v === undefined) delete next[row.key];
+							else next[row.key] = v;
+							next.maxTurns ??= DEFAULT_SETTINGS.subagentDefaults.maxTurns;
+							s.subagentDefaults = next;
+							await this.save();
+						},
+					),
+			}),
+		);
 	}
 
 	// Tool permissions

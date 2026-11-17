@@ -167,6 +167,11 @@ describe('settings pages', () => {
 		expect(rows(agents).map((r) => r.name)).toEqual([
 			'Max sub-agents',
 			'All agents',
+			// What every agent runs with where its own settings and file say nothing (LIB-TEST-330).
+			'Model',
+			'Thinking level',
+			'Temperature',
+			'Max turns',
 			'general-purpose',
 			'explore',
 		]);
