@@ -7,7 +7,9 @@
 // A request whose last message contains "agents" starts one explore sub-agent; "make a skill"
 // writes the tidy-notes skill and then edits its description; "delete the skill" removes its folder
 // with bash (LIB-TEST-285); "run a command" streams the arguments of an ls call and then of a bash
-// call a few characters at a time (LIB-TEST-288). Any other request writes a note, lists the vault
+// call a few characters at a time (LIB-TEST-288); "in steps" thinks three times under bold headings,
+// listing the root, then finding and searching the projects, then answering (LIB-TEST-322). A
+// session's name request gets `Scripted session` (LIB-TEST-326). Any other request writes a note, lists the vault
 // root, then answers in Markdown with a heading, a list, code and a table. The sub-agent thinks,
 // writes a note, lists Projects, then answers in a list.
 import http from 'node:http';
@@ -127,6 +129,29 @@ function script(messages) {
 					],
 				}
 			: { text: 'Each project keeps its notes in its own folder.' };
+	// Three responses, each thought headed as a reasoning summary heads it (LIB-TEST-322).
+	if (asked.includes('in steps'))
+		return [
+			{
+				thinking:
+					'**Looking at the vault root**\n\nThe user wants an overview, so I start from the root folders and see how the vault is laid out before I read anything in it.',
+				calls: [{ name: 'ls', args: { path: '' } }],
+			},
+			{
+				thinking:
+					'**Finding the project notes**\n\nThe projects live under Projects. I look for their notes and for the lines that say where each one stands.',
+				text: 'Searching the project notes.',
+				calls: [
+					{ name: 'find', args: { query: 'Projects' } },
+					{ name: 'grep', args: { query: 'status' } },
+				],
+			},
+			{
+				thinking:
+					'**Writing the overview**\n\nI have the folders and the projects, so I can answer now.',
+				text: ANSWER,
+			},
+		][Math.min(results, 2)];
 	if (asked.includes('agents'))
 		return results === 0
 			? {
@@ -145,7 +170,8 @@ function script(messages) {
 			: { text: 'The explore agent found three projects; each has a hub note.' };
 	return results === 0
 		? {
-				thinking: 'The user wants the layout. I list the root before answering.',
+				thinking:
+					'**Listing the vault root**\n\nThe user wants the layout. I list the root before answering.',
 				text: 'Let me list the vault first to see what is there. I will look at the root folders, then answer with their layout.',
 				calls: [{ name: 'ls', args: { path: '' } }],
 			}

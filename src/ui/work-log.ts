@@ -317,22 +317,44 @@ export function setChipStatus(chip: HTMLElement, status: ToolCardStatus, outcome
 }
 
 /**
- * The word the running run's header shows for what the agent is doing, and how its orb moves
- * (LIB-FEAT-308). `thinking` is a response whose thinking is the part still growing; `state` is
- * null where only the stream is known, as in a sub-agent's conversation.
+ * The heading a thought opens its last part with, as a reasoning summary writes one: a line that
+ * is all bold, such as `**Checking the shell output**` (LIB-FEAT-321). Null when it has none, as
+ * raw thinking does.
+ */
+export function thoughtHeading(text: string): string | null {
+	let heading: string | null = null;
+	for (const m of text.matchAll(/^[ \t]*\*\*([^*\n]{2,100})\*\*[ \t]*$/gm))
+		heading = (m[1] as string).trim();
+	return heading;
+}
+
+/**
+ * What the running run's header says the agent is doing, and how its orb moves (LIB-FEAT-308,
+ * LIB-FEAT-321). The task it is on is the heading of its latest thought, `topic`, as a coding
+ * agent's status line shows it; a state the user must know of goes before it, and a word for the
+ * state stands in when no thought has a heading. `thinking` is a response whose thinking is the
+ * part still growing; `state` is null where only the stream is known, as in a sub-agent's
+ * conversation. `said` is what the chat adds: how far its agents are, or that the response comes
+ * whole.
  */
 export function workMood(
 	state: AgentUiState | null,
 	thinking: boolean,
-	agentsBusy = false,
-): { verb: string; orb: OrbState } {
-	if (state === 'compacting') return { verb: 'Compacting', orb: 'shaping' };
-	if (state === 'awaiting-approval') return { verb: 'Waiting', orb: 'listening' };
+	topic: string | null = null,
+	said = '',
+): { title: string; orb: OrbState } {
+	if (state === 'compacting') return { title: 'Compacting context', orb: 'shaping' };
+	if (state === 'awaiting-approval')
+		return { title: 'Waiting for your approval', orb: 'listening' };
 	if (state === 'tool-running')
-		return { verb: 'Working', orb: agentsBusy ? 'connecting' : 'working' };
-	if (thinking || state === 'requesting') return { verb: 'Thinking', orb: 'breathing' };
-	if (state === 'streaming') return { verb: 'Writing', orb: 'composing' };
-	return { verb: 'Working', orb: 'working' };
+		return said
+			? { title: said, orb: 'connecting' }
+			: { title: topic ?? 'Working', orb: 'working' };
+	// Idle under a run at work: its message is in and its request about to go.
+	if (thinking || state === 'requesting' || state === 'idle')
+		return { title: (state === 'requesting' && said) || topic || 'Thinking', orb: 'breathing' };
+	if (state === 'streaming') return { title: topic ?? 'Writing', orb: 'composing' };
+	return { title: topic ?? 'Working', orb: 'working' };
 }
 
 /** `850`, `1.2k`, `34k`: a token count short enough for a header. */

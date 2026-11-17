@@ -169,7 +169,6 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		};
 		this.main = new ConversationPane(messagesEl, deps, {
 			rewind: (index) => this.confirmRewind(index),
-			activity: true,
 		});
 		this.registerDomEvent(document, 'pointerdown', (e) => {
 			if (!this.popover.contains(e.target)) this.popover.close();
@@ -596,15 +595,17 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		const nonStreaming = provider
 			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
 			: false;
-		// Sub-agents at work: how far they are, which the rows under it tell one by one. Waiting
-		// for the model needs no words of its own: the header's word says Thinking.
+		// The header says how far sub-agents at work are, which the rows under it tell one by one,
+		// and that a response comes whole; the rest it reads from the state and the thoughts.
 		const agents = [...this.runtime.agents.values()];
-		const activity = activityText(state, agents, nonStreaming ? NO_STREAMING_NOTICE : '');
-		this.main.setActivity(
-			activity,
-			state,
-			agents.some((a) => a.status === 'waiting' || a.status === 'running'),
-		);
+		const busy = agents.some((a) => a.status === 'waiting' || a.status === 'running');
+		const said =
+			state === 'tool-running' && busy
+				? activityText(state, agents)
+				: state === 'requesting' && nonStreaming
+					? NO_STREAMING_NOTICE
+					: '';
+		this.main.setActivity(said, state);
 		const standalone = state === 'compacting' && !this.runtime.isRunning;
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.main.el.createDiv({ cls: 'librarian-work is-running' });

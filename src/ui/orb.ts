@@ -5,6 +5,9 @@ export type { OrbState } from 'thinking-orbs/engine';
 /** The size the orbs are tuned for beside a line of text, in CSS pixels. */
 const SIZE = 20;
 
+/** How long one motion dissolves into the next. */
+const FADE_MS = 700;
+
 /**
  * The thought orb of a run at work (LIB-FEAT-308): a small dotted sphere whose motion says what the
  * agent is doing. The geometry of each frame is Jakub Antalik's thinking-orbs (MIT), through its
@@ -22,6 +25,8 @@ export class Orb {
 	private readonly ratio: number;
 	private readonly color: string;
 	private state: OrbState;
+	/** The motion it is leaving and when it began to, while the two dissolve into each other. */
+	private from: { state: OrbState; at: number } | null = null;
 
 	constructor(parent: HTMLElement, state: OrbState = 'working') {
 		this.state = state;
@@ -36,21 +41,39 @@ export class Orb {
 		this.tick();
 	}
 
-	/** Another motion for another kind of work; the clock runs on. */
-	set(state: OrbState): void {
+	/**
+	 * Another motion for another kind of work. The one it had fades out as the new one fades in,
+	 * so the orb never jumps from one shape to another; the clock runs on.
+	 */
+	set(state: OrbState, fade = true): void {
+		if (state === this.state) return;
+		this.from = fade ? { state: this.state, at: performance.now() } : null;
 		this.state = state;
 	}
 
 	private readonly tick = (): void => {
 		const ctx = this.ctx;
 		if (!ctx || !this.el.isConnected) return;
-		const { mode, speed, opts } = resolvePreset(this.state, SIZE);
-		const frame = MODE_FRAMES[mode](SIZE, (performance.now() / 1000) * speed, opts);
+		const now = performance.now();
 		ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
 		ctx.clearRect(0, 0, SIZE, SIZE);
 		ctx.fillStyle = ctx.strokeStyle = this.color;
+		const f = this.from ? Math.min(1, (now - this.from.at) / FADE_MS) : 1;
+		const eased = f * f * (3 - 2 * f);
+		if (this.from && f < 1) this.paint(this.from.state, now, 1 - eased);
+		else this.from = null;
+		this.paint(this.state, now, eased);
+		window.requestAnimationFrame(this.tick);
+	};
+
+	/** One motion's frame at this moment, its ink scaled by `weight`. */
+	private paint(state: OrbState, now: number, weight: number): void {
+		const ctx = this.ctx;
+		if (!ctx || weight <= 0) return;
+		const { mode, speed, opts } = resolvePreset(state, SIZE);
+		const frame = MODE_FRAMES[mode](SIZE, (now / 1000) * speed, opts);
 		// The engine's ink runs from 0, the darkest, to 1: here it is how much of the color shows.
-		const ink = (white: number, a = 1) => (1 - Math.min(1, Math.max(0, white))) * a;
+		const ink = (white: number, a = 1) => (1 - Math.min(1, Math.max(0, white))) * a * weight;
 		for (const l of frame.lines) {
 			ctx.globalAlpha = ink(l.white, l.a);
 			ctx.lineWidth = l.w;
@@ -65,6 +88,5 @@ export class Orb {
 			ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
 			ctx.fill();
 		}
-		window.requestAnimationFrame(this.tick);
-	};
+	}
 }

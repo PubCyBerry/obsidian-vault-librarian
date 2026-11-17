@@ -19,7 +19,7 @@ import {
 	toolIcon,
 } from './cards';
 import { ATTACHED_BLOCK } from './mentions';
-import { Orb } from './orb';
+import { Orb, type OrbState } from './orb';
 import { linkSources, openSource } from './sources';
 import { appendStreamDelta, StreamingMarkdown } from './stream-text';
 import {
@@ -38,6 +38,7 @@ import {
 	type Step,
 	type StepPopover,
 	setChipStatus,
+	thoughtHeading,
 	updateChip,
 	viewOf,
 	workMood,
@@ -81,8 +82,15 @@ interface Block {
 	orb: Orb | null;
 	title: HTMLElement | null;
 	meta: HTMLElement | null;
-	activity: HTMLElement | null;
+	/** What the header of a run at work shows now, and since when: a new one waits its turn. */
+	shown: { orb: OrbState | null; at: number };
 }
+
+/**
+ * How long the header of a run at work holds what it says before it says the next thing, so a
+ * call that is over in a moment does not flash by and the orb changes its motion seldom.
+ */
+const HOLD_MS = 1200;
 
 /**
  * Where the response being streamed goes: its steps at the end of the running run's timeline, in
@@ -134,8 +142,6 @@ export interface PaneOptions {
 	asker?: string;
 	/** The chat's own conversation offers rewinding to each of its messages. */
 	rewind?: (index: number) => void;
-	/** The running run's header gets a span saying what the agent is doing (the chat's own only). */
-	activity?: boolean;
 }
 
 export interface DrawOptions {
@@ -158,24 +164,26 @@ export class ConversationPane {
 	private live: Live | null = null;
 	/** Auto-scroll follows new content only while the user is reading at the bottom. */
 	followBottom = true;
-	/** What the agent is doing, in the running run's header. */
-	private activityEl: HTMLElement | null = null;
-	/** Its words as last set, for the header a redraw makes anew. */
-	private activity = '';
+	/** What the chat adds to the running run's header, as last set (workMood's `said`). */
+	private said = '';
 	/**
-	 * The running run's header (LIB-FEAT-308): its orb, its word, and how long the run has taken
-	 * and how many tokens it has written, counted from the log up to the response on its way.
+	 * The running run's header (LIB-FEAT-308): its orb, what it is doing, and how long the run has
+	 * taken and how many tokens it has written, counted from the log up to the response on its way.
+	 * `topic` is the heading of the run's latest saved thought (LIB-FEAT-321).
 	 */
 	private head: {
+		block: Block;
 		orb: Orb;
 		title: HTMLElement;
 		meta: HTMLElement;
 		startedAt: number;
 		tokens: number;
+		topic: string | null;
 	} | null = null;
+	/** Draws the header again once what it shows has held long enough. */
+	private holdTimer: number | null = null;
 	/** The agent's state as last told; null where only the stream is known, as in the agent pane. */
 	private mood: AgentUiState | null = null;
-	private agentsBusy = false;
 	/** The response on its way, as an estimate of its tokens. */
 	private liveTokens = 0;
 	/** Each drawn step's popover, by key, to open it again after a redraw. */
@@ -224,38 +232,47 @@ export class ConversationPane {
 	reset(): void {
 		this.folds = newFolds();
 		this.lastAssistant = -1;
-		this.activity = '';
+		this.said = '';
+	}
+
+	/** The agent's state now, and what the chat adds to the running run's header (workMood). */
+	setActivity(said: string, state: AgentUiState | null = null): void {
+		this.said = said;
+		this.mood = state;
+		this.renderHead();
 	}
 
 	/**
-	 * What the agent is doing now, in the running run's header. A header drawn anew shows it at
-	 * once; words that change after fade in, as streamed text does (LIB-FEAT-099).
+	 * The running run's header as it stands now: its orb's motion, what it is doing, its time and
+	 * tokens. What it is doing changes once the last has held for HOLD_MS (LIB-FEAT-321): the new
+	 * words fade in as streamed text does (LIB-FEAT-099) and the orb dissolves into its new motion.
 	 */
-	setActivity(text: string, state: AgentUiState | null = null, agentsBusy = false): void {
-		this.activity = text;
-		this.mood = state;
-		this.agentsBusy = agentsBusy;
-		this.renderHead();
-		const el = this.activityEl;
-		if (!el || el.textContent === text) return;
-		// A narrow pane cuts it short; the whole text shows on hover.
-		el.setAttr('aria-label', text);
-		if (el.textContent) appendStreamDelta(el, el.textContent, text);
-		else el.setText(text);
-	}
-
-	/** The running run's header as it stands now: its orb's motion, its word, its time and tokens. */
 	private renderHead(): void {
 		const head = this.head;
 		if (!head?.title.isConnected) return;
-		const { verb, orb } = workMood(
+		const topic = thoughtHeading(this.live?.thinkingText ?? '') ?? head.topic;
+		const { title, orb } = workMood(
 			this.mood,
 			this.live?.thinkingLive === true,
-			this.agentsBusy,
+			topic,
+			this.said,
 		);
-		head.orb.set(orb);
-		if (head.title.textContent !== verb)
-			appendStreamDelta(head.title, head.title.textContent ?? '', verb);
+		const shown = head.block.shown;
+		if (title !== head.title.textContent || orb !== shown.orb) {
+			const wait = shown.at + HOLD_MS - Date.now();
+			if (wait <= 0) {
+				// A header made anew starts in its motion; one at work dissolves into the next.
+				head.orb.set(orb, shown.orb !== null);
+				appendStreamDelta(head.title, head.title.textContent ?? '', title);
+				// Cut short in a narrow pane; the whole of it shows on hover.
+				head.title.setAttr('aria-label', title);
+				head.block.shown = { orb, at: Date.now() };
+			} else
+				this.holdTimer ??= window.setTimeout(() => {
+					this.holdTimer = null;
+					this.renderHead();
+				}, wait);
+		}
 		const tokens = head.tokens + this.liveTokens;
 		const meta = `${formatDuration(Date.now() - head.startedAt)}${tokens ? `, ${compactCount(tokens)} tokens` : ''}`;
 		if (head.meta.textContent !== meta) head.meta.setText(meta);
@@ -268,6 +285,7 @@ export class ConversationPane {
 
 	dispose(): void {
 		if (this.streamTimer !== null) window.clearTimeout(this.streamTimer);
+		if (this.holdTimer !== null) window.clearTimeout(this.holdTimer);
 	}
 
 	/**
@@ -301,7 +319,6 @@ export class ConversationPane {
 		this.lastBlocks = this.blocks;
 		this.blocks = new Map();
 		this.live = null;
-		this.activityEl = null;
 		this.head = null;
 		// What the last response wrote is in the log now, counted from there.
 		this.liveTokens = 0;
@@ -409,33 +426,24 @@ export class ConversationPane {
 			orb: null,
 			title: null,
 			meta: null,
-			activity: null,
+			shown: { orb: null, at: 0 },
 		};
 	}
 
 	/**
-	 * The block's header for a run at work or a run done. At work: the orb, a word for what it does,
-	 * and the time and tokens so far (renderHead). Done: a mark and how long it took.
+	 * The block's header for a run at work or a run done. At work: the orb, what it is doing, and
+	 * the time and tokens so far (renderHead). Done: a mark and how long it took.
 	 */
 	private makeHeader(block: Block, running: boolean): void {
 		const header = block.header;
 		header.empty();
 		block.orb = running ? new Orb(header) : null;
 		if (!block.orb) setIcon(header.createSpan({ cls: 'librarian-work-mark' }), 'asterisk');
-		block.title = header.createSpan({
-			cls: 'librarian-work-title',
-			text: running ? 'Working' : '',
-		});
+		block.title = header.createSpan({ cls: 'librarian-work-title' });
 		block.meta = running ? header.createSpan({ cls: 'librarian-work-meta' }) : null;
 		setIcon(header.createSpan({ cls: 'librarian-work-chevron' }), 'chevron-right');
-		block.activity =
-			running && this.opts.activity
-				? header.createSpan({
-						cls: 'librarian-work-activity',
-						text: this.activity,
-						attr: { 'aria-label': this.activity },
-					})
-				: null;
+		// A header made anew says what the run does at once, without waiting its turn.
+		block.shown = { orb: null, at: 0 };
 		block.running = running;
 	}
 
@@ -476,7 +484,11 @@ export class ConversationPane {
 			);
 		}
 		if (running && block.orb && block.title && block.meta) {
+			let topic: string | null = null;
+			for (const step of view.steps)
+				if (step.kind === 'thinking') topic = thoughtHeading(step.text) ?? topic;
 			this.head = {
+				block,
 				orb: block.orb,
 				title: block.title,
 				meta: block.meta,
@@ -485,8 +497,8 @@ export class ConversationPane {
 					(n, e) => n + (e.event.type === 'assistant' ? (e.event.usage?.output ?? 0) : 0),
 					0,
 				),
+				topic,
 			};
-			this.activityEl = block.activity;
 			this.renderHead();
 		} else if (block.title) {
 			const took =
@@ -572,8 +584,19 @@ export class ConversationPane {
 				const key = `thinking:${step.key}`;
 				const content = () => ({ icon: 'brain', title: 'Thinking', text: step.text });
 				const button = row.querySelector<HTMLElement>('button');
-				if (button) this.bindPopover(button, key, content);
-				else this.stepButton(row, key, 'Thinking', content, firstLine(step.text, 100));
+				if (button) {
+					this.bindPopover(button, key, content);
+					break;
+				}
+				// A thought with a heading reads as the task the calls under it serve (LIB-FEAT-321).
+				const heading = thoughtHeading(step.text);
+				this.stepButton(
+					row,
+					key,
+					heading ?? 'Thinking',
+					content,
+					heading ? '' : firstLine(step.text, 100).replaceAll('**', ''),
+				).toggleClass('has-heading', heading !== null);
 				break;
 			}
 			case 'text':
@@ -859,7 +882,8 @@ export class ConversationPane {
 		live.thinkingText = thinking;
 		// Its line shows the thought now being written, the newest line of it.
 		const preview = live.thinking?.querySelector<HTMLElement>('.librarian-chip-preview');
-		const newest = lastLine(thinking, 100);
+		// Bold marks, as a heading on its way has them, are not words to show.
+		const newest = lastLine(thinking, 100).replaceAll('**', '');
 		if (preview && preview.textContent !== newest) preview.setText(newest);
 		const text = message.content
 			.filter((c) => c.type === 'text')

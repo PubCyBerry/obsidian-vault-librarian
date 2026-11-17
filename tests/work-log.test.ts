@@ -10,6 +10,7 @@ import {
 	lastLine,
 	looksLikeAnswer,
 	place,
+	thoughtHeading,
 	viewOf,
 	workMood,
 } from '../src/ui/work-log';
@@ -167,17 +168,45 @@ describe('work log (LIB-TEST-253)', () => {
 		expect(summarizeCall('bash', { command: 'ls -la' }, 'total 3')).toBe('ls -la');
 	});
 
-	it('picks the header word and the orb by what the agent does (LIB-TEST-309)', () => {
-		expect(workMood('requesting', false)).toEqual({ verb: 'Thinking', orb: 'breathing' });
-		expect(workMood('streaming', true)).toEqual({ verb: 'Thinking', orb: 'breathing' });
-		expect(workMood('streaming', false)).toEqual({ verb: 'Writing', orb: 'composing' });
-		expect(workMood('tool-running', false)).toEqual({ verb: 'Working', orb: 'working' });
-		expect(workMood('tool-running', false, true).orb).toBe('connecting');
-		expect(workMood('awaiting-approval', true)).toEqual({ verb: 'Waiting', orb: 'listening' });
-		expect(workMood('compacting', false)).toEqual({ verb: 'Compacting', orb: 'shaping' });
+	it('picks the header words and the orb by what the agent does (LIB-TEST-309, LIB-TEST-322)', () => {
+		expect(workMood('requesting', false)).toEqual({ title: 'Thinking', orb: 'breathing' });
+		expect(workMood('idle', false).title).toBe('Thinking');
+		expect(workMood('streaming', true)).toEqual({ title: 'Thinking', orb: 'breathing' });
+		expect(workMood('streaming', false)).toEqual({ title: 'Writing', orb: 'composing' });
+		expect(workMood('tool-running', false)).toEqual({ title: 'Working', orb: 'working' });
+		expect(workMood('awaiting-approval', true)).toEqual({
+			title: 'Waiting for your approval',
+			orb: 'listening',
+		});
+		expect(workMood('compacting', false)).toEqual({
+			title: 'Compacting context',
+			orb: 'shaping',
+		});
+		// The task the latest thought settled on stays in the header while its calls run.
+		const topic = 'Checking the shell output';
+		expect(workMood('requesting', false, topic).title).toBe(topic);
+		expect(workMood('tool-running', false, topic)).toEqual({ title: topic, orb: 'working' });
+		expect(workMood('streaming', false, topic).title).toBe(topic);
+		// What the user must know of goes before it.
+		expect(workMood('awaiting-approval', false, topic).title).toBe('Waiting for your approval');
+		const agents = 'Running agents, 1 of 2 done';
+		expect(workMood('tool-running', false, topic, agents)).toEqual({
+			title: agents,
+			orb: 'connecting',
+		});
+		const whole =
+			'Streaming is not available for this provider. Waiting for the full response.';
+		expect(workMood('requesting', false, topic, whole).title).toBe(whole);
 		// A sub-agent's pane knows only the stream.
-		expect(workMood(null, false).verb).toBe('Working');
-		expect(workMood(null, true).verb).toBe('Thinking');
+		expect(workMood(null, false).title).toBe('Working');
+		expect(workMood(null, true).title).toBe('Thinking');
+		// A reasoning summary heads its parts with bold lines; the last one is the task now.
+		expect(
+			thoughtHeading(
+				'**Reading the code**\n\nI look.\n\n  **Fixing tr**  \n\nThen **not this**.',
+			),
+		).toBe('Fixing tr');
+		expect(thoughtHeading('Okay, the user wants **this** done.')).toBeNull();
 		expect([850, 1234, 9950, 34_400].map(compactCount)).toEqual(['850', '1.2k', '9.9k', '34k']);
 		expect(lastLine('first\nthe newest line\n')).toBe('the newest line');
 		expect(lastLine('one two three four five', 12)).toBe('four five');

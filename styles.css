@@ -1557,8 +1557,13 @@ body.is-mobile
 	background: var(--background-modifier-hover);
 }
 
+/* At work it says what the run is doing, which can be a thought's heading: a narrow pane cuts it
+   short, before the time and tokens, which keep their room. */
 .librarian-work-title {
-	flex: 0 0 auto;
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
@@ -1629,15 +1634,6 @@ body.is-mobile
 	white-space: nowrap;
 }
 
-.librarian-work-activity {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	color: var(--text-faint);
-	font-size: var(--font-ui-smaller);
-}
-
 .librarian-work-chevron {
 	display: inline-flex;
 	flex: 0 0 auto;
@@ -1691,6 +1687,16 @@ body.is-mobile
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
+}
+
+/* The calls of a response hang under its thought or its note, the task they serve, from a rule
+   that drops from the task's mark (LIB-FEAT-321). A step of the same response is the only one that
+   can stand right before its calls. */
+.librarian-step.is-thinking + .librarian-step.is-tools,
+.librarian-step.is-text + .librarian-step.is-tools {
+	margin-left: calc(var(--librarian-lead) / 2);
+	padding-left: calc(var(--librarian-lead) / 2 - var(--size-2-1));
+	border-left: 1px solid var(--background-modifier-border);
 }
 
 .librarian-step.is-compaction {
@@ -1847,6 +1853,12 @@ body.is-mobile
 	margin-left: var(--size-4-2);
 	color: var(--text-faint);
 	font-style: italic;
+}
+
+/* A thought with a heading shows the heading, the task it settled on, in plain words. */
+.librarian-step-button.has-heading .librarian-chip-name {
+	color: var(--text-normal);
+	font-style: normal;
 }
 
 .librarian-chip.is-live .librarian-chip-icon {
