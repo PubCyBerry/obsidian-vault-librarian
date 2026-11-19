@@ -704,3 +704,53 @@ describe('the bash tool result (LIB-TEST-267)', () => {
 		expect(order).toEqual(['one\n', 'two\n']);
 	});
 });
+
+describe('stat and listings from the vault index (issues #80, #81)', () => {
+	function counted() {
+		const s = shell();
+		s.app.vault.seed('.obsidian/plugins/big/node_modules/x.md', 'hidden');
+		const calls = { stat: 0, list: 0 };
+		const { stat, list } = s.app.vault.adapter;
+		s.app.vault.adapter.stat = (p) => {
+			calls.stat++;
+			return stat(p);
+		};
+		s.app.vault.adapter.list = (p) => {
+			calls.list++;
+			return list(p);
+		};
+		return { ...s, calls };
+	}
+
+	it('walks the vault without the adapter and leaves hidden folders out', async () => {
+		const { run, calls } = counted();
+		expect(await run("find . -name '*.md' | sort")).toBe('./notes/a.md\n./notes/b.md\n');
+		expect(await run('ls -a | sort')).toBe('.\n..\nnotes\n');
+		expect(await run('du -a notes | wc -l')).toBe('3\n');
+		expect(await run('ls -lR . | grep -c md')).toBe('2\n');
+		expect(calls).toEqual({ stat: 0, list: 0 });
+	});
+
+	it('looks inside a hidden folder that is named', async () => {
+		const { run } = counted();
+		expect(await run("find .obsidian -name '*.md'")).toBe(
+			'.obsidian/plugins/big/node_modules/x.md\n',
+		);
+		expect(await run('ls .obsidian/plugins')).toBe('big\n');
+	});
+
+	it('sees what the command itself changed, and a note by its own time', async () => {
+		const { run, app } = counted();
+		expect(
+			await run('echo new > notes/c.md; ls notes | sort; test -e notes/c.md && echo ok'),
+		).toBe('a.md\nb.md\nc.md\nok\n');
+		expect(await run('rm notes/c.md; ls notes | sort; test -e notes/c.md || echo gone')).toBe(
+			'a.md\nb.md\ngone\n',
+		);
+		// The fake vault's clock gave notes/a.md the time 1 ms: older than a file made now.
+		expect(app.vault.getFileByPath('notes/a.md')?.stat.mtime).toBe(1);
+		expect(await run('touch /tmp/now; find notes -name a.md -newer /tmp/now | wc -l')).toBe(
+			'0\n',
+		);
+	});
+});

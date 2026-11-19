@@ -162,11 +162,20 @@ export class FakeVault {
 		const prefix = key ? `${key}/` : '';
 		const children: TAbstractFile[] = [];
 		for (const sub of this.folders) {
-			if (sub !== key && sub.startsWith(prefix) && !sub.slice(prefix.length).includes('/'))
+			if (
+				sub !== key &&
+				sub.startsWith(prefix) &&
+				!sub.slice(prefix.length).includes('/') &&
+				this.indexed(sub)
+			)
 				children.push(this.makeFolder(sub));
 		}
 		for (const file of [...this.texts.keys(), ...this.binaries.keys()]) {
-			if (file.startsWith(prefix) && !file.slice(prefix.length).includes('/'))
+			if (
+				file.startsWith(prefix) &&
+				!file.slice(prefix.length).includes('/') &&
+				this.indexed(file)
+			)
 				children.push(this.makeFile(file));
 		}
 		folder.children = children;
