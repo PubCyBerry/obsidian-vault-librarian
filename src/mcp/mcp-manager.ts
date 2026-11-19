@@ -7,7 +7,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { Type } from 'typebox';
 import type { ToolGroup, ToolPermissionManager } from '../permissions/tool-permission-manager';
 import type { SecretStore } from '../storage/secret-store';
-import type { LibrarianSettings, McpServerConfig } from '../types';
+import type { LibrarianSettings, McpServerConfig, McpToolSummary } from '../types';
 import { AWAY_UNKNOWN, wasHiddenSince, whenVisible } from '../visibility';
 import { isNetworkFailure, requestUrlFetch } from './fetch-shim';
 import { type HttpModule, type Loopback, type LoopbackResult, listenForRedirect } from './loopback';
@@ -213,6 +213,45 @@ export function toolFingerprint(tool: Tool): string {
 	let hash = 5381;
 	for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
 	return (hash >>> 0).toString(16);
+}
+
+/** A description as the settings file keeps it: enough to tell what a tool does. */
+const KEPT_DESCRIPTION = 500;
+
+/** A tool as Settings lists it (issue #79), with how this plugin treats it. */
+export function toolSummary(tool: Tool, keep = Number.POSITIVE_INFINITY): McpToolSummary {
+	const title = tool.title ?? tool.annotations?.title;
+	const description = tool.description?.trim();
+	const kind =
+		tool.annotations?.destructiveHint === true
+			? 'destructive'
+			: readsOnly(tool)
+				? 'read'
+				: undefined;
+	return {
+		name: tool.name,
+		...(title && title !== tool.name ? { title } : {}),
+		...(description
+			? {
+					description:
+						description.length > keep ? `${description.slice(0, keep)}…` : description,
+				}
+			: {}),
+		...(kind ? { kind } : {}),
+	};
+}
+
+/**
+ * The tools to show for a server: what it lists now, or what it listed last while it is off,
+ * signed out or not answering. `seenAt` is null for a list that is live.
+ */
+export function shownTools(
+	server: McpServerConfig,
+	state: McpServerState,
+): { tools: McpToolSummary[]; seenAt: number | null } {
+	if (state.status === 'ready')
+		return { tools: state.tools.map((t) => toolSummary(t)), seenAt: null };
+	return { tools: server.knownTools ?? [], seenAt: server.toolsSeenAt ?? 0 };
 }
 
 /** New fingerprints for a server's tools and the exposed names whose declaration changed since last seen. */
@@ -946,6 +985,8 @@ export class McpManager {
 			this.deps.notice(`${name} changed its description on the server. It asks first again.`);
 		}
 		server.toolHashes = hashes;
+		server.knownTools = tools.map((t) => toolSummary(t, KEPT_DESCRIPTION));
+		server.toolsSeenAt = Date.now();
 		await this.deps.save();
 	}
 }

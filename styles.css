@@ -1279,6 +1279,56 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	color: var(--text-error);
 }
 
+/* The tools of an MCP server, in the modal its row opens (issue #79). */
+.librarian-mcp-tools-bar {
+	display: flex;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+}
+
+.librarian-mcp-tools-bar input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.librarian-mcp-tools {
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.librarian-mcp-tool {
+	padding: var(--size-4-2) 0;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.librarian-mcp-tool-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--size-2-3);
+}
+
+.librarian-mcp-tool-title {
+	font-weight: var(--font-semibold);
+}
+
+.librarian-mcp-tool-kind {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.librarian-mcp-tool-kind.is-destructive {
+	color: var(--text-error);
+}
+
+.librarian-mcp-tool-desc {
+	margin-top: var(--size-2-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
 /* A sign-in this desktop made for a phone or tablet, not yet taken. */
 .librarian-mcp-status.is-handoff {
 	color: var(--text-accent);

@@ -24,6 +24,15 @@ export type ToolName =
 export type McpAuthMode = 'oauth' | 'apiKey' | 'none';
 
 /** A remote MCP server reached over Streamable HTTP. Credentials live in SecretStorage. */
+/** One tool of an MCP server as Settings lists it (issue #79). */
+export interface McpToolSummary {
+	name: string;
+	title?: string;
+	description?: string;
+	/** `read` runs without asking on a new install; `destructive` can never be always allowed. */
+	kind?: 'read' | 'destructive';
+}
+
 export interface McpServerConfig {
 	/** Lowercase letters, digits and hyphens; it prefixes every tool name and secret id. */
 	id: string;
@@ -38,6 +47,10 @@ export interface McpServerConfig {
 	oauthClientId?: string;
 	/** Fingerprint of each tool declaration as last seen, keyed by exposed tool name. */
 	toolHashes: Record<string, string>;
+	/** Its tools as it last listed them, to show while it is not connected (issue #79). */
+	knownTools?: McpToolSummary[];
+	/** When it listed them, in milliseconds. */
+	toolsSeenAt?: number;
 }
 
 /** One WebDAV storage such as a NAS. The password lives in SecretStorage, never here. */

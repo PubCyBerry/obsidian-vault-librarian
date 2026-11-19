@@ -52,6 +52,7 @@ import {
 	BackupFileModal,
 	keptWhere,
 	McpServerEditorModal,
+	McpToolsModal,
 	numberInput,
 	ProviderEditorModal,
 	RUN_ROWS,
@@ -641,6 +642,12 @@ export class LibrarianSettingTab extends PluginSettingTab {
 					});
 				}
 				setting
+					.addExtraButton((b) =>
+						b
+							.setIcon('list')
+							.setTooltip('View tools')
+							.onClick(() => new McpToolsModal(this.app, this.plugin, server).open()),
+					)
 					.addExtraButton((b) =>
 						b
 							.setIcon('pencil')
