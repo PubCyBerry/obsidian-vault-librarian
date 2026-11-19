@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
 	"vcs": {
 		"enabled": true,
 		"clientKind": "git",
@@ -8,7 +8,17 @@
 	"files": {
 		// main.js is the bundle and package-lock.json is written by npm. Obsidian writes the demo
 		// vault's settings in its own format.
-		"includes": ["**", "!main.js", "!package-lock.json", "!docs/demo/Work"]
+		// Markdown and YAML stay as written: release-please writes the changelog, and GitHub reads
+		// the issue forms.
+		"includes": [
+			"**",
+			"!main.js",
+			"!package-lock.json",
+			"!docs/demo/Work",
+			"!**/*.md",
+			"!**/*.yml",
+			"!**/*.yaml"
+		]
 	},
 	"formatter": {
 		// Indentation and line endings follow .editorconfig.

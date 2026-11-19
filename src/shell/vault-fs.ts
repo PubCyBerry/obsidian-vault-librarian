@@ -9,15 +9,17 @@ export const VAULT_ROOT = '/vault';
 
 export const READ_ONLY = (path: string) => `Hidden paths are read-only: ${path}`;
 
-/** Called before the shell changes anything under the vault; throwing stops the write. */
-export interface WriteGate {
-	/**
-	 * `content` is the new text, or null when the path is being removed. `ask` only asks, for a
-	 * folder about to go with the files listed in `content`; `keep` only keeps the rewind snapshot
-	 * of a file that question covered.
-	 */
-	(path: string, content: string | null, step?: 'ask' | 'keep'): Promise<void>;
-}
+/**
+ * Called before the shell changes anything under the vault; throwing stops the write. `content`
+ * is the new text, or null when the path is being removed. `ask` only asks, for a folder about to
+ * go with the files listed in `content`; `keep` only keeps the rewind snapshot of a file that
+ * question covered.
+ */
+export type WriteGate = (
+	path: string,
+	content: string | null,
+	step?: 'ask' | 'keep',
+) => Promise<void>;
 
 /** Folders a walk through a hidden folder passes by unless they are named (issue #81). */
 const HEAVY = new Set(['node_modules', '.git']);
