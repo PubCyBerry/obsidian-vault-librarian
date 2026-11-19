@@ -4,7 +4,7 @@ import { cliHandlers } from '../src/shell/commands';
 import { CurlUsageError, parseCurl } from '../src/shell/curl';
 import { aroundOf, spread, widenRepeats } from '../src/shell/grep';
 import { createShellTool, ShellSession, terminalText } from '../src/shell/shell-tool';
-import { normalizeShellPath } from '../src/shell/vault-fs';
+import { latin1, normalizeShellPath } from '../src/shell/vault-fs';
 import { FakeApp } from './fake-app';
 import { Platform, pdfJsMock, requestUrlMock } from './obsidian-stub';
 
@@ -652,14 +652,17 @@ describe('the bash tool result (LIB-TEST-267)', () => {
 		}
 	});
 
-	it('LIB-TEST-284: rm -r takes a folder file by file, each asked and snapshotted', async () => {
+	it('LIB-TEST-284: rm -r asks once for a folder and snapshots each file', async () => {
 		const { run, app, asked, snapshots } = shell();
 		app.vault.seed('.agents/skills/tidy/SKILL.md', 'skill');
 		app.vault.seed('.agents/skills/tidy/references/style.md', 'style');
 		expect(await run('rm -r .agents/skills/tidy')).toBe('');
 		expect(asked.map((a) => a.args)).toEqual([
-			{ path: '.agents/skills/tidy/SKILL.md', removed: true },
-			{ path: '.agents/skills/tidy/references/style.md', removed: true },
+			{
+				path: '.agents/skills/tidy',
+				removed: true,
+				content: '.agents/skills/tidy/SKILL.md\n.agents/skills/tidy/references/style.md',
+			},
 		]);
 		expect(snapshots.sort()).toEqual([
 			'.agents/skills/tidy/SKILL.md',
@@ -681,6 +684,11 @@ describe('the bash tool result (LIB-TEST-267)', () => {
 		expect(await refusing.run('rm -r notes')).toMatch(/read-only: notes\/\.hidden\/x\.md/i);
 		expect(refusing.app.vault.text('notes/a.md')).toBe('alpha\nbeta');
 		expect(refusing.asked).toEqual([]);
+		// The folder's one question refused: nothing inside goes.
+		const kept = shell({ refuse: (a) => (a.args.path === 'notes' ? 'rejected' : null) });
+		expect(await kept.run('rm -r notes')).toMatch(/rejected/);
+		expect(kept.app.vault.text('notes/a.md')).toBe('alpha\nbeta');
+		expect(kept.snapshots).toEqual([]);
 		// A refused approval leaves that note; -f swallows the error, so the result says it.
 		expect(await refusing.run('rm -f notes/b.md')).toBe('bash: not changed: rejected\n');
 		expect(refusing.app.vault.text('notes/b.md')).toBe('gamma');
@@ -733,10 +741,17 @@ describe('stat and listings from the vault index (issues #80, #81)', () => {
 
 	it('looks inside a hidden folder that is named', async () => {
 		const { run } = counted();
-		expect(await run("find .obsidian -name '*.md'")).toBe(
+		expect(await run('ls .obsidian/plugins')).toBe('big\n');
+		// node_modules inside it is passed by until it is named too.
+		expect(await run("find .obsidian -name '*.md'")).toBe('');
+		expect(await run('grep -rl hidden .obsidian/plugins/big/node_modules')).toBe(
 			'.obsidian/plugins/big/node_modules/x.md\n',
 		);
-		expect(await run('ls .obsidian/plugins')).toBe('big\n');
+	});
+
+	it('turns bytes into one character each, also 0x80 to 0x9f', () => {
+		const text = latin1(Uint8Array.from({ length: 256 }, (_, i) => i));
+		expect([...text].map((c) => c.charCodeAt(0))).toEqual([...Array(256).keys()]);
 	});
 
 	it('sees what the command itself changed, and a note by its own time', async () => {
