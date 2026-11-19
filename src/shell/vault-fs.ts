@@ -1,6 +1,8 @@
 import type { FsStat, IFileSystem } from 'just-bash/browser';
-import type { App } from 'obsidian';
+import { type App, type TAbstractFile, TFile, TFolder } from 'obsidian';
 import { isReadOnlyPath } from '../tools/path-policy';
+
+type DirentEntry = Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>[number];
 
 /** Where the vault sits in the shell. Everything else is scratch space in memory. */
 export const VAULT_ROOT = '/vault';
@@ -83,6 +85,12 @@ export class VaultFs implements IFileSystem {
 	 * error, as `rm -f` does, and the model must still learn that nothing changed.
 	 */
 	refusals: string[] = [];
+	/**
+	 * The command now running changed the vault. The index hears of a change only later, so from
+	 * then on the command's stat and listings go by the adapter.
+	 * shortcut: one flag for the whole vault, track the changed paths if writing commands get slow.
+	 */
+	private dirty = false;
 
 	constructor(
 		private readonly app: App,
@@ -97,6 +105,17 @@ export class VaultFs implements IFileSystem {
 	beginCommand(): void {
 		this.approved = new Set();
 		this.refusals = [];
+		this.dirty = false;
+	}
+
+	/**
+	 * What Obsidian's index in memory holds at a vault path (issues #80, #81): asking the adapter
+	 * for every entry made find, du and ls -R as slow as the disk or the cloud drive under the
+	 * vault. Null for a path the index lacks, as it lacks hidden ones, which goes by the adapter.
+	 */
+	private indexed(rel: string): TAbstractFile | null {
+		if (this.dirty) return null;
+		return rel === '' ? this.app.vault.getRoot() : this.app.vault.getAbstractFileByPath(rel);
 	}
 
 	private refuse(message: string): Error {
@@ -121,6 +140,7 @@ export class VaultFs implements IFileSystem {
 			await write();
 			return;
 		}
+		this.dirty = true;
 		if (isReadOnlyPath(rel, this.app.vault.configDir)) throw this.refuse(READ_ONLY(rel));
 		if (this.approved.has(rel)) {
 			await write();
@@ -174,7 +194,7 @@ export class VaultFs implements IFileSystem {
 			const full = normalizeShellPath(path);
 			return this.mem.has(full) || this.dirs.has(full);
 		}
-		return rel === '' ? true : await this.app.vault.adapter.exists(rel);
+		return this.indexed(rel) !== null || (await this.app.vault.adapter.exists(rel));
 	}
 
 	async stat(path: string): Promise<FsStat> {
@@ -186,10 +206,12 @@ export class VaultFs implements IFileSystem {
 			if (bytes === undefined) throw enoent(path);
 			return statOf(false, bytes.length);
 		}
-		if (rel === '') return statOf(true, 0);
+		const known = this.indexed(rel);
+		if (known instanceof TFile) return statOf(false, known.stat.size, known.stat.mtime);
+		if (known || rel === '') return statOf(true, 0);
 		const stat = await this.app.vault.adapter.stat(rel);
 		if (!stat) throw enoent(path);
-		return statOf(stat.type === 'folder', stat.size ?? 0);
+		return statOf(stat.type === 'folder', stat.size ?? 0, stat.mtime);
 	}
 
 	lstat(path: string): Promise<FsStat> {
@@ -197,21 +219,46 @@ export class VaultFs implements IFileSystem {
 	}
 
 	async readdir(path: string): Promise<string[]> {
+		return (await this.readdirWithFileTypes(path)).map((entry) => entry.name);
+	}
+
+	/**
+	 * A folder's entries with their kinds, so find and ls need no stat for each. A folder in the
+	 * index lists what the index holds: hidden entries such as .obsidian are left out, and a
+	 * search from the vault root no longer walks through them. A hidden folder named outright is
+	 * listed by the adapter.
+	 */
+	async readdirWithFileTypes(path: string): Promise<DirentEntry[]> {
+		const entry = (name: string, isDirectory: boolean): DirentEntry => ({
+			name,
+			isFile: !isDirectory,
+			isDirectory,
+			isSymbolicLink: false,
+		});
 		const rel = this.rel(path);
 		if (rel === null) {
 			const full = normalizeShellPath(path);
 			const prefix = full === '/' ? '' : full;
-			const names = new Set<string>();
+			const kinds = new Map<string, boolean>();
 			for (const key of [...this.mem.keys(), ...this.dirs]) {
 				if (!key.startsWith(`${prefix}/`)) continue;
-				const name = key.slice(prefix.length + 1).split('/')[0];
-				if (name) names.add(name);
+				const rest = key.slice(prefix.length + 1);
+				const name = rest.split('/')[0];
+				if (!name) continue;
+				const isDirectory = rest !== name || this.dirs.has(key);
+				kinds.set(name, kinds.get(name) === true || isDirectory);
 			}
-			return [...names];
+			return [...kinds].map(([name, isDirectory]) => entry(name, isDirectory));
 		}
+		const known = this.indexed(rel);
+		if (known instanceof TFolder)
+			return known.children.map((child) => entry(child.name, child instanceof TFolder));
 		const listed = await this.app.vault.adapter.list(rel);
 		const name = (p: string) => p.split('/').pop() ?? p;
-		return [...listed.folders.map(name), ...listed.files.map(name)];
+		return [
+			...listed.folders.map((f) => entry(name(f), true)),
+			...listed.files.map((f) => entry(name(f), false)),
+		];
 	}
 
 	// Writing
@@ -338,13 +385,13 @@ export class VaultFs implements IFileSystem {
 	}
 }
 
-function statOf(isDirectory: boolean, size: number): FsStat {
+function statOf(isDirectory: boolean, size: number, mtime?: number): FsStat {
 	return {
 		isFile: !isDirectory,
 		isDirectory,
 		isSymbolicLink: false,
 		mode: isDirectory ? 0o40755 : 0o100644,
 		size,
-		mtime: new Date(),
+		mtime: mtime ? new Date(mtime) : new Date(),
 	};
 }

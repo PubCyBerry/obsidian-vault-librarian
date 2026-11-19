@@ -37,7 +37,7 @@ export interface ShellDeps {
 
 const DESCRIPTION = `Run a shell command. This is a POSIX shell inside Obsidian, not your operating system: there is no git, node, python, uv, npx or network except through the commands below, and nothing outside this vault is visible.
 
-The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls. The read tool opens /tmp files too, pictures and PDFs included. An output too long for one result comes back as its start and its end, with the whole of it saved under /tmp.
+The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. Listings and searches from a folder leave out hidden entries such as .obsidian and .agents; name a hidden folder to look inside it, as in \`ls .agents/skills\`. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls. The read tool opens /tmp files too, pictures and PDFs included. An output too long for one result comes back as its start and its end, with the whole of it saved under /tmp.
 
 grep has no lookahead, lookbehind or backreferences. For the text around a match in a page that is one long line, use grep -o '.{0,300}needle.{0,300}' with -E, or grep -ob for byte offsets.
 
@@ -170,7 +170,7 @@ export class ShellSession {
 		const unsaid = this.filesystem().refusals.filter((r) => !said.includes(r));
 		const output = said + unsaid.map((r) => `bash: not changed: ${r}\n`).join('');
 		const head = result.exitCode === 0 ? '' : `Exit code: ${result.exitCode}\n`;
-		return head + (await this.fit(bash, output));
+		return head + (await this.fit(output));
 	}
 
 	/**
@@ -178,12 +178,12 @@ export class ShellSession {
 	 * start and an error at the end, and which one was wanted is not known here (LIB-FEAT-302).
 	 * The whole of it is parked in /tmp.
 	 */
-	private async fit(bash: Bash, output: string): Promise<string> {
+	private async fit(output: string): Promise<string> {
 		const limit = Math.max(1000, this.deps.resultLimit() - 300);
 		if (output.length <= limit) return output;
 		const path = `/tmp/bash-${++this.saved}.out`;
 		try {
-			await bash.exec(`cat > ${path}`, { stdin: output });
+			await this.filesystem().writeFile(path, output);
 		} catch {
 			// Saving is a convenience; a failure here must not lose the parts we can still show.
 		}
