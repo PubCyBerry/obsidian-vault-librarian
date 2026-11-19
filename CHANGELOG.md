@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.23.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.22.0...2.23.0) (2026-11-19)
+
+
+### Features
+
+* list the tools of an MCP server in Settings ([#84](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/84)) ([71fce1f](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/71fce1f30ef1e0656756be59ce6f724c89352abc))
+* name a new session after its first message with the session's model ([f532b57](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f532b57bf1f6f56bfb4211beabd367a843185535))
+* set and see the model, thinking level, temperature and turn limit of sub-agents ([f532b57](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f532b57bf1f6f56bfb4211beabd367a843185535))
+* show the task a run is on in its header, and its calls under the thought they serve ([#78](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/78)) ([f532b57](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f532b57bf1f6f56bfb4211beabd367a843185535))
+
+
+### Bug Fixes
+
+* answer the shell's stat and listings from the vault index ([#83](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/83)) ([e5086ff](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/e5086ffaec85b661afbec322033612e194b68fe5))
+* end a sub-agent that loops or runs long with what it found, and let the user stop one ([f532b57](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f532b57bf1f6f56bfb4211beabd367a843185535))
+* show names in a binary file's bash output as a terminal does, and split at NUL with tr ([f532b57](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/f532b57bf1f6f56bfb4211beabd367a843185535))
+
 ## [2.22.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.21.0...2.22.0) (2026-11-16)
 
 
