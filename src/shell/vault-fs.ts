@@ -11,9 +11,16 @@ export const READ_ONLY = (path: string) => `Hidden paths are read-only: ${path}`
 
 /** Called before the shell changes anything under the vault; throwing stops the write. */
 export interface WriteGate {
-	/** `content` is the new text, or null when the path is being removed. */
-	(path: string, content: string | null): Promise<void>;
+	/**
+	 * `content` is the new text, or null when the path is being removed. `ask` only asks, for a
+	 * folder about to go with the files listed in `content`; `keep` only keeps the rewind snapshot
+	 * of a file that question covered.
+	 */
+	(path: string, content: string | null, step?: 'ask' | 'keep'): Promise<void>;
 }
+
+/** Folders a walk through a hidden folder passes by unless they are named (issue #81). */
+const HEAVY = new Set(['node_modules', '.git']);
 
 /** POSIX-style resolution: no `.`, no `..`, always absolute. */
 export function normalizeShellPath(path: string): string {
@@ -54,10 +61,8 @@ export function toBytes(content: unknown, options?: unknown): Uint8Array {
 
 /** One character per byte. TextDecoder's `latin1` is windows-1252, which remaps 0x80 to 0x9f. */
 export function latin1(bytes: Uint8Array): string {
-	let out = '';
-	for (let i = 0; i < bytes.length; i += 0x8000)
-		out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-	return out;
+	// Each byte widened to one UTF-16 unit: 10 MB takes 10 ms, where String.fromCharCode took 500.
+	return new TextDecoder('utf-16le').decode(new Uint16Array(bytes));
 }
 
 /** The text a UTF-8 file holds, or null when the bytes are not UTF-8, as in an image. */
@@ -80,6 +85,8 @@ export class VaultFs implements IFileSystem {
 	private readonly dirs = new Set<string>(['/', '/tmp', VAULT_ROOT]);
 	/** Vault paths already approved during the command now running. */
 	private approved = new Set<string>();
+	/** Files a folder's one question covered: they go without a card of their own. */
+	private covered = new Set<string>();
 	/**
 	 * Why changes the command now running asked for did not happen. A command may swallow the
 	 * error, as `rm -f` does, and the model must still learn that nothing changed.
@@ -104,6 +111,7 @@ export class VaultFs implements IFileSystem {
 	 */
 	beginCommand(): void {
 		this.approved = new Set();
+		this.covered = new Set();
 		this.refusals = [];
 		this.dirty = false;
 	}
@@ -147,7 +155,7 @@ export class VaultFs implements IFileSystem {
 			return;
 		}
 		try {
-			await this.gate(rel, content);
+			await this.gate(rel, content, this.covered.has(rel) ? 'keep' : undefined);
 		} catch (error) {
 			throw this.refuse(error instanceof Error ? error.message : String(error));
 		}
@@ -226,7 +234,8 @@ export class VaultFs implements IFileSystem {
 	 * A folder's entries with their kinds, so find and ls need no stat for each. A folder in the
 	 * index lists what the index holds: hidden entries such as .obsidian are left out, and a
 	 * search from the vault root no longer walks through them. A hidden folder named outright is
-	 * listed by the adapter.
+	 * listed by the adapter, without the node_modules and .git inside it: a plugin's folder may
+	 * hold tens of thousands of files there, and grep -r read them all.
 	 */
 	async readdirWithFileTypes(path: string): Promise<DirentEntry[]> {
 		const entry = (name: string, isDirectory: boolean): DirentEntry => ({
@@ -256,7 +265,7 @@ export class VaultFs implements IFileSystem {
 		const listed = await this.app.vault.adapter.list(rel);
 		const name = (p: string) => p.split('/').pop() ?? p;
 		return [
-			...listed.folders.map((f) => entry(name(f), true)),
+			...listed.folders.filter((f) => !HEAVY.has(name(f))).map((f) => entry(name(f), true)),
 			...listed.files.map((f) => entry(name(f), false)),
 		];
 	}
@@ -322,8 +331,8 @@ export class VaultFs implements IFileSystem {
 
 	/**
 	 * `rm -r` and `rmdir`. The adapter cannot remove a folder the way it removes a file, so each file
-	 * goes first, asking and keeping its rewind snapshot as a removed note does; the emptied
-	 * folders follow without a question of their own.
+	 * goes first, keeping its rewind snapshot as a removed note does; the emptied folders follow.
+	 * A folder of several files asks once, with the files listed (issue #81), not once a file.
 	 */
 	private async rmFolder(full: string, rel: string | null, recursive: boolean): Promise<void> {
 		const files = await this.filesIn(full);
@@ -335,6 +344,15 @@ export class VaultFs implements IFileSystem {
 			(r) => r && isReadOnlyPath(r, configDir),
 		);
 		if (locked) throw this.refuse(READ_ONLY(locked));
+		if (rel !== null && files.length > 1) {
+			const inside = files.map((f) => this.rel(f) ?? f);
+			try {
+				await this.gate(rel, inside.join('\n'), 'ask');
+			} catch (error) {
+				throw this.refuse(error instanceof Error ? error.message : String(error));
+			}
+			for (const file of inside) this.covered.add(file);
+		}
 		for (const file of files) await this.rm(file);
 		if (rel === null) {
 			for (const dir of [...this.dirs])

@@ -288,6 +288,17 @@ export function renderChangePreview(
 	if (name === 'write') {
 		const path = str(args.path);
 		const content = str(args.content);
+		if (args.removed === true) {
+			el.createDiv({ cls: 'librarian-change-title', text: `Remove ${path}` });
+			// A folder: the files that go with it.
+			if (content) {
+				const files = el.createEl('details', { cls: 'librarian-change-body' });
+				files.open = true;
+				files.createEl('summary', { text: `${content.split('\n').length} files` });
+				files.createEl('pre', { text: content });
+			}
+			return;
+		}
 		if (existingLength !== undefined || args.overwrite === true) {
 			const warn = el.createDiv({ cls: 'librarian-change-warning' });
 			setIcon(warn.createSpan(), 'alert-triangle');
