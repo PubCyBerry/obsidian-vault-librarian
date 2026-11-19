@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.23.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.0...2.23.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* ask once for rm -r, pass by node_modules in a hidden folder, and turn bytes to text fast ([#85](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/85)) ([ae80331](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/ae803315c4cd378f62752b3d1af1504d80ab371a))
+* **deps:** update Pi to 1.5.2, the MCP SDK to 1.32.2 and the build tools ([#87](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/87)) ([57579cb](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/57579cbd45c5dfb42919b7f9dc12a525236c1e62))
+
 ## [2.23.0](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.22.0...2.23.0) (2026-11-19)
 
 
