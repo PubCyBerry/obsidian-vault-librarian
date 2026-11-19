@@ -14,7 +14,7 @@ import {
 	runSettingsOf,
 } from '../agent/agent-definitions';
 import type LibrarianPlugin from '../main';
-import { apiKeySecretId } from '../mcp/mcp-manager';
+import { apiKeySecretId, shownTools } from '../mcp/mcp-manager';
 import { clientSecretId } from '../mcp/oauth-provider';
 import { describeServerModel } from '../provider/model-catalog';
 import { type ServerModel, testConnection } from '../provider/transport';
@@ -1004,6 +1004,97 @@ export class ProviderEditorModal extends Modal {
 						}),
 				);
 		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+// MCP server tools (issue #79)
+
+const TOOL_KINDS = { read: 'Reads only', destructive: 'Destructive' } as const;
+
+/**
+ * What an MCP server offers: each tool's name, what it does and how this plugin treats it. A
+ * server that is off, signed out or not answering shows the list it gave last.
+ */
+export class McpToolsModal extends Modal {
+	private filter = '';
+	private listEl!: HTMLElement;
+	private noteEl!: HTMLElement;
+
+	constructor(
+		app: App,
+		private readonly plugin: LibrarianPlugin,
+		private readonly server: McpServerConfig,
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.modalEl.addClass('librarian-modal');
+		this.titleEl.setText(`Tools of ${this.server.name}`);
+		this.noteEl = this.contentEl.createEl('p', { cls: 'librarian-modal-note' });
+		const bar = this.contentEl.createDiv({ cls: 'librarian-mcp-tools-bar' });
+		const search = bar.createEl('input', {
+			type: 'search',
+			placeholder: 'Filter tools',
+			attr: { 'aria-label': 'Filter tools' },
+		});
+		search.addEventListener('input', () => {
+			this.filter = search.value.trim().toLowerCase();
+			this.draw();
+		});
+		const refresh = bar.createEl('button', { text: 'Refresh' });
+		refresh.addEventListener(
+			'click',
+			() =>
+				void (async () => {
+					refresh.disabled = true;
+					// Asks the server again; a failure shows as its state, over the list it gave last.
+					await this.plugin.mcp.connect(this.server.id).catch(() => undefined);
+					refresh.disabled = false;
+					this.draw();
+				})(),
+		);
+		refresh.disabled = !this.server.enabled;
+		this.listEl = this.contentEl.createDiv({ cls: 'librarian-mcp-tools' });
+		this.draw();
+	}
+
+	private draw() {
+		const state = this.plugin.mcp.state(this.server.id);
+		const { tools, seenAt } = shownTools(this.server, state);
+		const count = `${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}`;
+		this.noteEl.setText(
+			seenAt === null
+				? `${count}, as the server lists them now.`
+				: tools.length
+					? `${count}, last seen ${new Date(seenAt).toLocaleString()}. The server is not connected now.`
+					: 'The server has not listed its tools yet. They show here once it connects.',
+		);
+		this.listEl.empty();
+		const shown = tools.filter((t) =>
+			`${t.name}\n${t.title ?? ''}\n${t.description ?? ''}`
+				.toLowerCase()
+				.includes(this.filter),
+		);
+		if (tools.length && !shown.length)
+			this.listEl.createDiv({ cls: 'librarian-modal-note', text: 'No tool matches.' });
+		for (const tool of shown) {
+			const row = this.listEl.createDiv({ cls: 'librarian-mcp-tool' });
+			const head = row.createDiv({ cls: 'librarian-mcp-tool-head' });
+			if (tool.title) head.createSpan({ cls: 'librarian-mcp-tool-title', text: tool.title });
+			head.createEl('code', { text: tool.name });
+			if (tool.kind)
+				head.createSpan({
+					cls: `librarian-mcp-tool-kind is-${tool.kind}`,
+					text: TOOL_KINDS[tool.kind],
+				});
+			if (tool.description)
+				row.createDiv({ cls: 'librarian-mcp-tool-desc', text: tool.description });
+		}
 	}
 
 	onClose() {

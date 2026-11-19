@@ -10,6 +10,8 @@ import {
 	McpManager,
 	readsOnly,
 	repeatable,
+	shownTools,
+	toolSummary,
 	untrustedPrefix,
 } from '../src/mcp/mcp-manager';
 import {
@@ -48,6 +50,64 @@ describe('MCP tool fingerprints (LIB-TEST-108)', () => {
 		expect(untrustedPrefix('Outline')).toContain('Untrusted content from MCP server "Outline"');
 		expect(serverIdFromState('outline.0123abcd')).toBe('outline');
 		expect(serverIdFromState(undefined)).toBeNull();
+	});
+});
+
+describe('the tools an MCP server offers, for Settings (issue #79)', () => {
+	const remove: Tool = {
+		name: 'delete_document',
+		title: 'Delete a document',
+		description: 'x'.repeat(600),
+		inputSchema: { type: 'object' },
+		annotations: { destructiveHint: true },
+	};
+
+	it('says what a tool does and how it is treated', () => {
+		expect(toolSummary(search)).toEqual({
+			name: 'search_documents',
+			description: 'Search documents',
+			kind: 'read',
+		});
+		const kept = toolSummary(remove, 500);
+		expect(kept).toMatchObject({ title: 'Delete a document', kind: 'destructive' });
+		expect(kept.description).toHaveLength(501);
+		expect(toolSummary({ name: 'create_document', inputSchema: { type: 'object' } })).toEqual({
+			name: 'create_document',
+		});
+	});
+
+	it('keeps the list a server gave and shows it while the server is not connected', async () => {
+		const settings = mergeSettings({
+			mcpServers: [{ id: 'outline', name: 'Outline', url: 'https://o.example/mcp' }],
+		});
+		const server = settings.mcpServers[0]!;
+		let saves = 0;
+		const manager = new McpManager({
+			settings: () => settings,
+			save: async () => {
+				saves++;
+			},
+			secrets: {} as SecretStore,
+			permissions: new ToolPermissionManager(
+				() => settings,
+				async () => undefined,
+			),
+			clientVersion: 'test',
+			open: () => {},
+			notice: () => {},
+		});
+		expect(shownTools(server, manager.state('outline'))).toEqual({ tools: [], seenAt: 0 });
+		await (
+			manager as unknown as { guardChangedTools(s: unknown, t: Tool[]): Promise<void> }
+		).guardChangedTools(server, [search, remove]);
+		expect(saves).toBe(1);
+		const offline = shownTools(server, { status: 'error', tools: [] });
+		expect(offline.tools.map((t) => t.name)).toEqual(['search_documents', 'delete_document']);
+		expect(offline.seenAt).toBeGreaterThan(0);
+		// Connected, the list is the live one, whole.
+		const live = shownTools(server, { status: 'ready', tools: [remove] });
+		expect(live.seenAt).toBeNull();
+		expect(live.tools[0]?.description).toHaveLength(600);
 	});
 });
 
