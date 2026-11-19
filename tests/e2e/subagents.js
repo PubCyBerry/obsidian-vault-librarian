@@ -109,7 +109,10 @@
 			const c = plugin().controller;
 			const heads = new Set();
 			const watch = setInterval(() => {
-				const text = $('.librarian-work-activity', chat())?.textContent;
+				const text = $(
+					'.librarian-work.is-running .librarian-work-title',
+					chat(),
+				)?.textContent;
 				if (text) heads.add(text);
 			}, 200);
 			await ask(

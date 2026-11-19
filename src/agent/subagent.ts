@@ -48,6 +48,11 @@ export interface SubagentState {
 	toolStatus: Map<string, ToolCardStatus>;
 	/** Its session file, once made; also its agent_id for `resume`. */
 	sessionId: string | null;
+	/**
+	 * The user's Stop for this agent alone (issue #77): one at work ends its request and answers
+	 * with what it has; one waiting for a place does not start. Absent once it has ended.
+	 */
+	stop?: () => void;
 }
 
 const USE = `Start a sub-agent: another Librarian with a fresh context, which works on one self-contained task with its own tools. What it reads stays out of your context; only its final answer comes back.
@@ -93,7 +98,7 @@ export function answerOf(message: string): string {
 	return /^<agent_result[^>]*>\n([\s\S]*)\n<\/agent_result>$/.exec(message)?.[1] ?? message;
 }
 
-const DEFINITIONS = `Agents are Markdown files under .agents/agents/ in the vault: YAML frontmatter with name and description, and optionally tools and disallowedTools (lists of tool names; a trailing * matches a prefix), model (the ID of a model in Settings, or provider/model; leave it out to use your model), effort, maxTurns, permissionMode (default, plan for read-only, or dontAsk to refuse calls that need approval), skills (preloaded) and color; then the agent's instructions, which replace the Custom system prompt. Read, write and edit them like notes, and delete one with bash rm; changes to them always ask the user.`;
+const DEFINITIONS = `Agents are Markdown files under .agents/agents/ in the vault: YAML frontmatter with name and description, and optionally tools and disallowedTools (lists of tool names; a trailing * matches a prefix), model (the ID of a model in Settings, or provider/model; leave it out to use your model), effort, temperature (0 to 2), maxTurns, permissionMode (default, plan for read-only, or dontAsk to refuse calls that need approval), skills (preloaded) and color; then the agent's instructions, which replace the Custom system prompt. Settings can set the model, effort, temperature and maxTurns of any agent over its file. Read, write and edit them like notes, and delete one with bash rm; changes to them always ask the user.`;
 
 /** The agents it can start, each by name and what it is for, cut short to keep the list small. */
 function catalog(agents: readonly AgentDefinition[]): string {

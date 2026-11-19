@@ -169,7 +169,6 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		};
 		this.main = new ConversationPane(messagesEl, deps, {
 			rewind: (index) => this.confirmRewind(index),
-			activity: true,
 		});
 		this.registerDomEvent(document, 'pointerdown', (e) => {
 			if (!this.popover.contains(e.target)) this.popover.close();
@@ -473,6 +472,10 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			case 'usage':
 				this.composer.renderUsage(event.usage);
 				break;
+			// The head hears of it from the hub; a Recent row only from the list drawn again.
+			case 'title':
+				if (this.historyMode) void this.renderSessions();
+				break;
 			case 'notice':
 				this.showNotice(event.message);
 				break;
@@ -592,15 +595,17 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		const nonStreaming = provider
 			? this.plugin.transport.effectiveMode(provider) === 'requestUrl'
 			: false;
-		// Sub-agents at work: how far they are, which the rows under it tell one by one. Waiting
-		// for the model needs no words of its own: the header's word says Thinking.
+		// The header says how far sub-agents at work are, which the rows under it tell one by one,
+		// and that a response comes whole; the rest it reads from the state and the thoughts.
 		const agents = [...this.runtime.agents.values()];
-		const activity = activityText(state, agents, nonStreaming ? NO_STREAMING_NOTICE : '');
-		this.main.setActivity(
-			activity,
-			state,
-			agents.some((a) => a.status === 'waiting' || a.status === 'running'),
-		);
+		const busy = agents.some((a) => a.status === 'waiting' || a.status === 'running');
+		const said =
+			state === 'tool-running' && busy
+				? activityText(state, agents)
+				: state === 'requesting' && nonStreaming
+					? NO_STREAMING_NOTICE
+					: '';
+		this.main.setActivity(said, state);
 		const standalone = state === 'compacting' && !this.runtime.isRunning;
 		if (standalone && !this.compactLineEl) {
 			this.compactLineEl = this.main.el.createDiv({ cls: 'librarian-work is-running' });
@@ -739,6 +744,17 @@ export class LibrarianView extends ItemView implements SessionViewer {
 		heading.createSpan({ cls: 'librarian-agent-heading-title' });
 		heading.createSpan({ cls: 'librarian-agent-type' });
 		this.agentHeadEl.createSpan({ cls: 'librarian-agent-state' });
+		// This agent alone: it answers with what it has, and the main agent goes on (issue #77).
+		const stop = this.agentHeadEl.createEl('button', {
+			cls: 'clickable-icon librarian-agent-stop is-hidden',
+			attr: { 'aria-label': 'Stop this agent' },
+		});
+		setIcon(stop, 'square');
+		stop.addEventListener('click', () => {
+			const run = this.agentCall ? this.runtime.agents.get(this.agentCall) : undefined;
+			run?.stop?.();
+			stop.addClass('is-hidden');
+		});
 		const body = this.agentEl.createDiv({ cls: 'librarian-messages librarian-agent-body' });
 		this.agentPane = new ConversationPane(body, deps, { asker: 'Main agent' });
 	}
@@ -861,6 +877,10 @@ export class LibrarianView extends ItemView implements SessionViewer {
 			state.setText(AGENT_STATUS_LABELS[data.status]);
 		}
 		const running = live ? live.status === 'waiting' || live.status === 'running' : false;
+		head.querySelector('.librarian-agent-stop')?.toggleClass(
+			'is-hidden',
+			!(running && live?.stop),
+		);
 		const events = live ? live.events : (this.agentStored?.events ?? []);
 		const status = (id: string) => live?.toolStatus.get(id);
 		// Drawn again only when its log, its state or a call's state moved. The response on its way

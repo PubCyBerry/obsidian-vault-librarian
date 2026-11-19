@@ -190,3 +190,27 @@ export function createPdfToText(): Command {
 		}
 	});
 }
+
+// tr
+
+/**
+ * A SET with its octal escapes, such as `\0` or `\012`, made the characters they name. The
+ * bundled tr reads `\0` as the digit 0, so `tr '\0' '\n'` broke lines at every zero. Each one is
+ * passed escaped, which the bundled tr reads as that character whatever it is; `\\` stays.
+ */
+export function octalSet(set: string): string {
+	return set.replace(/\\(\\|[0-7]{1,3})/g, (whole, code: string) => {
+		if (code === '\\') return whole;
+		const char = String.fromCharCode(Number.parseInt(code, 8) & 0xff);
+		// Escaped n, t and r would be read as a line break, a tab and a return.
+		return 'ntr'.includes(char) ? char : `\\${char}`;
+	});
+}
+
+export function createTr(): Command {
+	return defineCommand('tr', async (argv, ctx): Promise<ExecResult> => {
+		const orig = ctx.origCommand;
+		if (!orig) return { stdout: '', stderr: 'tr: not available\n', exitCode: 127 };
+		return await orig(argv.map((arg) => (arg.startsWith('-') ? arg : octalSet(arg))));
+	});
+}

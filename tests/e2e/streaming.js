@@ -320,7 +320,10 @@
 					subtitleFading: pop
 						? $$('.librarian-step-pop-subtitle .librarian-reveal', pop).length
 						: 0,
-					activityFading: $$('.librarian-work-activity .librarian-reveal', chat()).length,
+					activityFading: $$(
+						'.librarian-work.is-running .librarian-work-title .librarian-reveal',
+						chat(),
+					).length,
 					open: !!open,
 					status: open
 						? ([...open.classList].find(

@@ -1,6 +1,7 @@
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, TranscriptContext } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import { TITLE_PROMPT } from '../src/agent/session-title';
 
 export interface ScriptedTurn {
 	text?: string;
@@ -12,15 +13,33 @@ export interface ScriptedTurn {
 	hold?: Promise<void>;
 }
 
-/** A `StreamFn` that plays back scripted assistant turns and records every request context. */
-export function scriptedStream(turns: ScriptedTurn[]) {
+/** The request that names a session (LIB-FEAT-325), which takes no turn of a script. */
+export function isTitleRequest(context: TranscriptContext): boolean {
+	return context.messages.some(
+		(m) => m.role === 'system' && JSON.stringify(m.content).includes(TITLE_PROMPT.slice(0, 40)),
+	);
+}
+
+/**
+ * A `StreamFn` that plays back scripted assistant turns and records every request context. The
+ * request that names a session is answered aside with `title`, by default none, so a session
+ * keeps the start of its first message as its name; it lands in `titleRequests`.
+ */
+export function scriptedStream(turns: ScriptedTurn[], title = '') {
 	const requests: TranscriptContext[] = [];
+	const titleRequests: TranscriptContext[] = [];
 	const sentOptions: Parameters<StreamFn>[2][] = [];
 	let counter = 0;
 	const streamFn: StreamFn = (model, context, options) => {
-		requests.push(context);
-		sentOptions.push(options);
-		const turn = turns.shift() ?? { text: '(no more scripted turns)' };
+		const naming = isTitleRequest(context);
+		if (naming) titleRequests.push(context);
+		else {
+			requests.push(context);
+			sentOptions.push(options);
+		}
+		const turn = naming
+			? { text: title }
+			: (turns.shift() ?? { text: '(no more scripted turns)' });
 		const stream = createAssistantMessageEventStream();
 		const message: AssistantMessage = {
 			role: 'assistant',
@@ -89,5 +108,5 @@ export function scriptedStream(turns: ScriptedTurn[]) {
 		}
 		return stream;
 	};
-	return { streamFn, requests, sentOptions };
+	return { streamFn, requests, titleRequests, sentOptions };
 }

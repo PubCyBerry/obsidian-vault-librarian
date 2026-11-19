@@ -7,6 +7,12 @@ import {
 	Setting,
 	type TFile,
 } from 'obsidian';
+import {
+	type AgentDefinition,
+	describeRun,
+	type RunSource,
+	runSettingsOf,
+} from '../agent/agent-definitions';
 import type LibrarianPlugin from '../main';
 import { apiKeySecretId } from '../mcp/mcp-manager';
 import { clientSecretId } from '../mcp/oauth-provider';
@@ -21,6 +27,7 @@ import {
 } from '../skills/skill-manager';
 import { isValidSecretId, type SecretStore } from '../storage/secret-store';
 import {
+	type AgentRunSettings,
 	COMPLETIONS_API,
 	MCP_SERVER_ID_PATTERN,
 	type McpServerConfig,
@@ -1001,5 +1008,142 @@ export class ProviderEditorModal extends Modal {
 
 	onClose() {
 		this.contentEl.empty();
+	}
+}
+
+// Sub-agent run settings (LIB-FEAT-329)
+
+/** Rows for the four values a sub-agent runs with, in this order. */
+export const RUN_ROWS: { key: keyof AgentRunSettings; name: string; desc: string }[] = [
+	{
+		key: 'model',
+		name: 'Model',
+		desc: 'The model it runs on. A model that Settings lacks gives way to the model of the main agent.',
+	},
+	{
+		key: 'effort',
+		name: 'Thinking level',
+		desc: 'How hard it thinks. A level the model does not take moves to the nearest one it does.',
+	},
+	{ key: 'temperature', name: 'Temperature', desc: 'From 0 to 2.' },
+	{
+		key: 'maxTurns',
+		name: 'Max turns',
+		desc: 'Turns with tool calls before it stops and answers with what it has. 0 means no limit.',
+	},
+];
+
+/**
+ * One run value's control: a list for the model and the thinking level, a number for the rest.
+ * `fallback` names what an empty choice means. A value the list lacks, as a file may name a model
+ * by its name alone, stays a choice of its own.
+ */
+export function runControl(
+	setting: Setting,
+	key: keyof AgentRunSettings,
+	value: AgentRunSettings[keyof AgentRunSettings],
+	fallback: string,
+	models: readonly { value: string; label: string }[],
+	onChange: (v: AgentRunSettings[keyof AgentRunSettings]) => unknown,
+): void {
+	if (key === 'model' || key === 'effort') {
+		const options =
+			key === 'model' ? models : THINKING_LEVELS.map((l) => ({ value: l, label: l }));
+		setting.addDropdown((d) => {
+			d.addOption('', fallback);
+			for (const o of options) d.addOption(o.value, o.label);
+			if (value && !options.some((o) => o.value === value))
+				d.addOption(String(value), String(value));
+			d.setValue(value ? String(value) : '');
+			d.onChange((v) => onChange(v || undefined));
+		});
+		return;
+	}
+	numberInput(
+		setting,
+		value as number | undefined,
+		(v) =>
+			onChange(
+				v === undefined
+					? undefined
+					: key === 'temperature'
+						? Math.min(2, Math.max(0, v))
+						: Math.max(0, Math.floor(v)),
+			),
+		fallback,
+	);
+}
+
+/** Every model that can call tools, as `provider/model` with its provider's name before it. */
+export function runModels(plugin: LibrarianPlugin): { value: string; label: string }[] {
+	return plugin.providers.listSelectable().map(({ provider, model }) => ({
+		value: `${provider.id}/${model.id}`,
+		label: `${provider.name}: ${model.name}`,
+	}));
+}
+
+const FROM: Record<RunSource, string> = {
+	agent: '',
+	file: ' (its file)',
+	default: ' (defaults)',
+};
+
+/**
+ * What one agent runs with (LIB-FEAT-329). A value set here goes before its file; Default shows
+ * what it runs with then and where that comes from. Each change is saved at once.
+ */
+export class AgentRunModal extends Modal {
+	constructor(
+		app: App,
+		private readonly plugin: LibrarianPlugin,
+		private readonly agent: AgentDefinition,
+		private readonly onClosed: () => void,
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		const { agent, plugin } = this;
+		const s = plugin.settings;
+		this.modalEl.addClass('librarian-modal');
+		this.titleEl.setText(`Run settings of ${agent.name}`);
+		this.contentEl.createEl('p', {
+			cls: 'librarian-modal-note',
+			text: 'A value set here goes before what its file says. Default takes the value of its file, then the defaults of every agent.',
+		});
+		// What each value falls back to without an entry of its own.
+		const inherited = runSettingsOf(agent, { ...s, subagentSettings: {} });
+		const models = runModels(plugin);
+		for (const row of RUN_ROWS) {
+			const { value, from } = inherited[row.key];
+			const shown = describeRun(row.key, value);
+			runControl(
+				new Setting(this.contentEl).setName(row.name).setDesc(row.desc),
+				row.key,
+				s.subagentSettings[agent.name]?.[row.key],
+				`Default: ${shown}${from ? FROM[from] : ''}`,
+				models,
+				async (v) => {
+					const entry = { ...(s.subagentSettings[agent.name] ?? {}) } as Record<
+						string,
+						unknown
+					>;
+					if (v === undefined) delete entry[row.key];
+					else entry[row.key] = v;
+					if (Object.keys(entry).length) s.subagentSettings[agent.name] = entry;
+					else delete s.subagentSettings[agent.name];
+					await plugin.saveSettings();
+				},
+			);
+		}
+		this.contentEl
+			.createDiv({ cls: 'modal-button-container' })
+			.createEl('button', { cls: 'mod-cta', text: 'Done' })
+			.addEventListener('click', () => this.close());
+	}
+
+	onClose() {
+		this.contentEl.empty();
+		this.onClosed();
 	}
 }

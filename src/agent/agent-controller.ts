@@ -37,11 +37,13 @@ import type { AgentDefinition } from './agent-definitions';
 import { ApprovalQueue, type ApprovalRequest, type CallOrigin } from './approval-queue';
 import { type NestedAgentsMd, neutralizeTags } from './nested-agents-md';
 import { type PromptManager, systemPromptOf } from './prompt';
+import { generateTitle } from './session-title';
 import type { Slots, SpawnArgs, SubagentState } from './subagent';
 import { SubagentRunner } from './subagent-runner';
 import {
 	assistantEvent,
 	freshLimits,
+	hashText,
 	messageOf,
 	RETRY_DELAY_MS,
 	resultImages,
@@ -131,7 +133,9 @@ export type ControllerEvent =
 	/** Queued messages the run did not send (Stop, an error, a session switch): back to the composer. */
 	| { type: 'unsent'; messages: QueuedMessage[] }
 	/** A sub-agent of this run started, moved on or ended (LIB-FEAT-140). */
-	| { type: 'agent'; agent: SubagentState };
+	| { type: 'agent'; agent: SubagentState }
+	/** The session got the name its first message suggested (LIB-FEAT-325). */
+	| { type: 'title'; title: string };
 
 export interface ControllerDeps {
 	app: App;
@@ -561,16 +565,24 @@ export class AgentController {
 		};
 	}
 
-	streamFor(sel: ActiveSelection, level: ThinkingLevel | (() => ThinkingLevel)): StreamFn {
-		return this.deps.transport.createStreamFn(sel.provider, () => ({
-			apiKey: this.deps.secrets.get(sel.provider.secretId),
-			authHeader: sel.provider.authHeader,
-			options: effectiveRequestOptions(
+	/** Requests to `sel`; `temperature` takes the provider's place, as a sub-agent's may (LIB-FEAT-329). */
+	streamFor(
+		sel: ActiveSelection,
+		level: ThinkingLevel | (() => ThinkingLevel),
+		temperature?: number,
+	): StreamFn {
+		return this.deps.transport.createStreamFn(sel.provider, () => {
+			const options = effectiveRequestOptions(
 				sel.provider,
 				sel.model,
 				typeof level === 'function' ? level() : level,
-			),
-		}));
+			);
+			return {
+				apiKey: this.deps.secrets.get(sel.provider.secretId),
+				authHeader: sel.provider.authHeader,
+				options: temperature === undefined ? options : { ...options, temperature },
+			};
+		});
 	}
 
 	// Sending
@@ -695,8 +707,11 @@ export class AgentController {
 			this.queue.unshift(...messages.filter((m): m is QueuedMessage => 'id' in m));
 			return false;
 		}
+		const first = !this.events.some((e) => e.event.type === 'user');
 		for (const message of messages) await this.logUser(this.session!.id, message);
 		await this.reloadEvents();
+		// The run does not wait for its name.
+		if (first) void this.nameSession(this.session!.id, messages[0]!.text);
 		const last = messages[messages.length - 1]!;
 		const imageContents = await this.imageContents(last.images);
 		await this.runTurn({
@@ -704,6 +719,27 @@ export class AgentController {
 			start: (agent) => agent.prompt(last.text, imageContents),
 		});
 		return !this.stopRequested && !this.runFailed;
+	}
+
+	/**
+	 * Names the session from its first message (LIB-FEAT-325) with the session's model at its
+	 * lowest thinking level. A name the user gave meanwhile stays; a failure leaves the start of
+	 * the message as the name, as before.
+	 */
+	private async nameSession(sessionId: string, text: string): Promise<void> {
+		const sel = this.selection;
+		if (!sel) return;
+		const title = await generateTitle(
+			this.streamFor(sel, clampThinkingLevel(sel.model, 'off')),
+			toPiModel(sel.provider, sel.model),
+			text,
+		).catch(() => null);
+		if (!title) return;
+		const events = await this.deps.sessions.load(sessionId).catch(() => null);
+		if (!events || events.some((e) => e.type === 'rename')) return;
+		await this.deps.sessions.rename(sessionId, title);
+		if (this.session?.id === sessionId) this.session.title = title;
+		this.emit({ type: 'title', title });
 	}
 
 	/** A message to the model as the session log keeps it. */
@@ -1104,12 +1140,20 @@ export class AgentController {
 			text = `${kept}\n[truncated ${text.length - kept.length} characters; narrow the request to see more]`;
 			this.truncatedResults.add(toolCallId);
 		}
-		// Appended after the cut, so a long result never pushes the folder's rules out.
-		if (this.deps.settings().useVaultAgentsMd && nested)
-			text += await nested.blockFor(name, args, signal);
 		const key = `${name}:${JSON.stringify(args ?? {})}`;
 		if (isError) limits.failures.set(key, (limits.failures.get(key) ?? 0) + 1);
 		else limits.failures.delete(key);
+		// The same call with the same result again is a loop (issue #77): the model hears so while
+		// it can still use what it has, and shouldStopAfterTurn ends it at the limit.
+		const result = hashText(text);
+		const seen = limits.repeats.get(key);
+		const count = !isError && seen?.result === result ? seen.count + 1 : 1;
+		limits.repeats.set(key, { result, count });
+		if (count > 1)
+			text += `\n[This exact call has returned this same result ${count} times. Use it instead of calling again; when you have what you need, answer.]`;
+		// Appended after the cut, so a long result never pushes the folder's rules out.
+		if (this.deps.settings().useVaultAgentsMd && nested)
+			text += await nested.blockFor(name, args, signal);
 
 		this.pendingSnapshots.delete(toolCallId);
 		// A picture the tool read goes to the model with the text (LIB-FEAT-303).
@@ -1220,6 +1264,12 @@ export class AgentController {
 		for (const [, count] of limits.failures) {
 			if (count >= limit) {
 				limits.stopReason = `Stopped: the same tool call failed ${count} times`;
+				return true;
+			}
+		}
+		for (const [, seen] of limits.repeats) {
+			if (seen.count >= limit) {
+				limits.stopReason = `Stopped: the same tool call returned the same result ${seen.count} times${forUser ? '. Send a message to continue.' : ''}`;
 				return true;
 			}
 		}

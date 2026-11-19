@@ -8,7 +8,12 @@
 import type { App } from 'obsidian';
 import { readFrontmatter } from '../skills/skill-manager';
 import { AGENTS_DIR } from '../tools/path-policy';
-import { THINKING_LEVELS, type ThinkingLevel } from '../types';
+import {
+	type AgentRunSettings,
+	type LibrarianSettings,
+	THINKING_LEVELS,
+	type ThinkingLevel,
+} from '../types';
 
 export const AGENT_KEY_PREFIX = 'agent:';
 export const GENERAL_AGENT = 'general-purpose';
@@ -57,6 +62,8 @@ export interface AgentDefinition {
 	/** `<provider id>/<model id>`, or a model id or name; absent means the main agent's. */
 	model?: string;
 	effort?: ThinkingLevel;
+	/** Absent means the provider's. */
+	temperature?: number;
 	/** Turns with tool calls before it stops; absent means the setting's. */
 	maxTurns?: number;
 	permissionMode: PermissionMode;
@@ -156,6 +163,11 @@ export function parseAgentMd(
 			agent.effort = fm.effort as ThinkingLevel;
 		else warnings.push(`effort ${shown(fm.effort)} is not a thinking level`);
 	}
+	if (fm.temperature !== undefined) {
+		const t = Number(fm.temperature);
+		if (fm.temperature !== null && t >= 0 && t <= 2) agent.temperature = t;
+		else warnings.push('temperature is not a number from 0 to 2');
+	}
 	if (fm.maxTurns !== undefined) {
 		const n = Number(fm.maxTurns);
 		if (Number.isInteger(n) && n > 0) agent.maxTurns = n;
@@ -188,11 +200,50 @@ export function agentCapabilities(agent: AgentDefinition): string {
 	if (agent.permissionMode === 'dontAsk') parts.push('Never asks for approval');
 	if (agent.tools) parts.push(`Tools: ${agent.tools.join(', ')}`);
 	if (agent.disallowedTools) parts.push(`Without: ${agent.disallowedTools.join(', ')}`);
-	if (agent.model) parts.push(`Model: ${agent.model}`);
-	if (agent.effort) parts.push(`Effort: ${agent.effort}`);
-	if (agent.maxTurns) parts.push(`Up to ${agent.maxTurns} turns with tools`);
 	if (agent.skills?.length) parts.push(`Skills: ${agent.skills.join(', ')}`);
 	return parts.join('. ');
+}
+
+/** Where a value an agent runs with comes from: its entry in Settings, its file, the defaults. */
+export type RunSource = 'agent' | 'file' | 'default';
+
+export type ResolvedRun = {
+	[K in keyof AgentRunSettings]-?: { value: AgentRunSettings[K]; from: RunSource | null };
+};
+
+const RUN_FIELDS = ['model', 'effort', 'temperature', 'maxTurns'] as const;
+
+/**
+ * What an agent runs with, field by field (LIB-FEAT-329): its entry in Settings, else its file,
+ * else the sub-agent defaults. `from` is null where none says, and the main agent's model and
+ * thinking level or the provider's temperature apply.
+ */
+export function runSettingsOf(
+	agent: AgentDefinition,
+	s: Pick<LibrarianSettings, 'subagentDefaults' | 'subagentSettings'>,
+): ResolvedRun {
+	const layers: [RunSource, AgentRunSettings][] = [
+		['agent', s.subagentSettings[agent.name] ?? {}],
+		['file', agent],
+		['default', s.subagentDefaults],
+	];
+	const out = {} as Record<string, { value: unknown; from: RunSource | null }>;
+	for (const key of RUN_FIELDS) {
+		const hit = layers.find(([, layer]) => layer[key] !== undefined);
+		out[key] = { value: hit?.[1][key], from: hit?.[0] ?? null };
+	}
+	return out as ResolvedRun;
+}
+
+/** One value an agent runs with, as its settings row and editor show it. */
+export function describeRun(
+	key: keyof AgentRunSettings,
+	value: AgentRunSettings[keyof AgentRunSettings],
+): string {
+	if (key === 'model' || key === 'effort')
+		return value ? String(value) : 'Same as the main agent';
+	if (key === 'temperature') return value === undefined ? "Provider's" : String(value);
+	return value ? `${value}` : 'No limit';
 }
 
 /** `name` as a pattern list matches it: exactly, or by the part before a trailing `*`. */
