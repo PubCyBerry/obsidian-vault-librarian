@@ -70,6 +70,10 @@ function resolveCompat(model: CompletionsModel) {
 		maxTokensField: c.maxTokensField ?? 'max_tokens',
 		requiresToolResultName: c.requiresToolResultName ?? false,
 		requiresAssistantAfterToolResult: c.requiresAssistantAfterToolResult ?? false,
+		// Pi 1.x asks for these two. No setting here holds them: off, as Pi has them for a server
+		// it does not know.
+		requiresNonNullAssistantContent: false,
+		requiresToolsWithToolHistory: false,
 		requiresThinkingAsText: c.requiresThinkingAsText ?? false,
 		requiresReasoningContentOnAssistantMessages:
 			c.requiresReasoningContentOnAssistantMessages ?? false,

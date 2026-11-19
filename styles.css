@@ -1286,6 +1286,7 @@ body.is-mobile.is-ios.keyboard-animating .librarian-composer {
 	margin-bottom: var(--size-4-2);
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: the filter is no setting row's input */
 .librarian-mcp-tools-bar input {
 	flex: 1 1 auto;
 	min-width: 0;

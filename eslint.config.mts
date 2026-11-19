@@ -15,6 +15,7 @@ export default defineConfig(
 		'tsconfig.json',
 		'commitlint.config.mjs',
 		'vitest.config.mts',
+		'eslint.config.mts',
 		'tests',
 		// The README media scripts run in Node and in the Obsidian window, not in the plugin.
 		'docs',
@@ -26,7 +27,7 @@ export default defineConfig(
 			},
 			parserOptions: {
 				projectService: {
-					allowDefaultProject: ['eslint.config.mts', 'manifest.json'],
+					allowDefaultProject: ['manifest.json'],
 				},
 				tsconfigRootDir: import.meta.dirname,
 				extraFileExtensions: ['.json'],

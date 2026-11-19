@@ -119,6 +119,9 @@ export class ObsidianOAuthProvider implements OAuthClientProvider {
 	}
 
 	saveClientInformation(client: OAuthClientInformationMixed): void {
+		// The SDK hands back a client from the settings stamped with its issuer (1.32). That one
+		// stays in the settings: stored here, its secret would travel with the shared sign-in.
+		if (this.deps.configuredClient?.()) return;
 		this.write({ ...this.read(), client });
 	}
 
