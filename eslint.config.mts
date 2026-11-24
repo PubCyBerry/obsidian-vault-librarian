@@ -19,6 +19,8 @@ export default defineConfig(
 		'tests',
 		// The README media scripts run in Node and in the Obsidian window, not in the plugin.
 		'docs',
+		// Node scripts for the workflows; Biome still checks them.
+		'scripts',
 	]),
 	{
 		languageOptions: {
