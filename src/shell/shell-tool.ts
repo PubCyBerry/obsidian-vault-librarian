@@ -33,11 +33,13 @@ export interface ShellDeps {
 		before: (id: string, path: string) => Promise<void>;
 		after: (id: string, path: string) => Promise<void>;
 	};
+	/** Hidden folders a walk passes by unless they are named: the plugin's own data (issue #88). */
+	passBy?: () => readonly string[];
 }
 
 const DESCRIPTION = `Run a shell command. This is a POSIX shell inside Obsidian, not your operating system: there is no git, node, python, uv, npx or network except through the commands below, and nothing outside this vault is visible.
 
-The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. Listings and searches from a folder leave out hidden entries such as .obsidian and .agents; name a hidden folder to look inside it, as in \`ls .agents/skills\`, and a node_modules or .git inside one the same way. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls. The read tool opens /tmp files too, pictures and PDFs included. An output too long for one result comes back as its start and its end, with the whole of it saved under /tmp.
+The vault is the working directory, so ls, cat, grep, sed, awk, find, rg, jq, sort and the usual text tools work on notes. Listings and searches from a folder leave out hidden entries such as .obsidian and .agents; name a hidden folder to look inside it, as in \`ls .agents/skills\`, and a node_modules or .git inside one, or this plugin's own sessions and snapshots folders, the same way. /tmp is scratch space that lasts for this conversation; use it to hold a large response and pick through it over several calls. The read tool opens /tmp files too, pictures and PDFs included. An output too long for one result comes back as its start and its end, with the whole of it saved under /tmp.
 
 grep has no lookahead, lookbehind or backreferences. For the text around a match in a page that is one long line, use grep -o '.{0,300}needle.{0,300}' with -E, or grep -ob for byte offsets.
 
@@ -91,24 +93,28 @@ export class ShellSession {
 
 	private filesystem(): VaultFs {
 		if (this.fs) return this.fs;
-		this.fs = new VaultFs(this.deps.app, async (path, content, step) => {
-			// A redirect reaches here before its text does, so the card shows the path alone
-			// unless this first write already carries what the note will hold.
-			const args =
-				step === 'ask'
-					? { path, removed: true, content }
-					: content === null
-						? { path, removed: true }
-						: content
-							? { path, content }
-							: { path };
-			if (step !== 'keep')
-				await this.deps.gate('write', args, this.call.signal, this.call.id);
-			if (step === 'ask') return;
-			const id = `${this.call.id}/w${++this.writes}`;
-			this.pending.set(path, id);
-			await this.deps.snapshot.before(id, path);
-		});
+		this.fs = new VaultFs(
+			this.deps.app,
+			async (path, content, step) => {
+				// A redirect reaches here before its text does, so the card shows the path alone
+				// unless this first write already carries what the note will hold.
+				const args =
+					step === 'ask'
+						? { path, removed: true, content }
+						: content === null
+							? { path, removed: true }
+							: content
+								? { path, content }
+								: { path };
+				if (step !== 'keep')
+					await this.deps.gate('write', args, this.call.signal, this.call.id);
+				if (step === 'ask') return;
+				const id = `${this.call.id}/w${++this.writes}`;
+				this.pending.set(path, id);
+				await this.deps.snapshot.before(id, path);
+			},
+			this.deps.passBy,
+		);
 		return this.fs;
 	}
 
