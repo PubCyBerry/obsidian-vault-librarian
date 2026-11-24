@@ -84,6 +84,8 @@ npm run build
     <Vault>/.obsidian/plugins/<plugin-id>/
     ```
 - Reload Obsidian and enable the plugin in **Settings → Community plugins**.
+- `npm test` runs the unit tests and the layout tests. The layout tests (`tests/composer-layout.test.ts`) lay `styles.css` out in a headless Chrome or Edge already on the machine (`CHROME_PATH` names another), inside a model of Obsidian's mobile layout (`tests/layout/`). jsdom lays nothing out, so a rule that moves something cannot be checked there.
+- A change to where something sits on a phone or a tablet comes with a case in the layout tests: every place the view can be (tab, sidebar drawer), on both kinds of device, with the keyboard closed, rising and open. Check it in the app too with `tests/e2e/keyboard.js` in mobile emulation (`obsidian dev:mobile on`).
 
 ## Commands & settings
 

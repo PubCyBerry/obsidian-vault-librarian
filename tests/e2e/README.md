@@ -61,9 +61,12 @@ storage tools in a throwaway `librarian-e2e-<time>` folder on the storage and in
 leaves the steps in `window.__webdav` (`failed` lists anything that went wrong). A local server works too:
 `uvx --with cheroot wsgidav --config=<yaml>` with a `simple_dc` user and `accept_basic: true`.
 
-`keyboard.js` checks that the composer stays above the phone keyboard (LIB-TEST-331). It needs mobile emulation
-(`obsidian dev:mobile on`, and `off` afterwards: the setting is kept for every vault) in a window that is on screen
-and narrower or shorter than 600 px, which Obsidian lays out as a phone. `__keyboard.start()` opens a chat in the
-right sidebar drawer and one in a tab, raises a keyboard the way the app does (`--keyboard-height` on `<html>`,
-`keyboard-animating` on `<body>`) and measures where the composer's box ends while the keyboard rises, once it is
-up, and after it has closed. Results land in `window.__keyboard.results`; `failed` lists what went wrong.
+`keyboard.js` checks where the composer ends on a phone or a tablet (LIB-TEST-331). It needs mobile emulation
+(`obsidian dev:mobile on`, and `off` afterwards: the setting is kept for every vault) in a window that is on screen;
+one narrower or shorter than 600 px is laid out as a phone, a larger one as a tablet. `__keyboard.start()` opens a chat
+in the right sidebar drawer and one in a tab, checks that the composer's box ends just above what is under it, raises
+a keyboard the way the app does (`--keyboard-height` on `<html>`, `keyboard-animating` on `<body>`) and measures where
+the box ends while the keyboard rises, once it is up, and after it has closed. Results land in
+`window.__keyboard.results`; `failed` lists what went wrong. `tests/composer-layout.test.ts` checks the same on every
+commit in a model of Obsidian's mobile layout (`tests/layout/obsidian-mobile.css`); run this script after an Obsidian
+update, and bring the model up to date when the two disagree.

@@ -527,12 +527,17 @@ body {
 }
 
 /*
- * Clear the floating navbar while the keyboard is closed. Android reports the open keyboard as the
- * bottom safe-area inset, so Obsidian's --view-bottom-spacing (inset - keyboard + navbar) comes out
- * as the navbar height while the keyboard is up; ten times the keyboard height drives that term
- * negative so the minimum wins then and the composer sits right on the keyboard.
+ * Clear the navbar while the keyboard is closed, in the root split, which is where the navbar lies
+ * over the view: a sidebar drawer has its own tab picker under the view and no navbar over it.
+ * Android reports the open keyboard as the bottom safe-area inset, so Obsidian's
+ * --view-bottom-spacing (inset - keyboard + navbar) comes out as the navbar height while the
+ * keyboard is up; ten times the keyboard height drives that term negative so the minimum wins then
+ * and the composer sits right on the keyboard. The classes are those Obsidian sets the spacing
+ * under: with neither, the navbar sits under the view and the spacing is a bare 0, which no calc()
+ * takes. :where() keeps the rule no more specific than the keyboard-animating one below, which must
+ * win and does so by coming later.
  */
-body.is-phone .librarian-composer {
+body.is-phone:where(.is-floating-nav, .auto-full-screen) .mod-root .librarian-composer {
 	padding-bottom: max(
 		var(--librarian-composer-bottom),
 		calc(var(--view-bottom-spacing, 0px) - var(--keyboard-height, 0px) * 10)
