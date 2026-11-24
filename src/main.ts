@@ -269,6 +269,7 @@ export default class LibrarianPlugin extends Plugin {
 					if (!gate.ok) throw new Error(gate.reason);
 				},
 				snapshot: mutation,
+				passBy: () => [this.sessions.sessionsDir, this.sessions.snapshotsDir],
 			});
 			// Everything registered, with the execution policy from settings applied; the registry
 			// decides which of these the model sees (deferred tools wait for tool_search).

@@ -101,9 +101,15 @@ export class VaultFs implements IFileSystem {
 	 */
 	private dirty = false;
 
+	/**
+	 * `passBy` names hidden folders, as vault paths, that a walk passes by like the heavy ones:
+	 * the plugin's own sessions and snapshots, which grow with every conversation and were most of
+	 * what grep -r read under the settings folder (issue #88).
+	 */
 	constructor(
 		private readonly app: App,
 		private readonly gate: WriteGate,
+		private readonly passBy: () => readonly string[] = () => [],
 	) {}
 
 	/**
@@ -237,7 +243,8 @@ export class VaultFs implements IFileSystem {
 	 * index lists what the index holds: hidden entries such as .obsidian are left out, and a
 	 * search from the vault root no longer walks through them. A hidden folder named outright is
 	 * listed by the adapter, without the node_modules and .git inside it: a plugin's folder may
-	 * hold tens of thousands of files there, and grep -r read them all.
+	 * hold tens of thousands of files there, and grep -r read them all. The folders of `passBy`
+	 * are left out the same way.
 	 */
 	async readdirWithFileTypes(path: string): Promise<DirentEntry[]> {
 		const entry = (name: string, isDirectory: boolean): DirentEntry => ({
@@ -266,8 +273,11 @@ export class VaultFs implements IFileSystem {
 			return known.children.map((child) => entry(child.name, child instanceof TFolder));
 		const listed = await this.app.vault.adapter.list(rel);
 		const name = (p: string) => p.split('/').pop() ?? p;
+		const passed = this.passBy();
 		return [
-			...listed.folders.filter((f) => !HEAVY.has(name(f))).map((f) => entry(name(f), true)),
+			...listed.folders
+				.filter((f) => !HEAVY.has(name(f)) && !passed.includes(f))
+				.map((f) => entry(name(f), true)),
 			...listed.files.map((f) => entry(name(f), false)),
 		];
 	}

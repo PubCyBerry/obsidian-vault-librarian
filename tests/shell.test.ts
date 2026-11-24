@@ -13,7 +13,7 @@ interface Asked {
 	args: Record<string, unknown>;
 }
 
-function shell(opts: { refuse?: (a: Asked) => string | null } = {}) {
+function shell(opts: { refuse?: (a: Asked) => string | null; passBy?: string[] } = {}) {
 	const app = new FakeApp();
 	app.vault.seed('notes/a.md', 'alpha\nbeta');
 	app.vault.seed('notes/b.md', 'gamma');
@@ -33,6 +33,7 @@ function shell(opts: { refuse?: (a: Asked) => string | null } = {}) {
 				snapshots.push(path);
 			},
 		},
+		passBy: () => opts.passBy ?? [],
 	});
 	let n = 0;
 	const run = (command: string, timeout = 10) => session.run(`call-${++n}`, command, timeout);
@@ -747,6 +748,22 @@ describe('stat and listings from the vault index (issues #80, #81)', () => {
 		expect(await run('grep -rl hidden .obsidian/plugins/big/node_modules')).toBe(
 			'.obsidian/plugins/big/node_modules/x.md\n',
 		);
+	});
+
+	it("passes by the plugin's own sessions and snapshots until they are named (issue #88)", async () => {
+		const own = '.obsidian/plugins/vault-librarian';
+		const { run, app } = shell({ passBy: [`${own}/sessions`, `${own}/snapshots`] });
+		app.vault.seed(`${own}/sessions/s1.jsonl`, 'needle');
+		app.vault.seed(`${own}/snapshots/n1.md`, 'needle');
+		app.vault.seed(`${own}/data.json`, 'needle');
+		// The same name in another plugin's folder is not the plugin's own data.
+		app.vault.seed('.obsidian/plugins/other/sessions/x.json', 'needle');
+		expect(await run('grep -rl needle .obsidian | sort')).toBe(
+			`.obsidian/plugins/other/sessions/x.json\n${own}/data.json\n`,
+		);
+		expect(await run(`ls ${own}`)).toBe('data.json\n');
+		expect(await run(`grep -rl needle ${own}/sessions`)).toBe(`${own}/sessions/s1.jsonl\n`);
+		expect(await run(`cat ${own}/snapshots/n1.md`)).toBe('needle');
 	});
 
 	it('turns bytes into one character each, also 0x80 to 0x9f', () => {
