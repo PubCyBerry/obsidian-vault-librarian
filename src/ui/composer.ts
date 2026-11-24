@@ -15,6 +15,7 @@ import type LibrarianPlugin from '../main';
 import { selectableThinkingLevels } from '../provider/provider-manager';
 import { skillKey } from '../skills/skill-manager';
 import { renderBubble } from './conversation-pane';
+import { liftAboveKeyboard } from './keyboard-lift';
 import {
 	applyMention,
 	composeUserMessage,
@@ -209,7 +210,7 @@ export class Composer {
 		this.pickModelEl = root.createDiv({ cls: 'librarian-pick-model is-hidden' });
 		this.el = root.createDiv({ cls: 'librarian-composer' });
 		this.build();
-		if (Platform.isMobile) this.rideWithKeyboard();
+		if (Platform.isMobile) this.rideWithKeyboard(root);
 		this.renderModelSelect();
 		this.renderActiveNote();
 		this.renderQueue(this.controller.queue);
@@ -312,8 +313,9 @@ export class Composer {
 	 * Phones and tablets alike: Obsidian keeps the app full height while the keyboard rises on
 	 * both, so the composer has to ride up on its own there too (styles.css).
 	 */
-	private rideWithKeyboard() {
+	private rideWithKeyboard(view: HTMLElement) {
 		const component = this.host.component;
+		component.register(liftAboveKeyboard(view, this.el));
 		// Obsidian dispatches these on window from the native keyboard. What is recorded here is
 		// only for the /layout command, which reports the mobile layout numbers.
 		const k = () =>
