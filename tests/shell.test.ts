@@ -741,9 +741,10 @@ describe('stat and listings from the vault index (issues #80, #81)', () => {
 	});
 
 	it('looks inside a hidden folder that is named', async () => {
-		const { run } = counted();
+		const { run, app } = counted();
 		expect(await run('ls .obsidian/plugins')).toBe('big\n');
-		// node_modules inside it is passed by until it is named too.
+		// node_modules inside it is passed by until it is named too, and .git the same.
+		app.vault.seed('.obsidian/plugins/big/.git/y.md', 'hidden');
 		expect(await run("find .obsidian -name '*.md'")).toBe('');
 		expect(await run('grep -rl hidden .obsidian/plugins/big/node_modules')).toBe(
 			'.obsidian/plugins/big/node_modules/x.md\n',
@@ -784,5 +785,45 @@ describe('stat and listings from the vault index (issues #80, #81)', () => {
 		expect(await run('touch /tmp/now; find notes -name a.md -newer /tmp/now | wc -l')).toBe(
 			'0\n',
 		);
+	});
+});
+
+describe('folders, which the mutation tests found without a test', () => {
+	it('keeps a folder that is not empty when rmdir or a plain rm is asked to remove it', async () => {
+		const { run, app, asked } = shell();
+		expect(await run('rmdir notes')).toMatch(/Exit code: 1[\s\S]*not empty/i);
+		expect(await run('rm notes')).toMatch(/Exit code: 1[\s\S]*is a directory/i);
+		expect(app.vault.text('notes/a.md')).toBe('alpha\nbeta');
+		expect(app.vault.text('notes/b.md')).toBe('gamma');
+		expect(asked).toEqual([]);
+	});
+
+	it('asks about one file as a file, not as a folder of files', async () => {
+		const { run, app, asked } = shell();
+		await run('rm notes/b.md');
+		asked.length = 0;
+		expect(await run('rm -r notes')).toBe('');
+		expect(asked).toEqual([{ name: 'write', args: { path: 'notes/a.md', removed: true } }]);
+		expect(app.vault.getAbstractFileByPath('notes/a.md')).toBeNull();
+	});
+
+	it('keeps folders and files apart in the scratch space', async () => {
+		const { run } = shell();
+		expect(
+			await run(
+				'mkdir -p /tmp/d/sub && echo x > /tmp/d/f && echo y > /tmp/d/sub/g && echo z > /tmp/dd && ls /tmp/d | sort',
+			),
+		).toBe('f\nsub\n');
+		expect(await run('find /tmp -type d | sort')).toBe('/tmp\n/tmp/d\n/tmp/d/sub\n');
+		expect(await run('find /tmp -type f | sort')).toBe('/tmp/d/f\n/tmp/d/sub/g\n/tmp/dd\n');
+		expect(await run('rmdir /tmp/d')).toMatch(/Exit code: 1/);
+		expect(await run('rm -r /tmp/d; ls /tmp; test -e /tmp/d/sub || echo gone')).toBe(
+			'dd\ngone\n',
+		);
+	});
+
+	it('has no links', async () => {
+		const { run } = shell();
+		expect(await run('ln -s notes/a.md /tmp/l')).toMatch(/Exit code: \d+[\s\S]*not supported/);
 	});
 });

@@ -34,6 +34,22 @@ describe('sealing (LIB-TEST-235)', () => {
 		// A fresh salt and IV every time.
 		expect(await encrypt('hello', 'pass')).not.toBe(sealed);
 	});
+
+	it('says what is wrong with a value that is not sealed or lacks a part', async () => {
+		const sealed = await encrypt('hello', 'pass');
+		await expect(decrypt('hello', 'pass')).rejects.toThrow('Not a sealed value.');
+		await expect(decrypt(sealed.slice(1), 'pass')).rejects.toThrow('Not a sealed value.');
+		for (const parts of [1, 2])
+			await expect(
+				decrypt(
+					sealed
+						.split('.')
+						.slice(0, parts + 1)
+						.join('.'),
+					'pass',
+				),
+			).rejects.toThrow('Malformed sealed value.');
+	});
 });
 
 describe('secrets sealed for other devices (LIB-TEST-235)', () => {

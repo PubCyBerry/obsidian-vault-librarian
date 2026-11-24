@@ -82,6 +82,70 @@ describe('tool permissions', () => {
 		expect(perms.resolve('read', { path: 'AGENTS.md' })).toBe('always_allow');
 	});
 
+	it('a blocked row wins on either side of a narrower key', async () => {
+		const { perms } = manager();
+		perms.attachExtras(
+			() => [],
+			() => new Set(),
+			(tool) => (tool === 'read' ? 'skill:x' : null),
+		);
+		await perms.setTool('skill:x', 'always_allow');
+		expect(perms.resolve('read', {})).toBe('always_allow');
+		await perms.setTool('read', 'blocked');
+		expect(perms.resolve('read', {})).toBe('blocked');
+		await perms.setTool('read', 'always_allow');
+		await perms.setTool('skill:x', 'blocked');
+		expect(perms.resolve('read', {})).toBe('blocked');
+	});
+
+	it('a tool that may never be always allowed asks, as the tool or as the narrower key', async () => {
+		for (const destructive of ['read', 'skill:x']) {
+			const { perms } = manager();
+			perms.attachExtras(
+				() => [],
+				() => new Set([destructive]),
+				(tool) => (tool === 'read' ? 'skill:x' : null),
+			);
+			await perms.setTool('read', 'always_allow');
+			await perms.setTool('skill:x', 'always_allow');
+			expect(perms.resolve('read', {})).toBe('approval_required');
+		}
+	});
+
+	it('a blocked tool that may never be always allowed stays blocked', async () => {
+		const { perms } = manager();
+		perms.attachExtras(
+			() => [],
+			() => new Set(['mcp__drop']),
+		);
+		await perms.setTool('mcp__drop', 'blocked');
+		expect(perms.resolve('mcp__drop', {})).toBe('blocked');
+	});
+
+	it('a write without a usable path follows its row', async () => {
+		const { perms } = manager();
+		await perms.setGroup('write', 'always_allow');
+		// Only the AGENTS.md at the vault root is forced to ask.
+		expect(perms.resolve('write', { path: 'notes/AGENTS.md' })).toBe('always_allow');
+		expect(perms.resolve('write', null)).toBe('always_allow');
+		expect(perms.resolve('write', { path: 42 })).toBe('always_allow');
+	});
+
+	it('a group is found by its id, and one with no tools asks', async () => {
+		const { perms } = manager();
+		perms.attachExtras(
+			() => [{ id: 'empty', label: 'Empty', tools: [] }],
+			() => new Set(),
+		);
+		await perms.setGroup('write', 'blocked');
+		expect(perms.get('read')).toBe('always_allow');
+		expect(perms.getGroupDisplay('write')).toBe('blocked');
+		expect(perms.getGroupDisplay('read')).toBe('always_allow');
+		expect(perms.getGroupDisplay('empty')).toBe('approval_required');
+		expect(() => perms.getGroupDisplay('nope')).toThrow('Unknown tool group: nope');
+		await expect(perms.setGroup('nope', 'blocked')).rejects.toThrow('Unknown tool group: nope');
+	});
+
 	it('LIB-TEST-013: changes are persisted through the save callback', async () => {
 		const { perms, saves } = manager();
 		await perms.setTool('ls', 'blocked');

@@ -91,18 +91,23 @@ export function isBinaryPath(path: string): boolean {
 export function checkPath(raw: string, opts: { allowRoot?: boolean; configDir: string }): string {
 	if (typeof raw !== 'string') throw new Error('path must be a string');
 	const trimmed = raw.trim();
-	if (/^[a-zA-Z]:[\\/]/.test(trimmed) || /^[\\/]/.test(trimmed) || /^~/.test(trimmed)) {
-		throw new Error(`Absolute paths are not allowed: ${raw}`);
-	}
+	const absolute = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || /^[\\/]/.test(p) || /^~/.test(p);
+	if (absolute(trimmed)) throw new Error(`Absolute paths are not allowed: ${raw}`);
 	// "." segments go: models often write "./notes/a.md", and a kept "." reads as a dot folder.
 	const segments = normalizePath(trimmed)
 		.split('/')
 		.filter((s) => s.length > 0 && s !== '.');
 	if (segments.some((s) => s === '..'))
 		throw new Error(`Parent traversal is not allowed: ${raw}`);
+	// A part of spaces alone names nothing Obsidian can make, and the path that came out was not
+	// one this function takes back: "./ /." gave " ", which read again is the vault root.
+	if (segments.some((s) => !s.trim())) throw new Error(`A path part is blank: ${raw}`);
 	if (segments.length === 0) {
 		if (opts.allowRoot) return '';
 		throw new Error('path must not be empty');
 	}
-	return segments.join('/');
+	// Asked again of what is left: "./C:/x" and "./~/x" start with a "." part that is dropped.
+	const path = segments.join('/');
+	if (absolute(path)) throw new Error(`Absolute paths are not allowed: ${raw}`);
+	return path;
 }
