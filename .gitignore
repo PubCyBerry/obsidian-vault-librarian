@@ -35,3 +35,7 @@ docs/demo/Work/.obsidian/*
 !docs/demo/Work/.obsidian/core-plugins.json
 docs/demo/Work/.trash/
 docs/demo/out/
+
+# What Stryker writes: its sandbox and its reports.
+.stryker-tmp/
+reports/

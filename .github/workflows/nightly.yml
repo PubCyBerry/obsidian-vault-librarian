@@ -1,0 +1,101 @@
+name: Nightly tests
+
+# The tests too slow for every push: the property-based tests with many more cases than a push
+# runs, and mutation testing, which runs the tests once for every change Stryker makes to the
+# source. A pull request that changes this file or the Stryker config runs them too, since a
+# schedule only ever runs what is on the default branch.
+on:
+    schedule:
+        # 18:00 UTC is 03:00 in Seoul.
+        - cron: '0 18 * * *'
+    workflow_dispatch:
+    pull_request:
+        paths:
+            - .github/workflows/nightly.yml
+            - stryker.config.json
+
+permissions:
+    contents: read
+
+concurrency:
+    group: nightly-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    property:
+        name: Property-based tests, many cases
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 24.x
+                  cache: 'npm'
+            - run: npm ci
+            - run: npx vitest --run tests/*.property.test.ts --testTimeout=600000
+              env:
+                  FC_NUM_RUNS: 20000
+
+    mutation:
+        name: Mutation tests (${{ matrix.scope }})
+        runs-on: ubuntu-latest
+        # One folder of src to a runner, so the folders run side by side: the longest took 16
+        # minutes on its first run, with nothing in the cache.
+        timeout-minutes: 120
+        strategy:
+            fail-fast: false
+            matrix:
+                scope:
+                    - agent
+                    - context
+                    - mcp
+                    - permissions
+                    - provider
+                    - session
+                    - settings
+                    - shell
+                    - skills
+                    - storage
+                    - tools
+                    - ui
+                    - webdav
+                    - root
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 24.x
+                  cache: 'npm'
+            - run: npm ci
+            # What the run before found, so that only mutants of changed code and changed tests
+            # are tested again. A cache is never overwritten, hence a new key on every run.
+            - uses: actions/cache@v6
+              with:
+                  path: reports/stryker-incremental.json
+                  key: stryker-${{ matrix.scope }}-${{ github.run_id }}
+                  restore-keys: stryker-${{ matrix.scope }}-
+            - run: npx stryker run --mutate "$MUTATE"
+              env:
+                  MUTATE: ${{ matrix.scope == 'root' && 'src/*.ts' || format('src/{0}/**/*.ts', matrix.scope) }}
+            - name: Put the score in the run summary
+              if: always()
+              run: |
+                  node -e '
+                  const r = JSON.parse(require("fs").readFileSync("reports/mutation/mutation.json", "utf8"));
+                  const n = {};
+                  for (const f of Object.values(r.files)) for (const m of f.mutants) n[m.status] = (n[m.status] ?? 0) + 1;
+                  const caught = (n.Killed ?? 0) + (n.Timeout ?? 0);
+                  const valid = caught + (n.Survived ?? 0) + (n.NoCoverage ?? 0);
+                  console.log(`### Mutation score, ${process.env.SCOPE}: ${valid ? ((100 * caught) / valid).toFixed(1) : "n/a"}%\n`);
+                  console.log("| Status | Mutants |\n| --- | --- |");
+                  for (const [k, v] of Object.entries(n)) console.log(`| ${k} | ${v} |`);
+                  ' >> "$GITHUB_STEP_SUMMARY"
+              env:
+                  SCOPE: ${{ matrix.scope }}
+            - uses: actions/upload-artifact@v7
+              if: always()
+              with:
+                  name: mutation-report-${{ matrix.scope }}
+                  path: reports/mutation
+                  retention-days: 14
