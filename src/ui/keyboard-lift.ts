@@ -9,24 +9,40 @@ export function keyboardOverlap(
 }
 
 /**
- * Keeps `--librarian-keyboard-overlap` on the composer at the height the keyboard covers of the
- * view, which styles.css adds to the composer's bottom padding. Measured rather than assumed:
- * Obsidian shrinks the app container by `--keyboard-height`, so a chat in a tab ends on the
- * keyboard by itself, but a sidebar drawer is fixed to the screen and stays full height behind
- * the keyboard, and so does every view while `keyboard-animating` is on. Returns what stops it.
+ * Keeps on the composer the two values its bottom padding in styles.css is built from, and
+ * returns what stops it (tests/composer-layout.test.ts lays the result out in a browser).
+ *
+ * `--librarian-keyboard-overlap` is the height the keyboard covers of the view. Measured rather
+ * than assumed: Obsidian shrinks the app container by `--keyboard-height`, so a chat in a tab ends
+ * on the keyboard by itself, but a sidebar drawer is fixed to the screen and stays full height
+ * behind the keyboard, and so does every view while `keyboard-animating` is on.
+ *
+ * `--librarian-closed-padding` is the padding measured while the keyboard is closed; the closing
+ * animation keeps it so the composer does not drop behind the navbar and jump back.
  */
 export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () => void {
 	const doc = view.ownerDocument;
-	const measure = () => {
-		const keyboard = parseFloat(
-			getComputedStyle(doc.documentElement).getPropertyValue('--keyboard-height'),
+	const keyboardHeight = () =>
+		parseFloat(getComputedStyle(doc.documentElement).getPropertyValue('--keyboard-height'));
+	const animating = () => doc.body.classList.contains('keyboard-animating');
+	const rememberClosed = () => {
+		if (keyboardHeight() > 0 || animating()) return;
+		composer.style.setProperty(
+			'--librarian-closed-padding',
+			getComputedStyle(composer).paddingBottom,
 		);
+	};
+	let wasAnimating = animating();
+	const measure = () => {
 		const overlap = keyboardOverlap(
 			view.getBoundingClientRect().bottom,
 			window.innerHeight,
-			keyboard,
+			keyboardHeight(),
 		);
 		composer.style.setProperty('--librarian-keyboard-overlap', `${overlap}px`);
+		const now = animating();
+		if (wasAnimating && !now) window.requestAnimationFrame(rememberClosed);
+		wasAnimating = now;
 	};
 	// The native keyboard sets --keyboard-height on <html> and keyboard-animating on <body>; the
 	// view resizes when the app container shrinks at the end of the animation.
@@ -36,6 +52,7 @@ export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () 
 	const resizes = new ResizeObserver(measure);
 	resizes.observe(view);
 	measure();
+	window.requestAnimationFrame(rememberClosed);
 	return () => {
 		mutations.disconnect();
 		resizes.disconnect();
