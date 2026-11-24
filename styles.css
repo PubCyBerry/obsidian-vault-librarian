@@ -497,6 +497,15 @@ body {
 	padding: var(--size-2-2) var(--size-4-3) var(--size-4-3);
 }
 
+/* The composer's own margin plus how far the phone keyboard reaches over this view, which
+   keyboard-lift.ts measures. Every bottom padding of the composer starts from this, so it stays
+   above the keyboard wherever the view is: a tab shrinks with the keyboard, a sidebar drawer does
+   not (tests/keyboard-lift.test.ts). */
+.librarian-composer {
+	--librarian-composer-bottom: calc(var(--librarian-keyboard-overlap, 0px) + var(--size-4-3));
+	padding-bottom: var(--librarian-composer-bottom);
+}
+
 /* One rounded box holds the text, the chips and the icon row. */
 
 .librarian-composer-box {
@@ -525,23 +534,24 @@ body {
  */
 body.is-phone .librarian-composer {
 	padding-bottom: max(
-		var(--size-4-3),
+		var(--librarian-composer-bottom),
 		calc(var(--view-bottom-spacing, 0px) - var(--keyboard-height, 0px) * 10)
 	);
 }
 
 /*
  * Phone and tablet keyboard. During Obsidian's keyboard-animating phase the app container is still
- * full height on both (app.css keys it on .is-mobile), so the composer rides up on its own padding
- * with the keyboard's timing and lands where the shrunken container puts it afterwards. While this
- * was scoped to phones, a tablet's composer waited behind the keyboard and then jumped.
+ * full height on both (app.css keys it on .is-mobile), so the measured overlap is the keyboard's
+ * and the composer rides up on its own padding with the keyboard's timing, landing where the
+ * shrunken container puts it afterwards. While this was scoped to phones, a tablet's composer
+ * waited behind the keyboard and then jumped.
  */
 /* While the keyboard closes, --keyboard-height is already 0, so the first term is the plain margin
    and the composer would drop behind the navbar; the padding the view measured while the keyboard
    was closed keeps it in place instead. */
 body.is-mobile.keyboard-animating .librarian-composer {
 	padding-bottom: max(
-		calc(var(--keyboard-height, 0px) + var(--size-4-3)),
+		var(--librarian-composer-bottom),
 		var(--librarian-closed-padding, var(--size-4-3))
 	);
 	transition: padding-bottom 350ms cubic-bezier(0.22, 0.25, 0, 1);
