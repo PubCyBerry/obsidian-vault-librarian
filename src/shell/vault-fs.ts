@@ -27,7 +27,7 @@ const HEAVY = new Set(['node_modules', '.git']);
 /** POSIX-style resolution: no `.`, no `..`, always absolute. */
 export function normalizeShellPath(path: string): string {
 	const parts: string[] = [];
-	for (const part of (path.startsWith('/') ? path : `/${path}`).split('/')) {
+	for (const part of path.split('/')) {
 		if (!part || part === '.') continue;
 		if (part === '..') parts.pop();
 		else parts.push(part);
@@ -317,8 +317,15 @@ export class VaultFs implements IFileSystem {
 	async mkdir(path: string): Promise<void> {
 		await this.change(path, '', async () => {
 			const rel = this.rel(path);
-			if (rel === null) this.dirs.add(normalizeShellPath(path));
-			else if (!(await this.app.vault.adapter.exists(rel)))
+			// With the folders on the way to it: mkdir -p names only the last one, and without
+			// them /tmp/d was no folder to stat or ls after `mkdir -p /tmp/d/sub`.
+			if (rel === null) {
+				const parts = normalizeShellPath(path).split('/');
+				const dirs = parts.slice(1).map((_, i) => parts.slice(0, i + 2).join('/'));
+				const file = dirs.find((dir) => this.mem.has(dir));
+				if (file) throw new Error(`EEXIST: file already exists, mkdir '${file}'`);
+				for (const dir of dirs) this.dirs.add(dir);
+			} else if (!(await this.app.vault.adapter.exists(rel)))
 				await this.app.vault.adapter.mkdir(rel);
 		});
 	}
