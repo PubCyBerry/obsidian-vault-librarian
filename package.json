@@ -10,7 +10,8 @@
 		"lint": "biome check && eslint .",
 		"format": "biome check --write",
 		"test": "vitest --run",
-		"test:mutation": "stryker run"
+		"test:mutation": "stryker run",
+		"mutation:report": "node scripts/mutation-summary.mjs"
 	},
 	"keywords": [
 		"obsidian",
