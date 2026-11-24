@@ -40,8 +40,9 @@ jobs:
     mutation:
         name: Mutation tests (${{ matrix.scope }})
         runs-on: ubuntu-latest
-        # One folder of src to a runner: all of it on one would pass the six hours a job may take.
-        timeout-minutes: 300
+        # One folder of src to a runner, so the folders run side by side: the longest took 16
+        # minutes on its first run, with nothing in the cache.
+        timeout-minutes: 120
         strategy:
             fail-fast: false
             matrix:
