@@ -4,6 +4,9 @@ name: Nightly tests
 # runs, and mutation testing, which runs the tests once for every change Stryker makes to the
 # source. A pull request that changes this file or the Stryker config runs them too, since a
 # schedule only ever runs what is on the default branch.
+#
+# The schedule fires every night, but the tests run only when the default branch has changed
+# since the last night they passed: GitHub has no schedule that fires on change alone.
 on:
     schedule:
         # 18:00 UTC is 03:00 in Seoul.
@@ -22,8 +25,34 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changed:
+        name: Anything new since the last night that passed
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            actions: read
+        outputs:
+            run: ${{ steps.check.outputs.run }}
+        steps:
+            - id: check
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  run=true
+                  if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+                      # A night that was skipped passes too, with the same commit, so the commit
+                      # of the last scheduled run that passed is the last one that was tested.
+                      last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --event schedule --status success --limit 1 --json headSha --jq ".[0].headSha // empty")
+                      echo "last tested: ${last:-none}, now: $GITHUB_SHA"
+                      if [ "$last" = "$GITHUB_SHA" ]; then run=false; fi
+                  fi
+                  echo "run=$run" >> "$GITHUB_OUTPUT"
+                  [ "$run" = true ] || echo "No change since the last night that passed: skipped." >> "$GITHUB_STEP_SUMMARY"
+
     property:
         name: Property-based tests, many cases
+        needs: changed
+        if: needs.changed.outputs.run == 'true'
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
@@ -33,12 +62,15 @@ jobs:
                   node-version: 24.x
                   cache: 'npm'
             - run: npm ci
-            - run: npx vitest --run tests/*.property.test.ts --testTimeout=600000
+            # Every test file: the properties are not all in files of their own.
+            - run: npx vitest --run --testTimeout=600000
               env:
                   FC_NUM_RUNS: 20000
 
     mutation:
         name: Mutation tests (${{ matrix.scope }})
+        needs: changed
+        if: needs.changed.outputs.run == 'true'
         runs-on: ubuntu-latest
         # One folder of src to a runner, so the folders run side by side: the longest took 16
         # minutes on its first run, with nothing in the cache.
