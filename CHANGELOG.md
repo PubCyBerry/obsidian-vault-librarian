@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.2...2.23.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* keep the composer above the phone keyboard when the chat is in the sidebar ([#96](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/96)) ([79ea193](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/79ea19319d7c81d8d978f7e01a049c16ec9d9db5)), closes [#95](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/95)
+
 ## [2.23.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.1...2.23.2) (2026-11-24)
 
 
