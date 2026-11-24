@@ -1,0 +1,10 @@
+{
+	"$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+	"testRunner": "vitest",
+	"mutate": ["src/**/*.ts"],
+	"ignorePatterns": ["docs", "sessions", "snapshots", "main.js", "data.json"],
+	"reporters": ["clear-text", "progress", "html", "json"],
+	"clearTextReporter": { "reportMutants": false, "reportTests": false },
+	"incremental": true,
+	"thresholds": { "high": 80, "low": 60, "break": null }
+}
