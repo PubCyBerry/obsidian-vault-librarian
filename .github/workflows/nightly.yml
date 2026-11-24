@@ -62,7 +62,9 @@ jobs:
                   node-version: 24.x
                   cache: 'npm'
             - run: npm ci
-            # Every test file: the properties are not all in files of their own.
+            # Every test file: the properties are not all in files of their own. The build comes
+            # first because tests/bundle.test.ts reads main.js.
+            - run: npm run build
             - run: npx vitest --run --testTimeout=600000
               env:
                   FC_NUM_RUNS: 20000
