@@ -31,7 +31,8 @@ body {
 	--size-4-12: 48px;
 	--touch-size-m: 44px;
 	--touch-size-l: 52px;
-	--navbar-height: var(--touch-size-l);
+	--navbar-height: 80px;
+	--navbar-width: 100%;
 	--navbar-bottom-offset: max(var(--safe-area-inset-bottom), var(--size-4-3));
 	--view-header-height: var(--touch-size-l);
 	--header-height: 0px;
@@ -147,7 +148,11 @@ body.is-mobile.keyboard-animating .app-container {
 	height: calc(100% - var(--header-height));
 }
 
-/* A phone: the view header and the navbar float over the view, which reaches the screen's edge. */
+/*
+ * A phone: with floating navigation or automatic full screen, both on unless turned off in the
+ * settings, the view header and the navbar lie over the view, which reaches the screen's edge.
+ * With neither they sit over and under it.
+ */
 
 .is-phone {
 	--view-bottom-spacing: 0;
@@ -156,7 +161,15 @@ body.is-mobile.keyboard-animating .app-container {
 	--view-header-position: static;
 }
 
-.is-phone.is-floating-nav {
+.is-mobile.is-floating-nav {
+	/* fit-content in the app, around buttons this model leaves out. */
+	--navbar-width: 316px;
+	--navbar-height: var(--touch-size-l);
+	--navbar-position: fixed;
+}
+
+.is-phone.is-floating-nav,
+.is-phone.auto-full-screen {
 	--navbar-position: fixed;
 	--view-header-position: fixed;
 	--view-top-spacing: calc(var(--safe-area-inset-top) + var(--view-header-height) + 8px);
@@ -182,7 +195,8 @@ body.is-mobile.keyboard-animating .app-container {
 	bottom: 0;
 	left: 0;
 	right: 0;
-	width: 316px;
+	box-sizing: border-box;
+	width: var(--navbar-width);
 	height: var(--navbar-height);
 	margin: 0 auto;
 	padding: 0 var(--size-4-2) var(--navbar-bottom-offset);

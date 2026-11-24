@@ -17,8 +17,9 @@ export function keyboardOverlap(
  * on the keyboard by itself, but a sidebar drawer is fixed to the screen and stays full height
  * behind the keyboard, and so does every view while `keyboard-animating` is on.
  *
- * `--librarian-closed-padding` is the padding measured while the keyboard is closed; the closing
- * animation keeps it so the composer does not drop behind the navbar and jump back.
+ * `--librarian-closed-padding` is the padding measured while the keyboard is closed, again with
+ * every measurement since a turned screen changes it; the closing animation keeps it so the
+ * composer does not drop behind the navbar and jump back.
  */
 export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () => void {
 	const doc = view.ownerDocument;
@@ -32,7 +33,6 @@ export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () 
 			getComputedStyle(composer).paddingBottom,
 		);
 	};
-	let wasAnimating = animating();
 	const measure = () => {
 		const overlap = keyboardOverlap(
 			view.getBoundingClientRect().bottom,
@@ -40,9 +40,7 @@ export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () 
 			keyboardHeight(),
 		);
 		composer.style.setProperty('--librarian-keyboard-overlap', `${overlap}px`);
-		const now = animating();
-		if (wasAnimating && !now) window.requestAnimationFrame(rememberClosed);
-		wasAnimating = now;
+		window.requestAnimationFrame(rememberClosed);
 	};
 	// The native keyboard sets --keyboard-height on <html> and keyboard-animating on <body>; the
 	// view resizes when the app container shrinks at the end of the animation.
@@ -52,7 +50,6 @@ export function liftAboveKeyboard(view: HTMLElement, composer: HTMLElement): () 
 	const resizes = new ResizeObserver(measure);
 	resizes.observe(view);
 	measure();
-	window.requestAnimationFrame(rememberClosed);
 	return () => {
 		mutations.disconnect();
 		resizes.disconnect();

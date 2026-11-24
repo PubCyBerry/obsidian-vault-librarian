@@ -11,7 +11,8 @@ function div(className, parent) {
 }
 
 function build(c) {
-	document.body.className = `is-mobile is-${c.device} is-floating-nav`;
+	// Floating navigation and automatic full screen are settings of Obsidian's, both on at first.
+	document.body.className = `is-mobile is-${c.device}${c.docked ? '' : ' is-floating-nav'}${c.windowed ? '' : ' auto-full-screen'}`;
 	const app = div('app-container', document.body);
 	const workspace = div('workspace', div('horizontal-main-container', app));
 	const tabs = div('workspace-tabs', div('workspace-split mod-root', workspace));

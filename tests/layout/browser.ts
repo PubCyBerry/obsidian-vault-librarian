@@ -42,7 +42,10 @@ export function dumpDom(html: string): Promise<string> {
 			args,
 			{ timeout: 60000, maxBuffer: 16 * 1024 * 1024 },
 			(error, stdout) => {
-				rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+				// A browser still letting go of its profile must not cost the results.
+				try {
+					rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+				} catch {}
 				if (error) reject(error);
 				else resolve(stdout);
 			},

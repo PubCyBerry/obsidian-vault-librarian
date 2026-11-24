@@ -94,6 +94,34 @@ describe('the composer above the phone keyboard (LIB-TEST-331)', () => {
 		expect(overlap()).toBe('220px');
 	});
 
+	it('remembers the padding of the closed keyboard, and only that', async () => {
+		const closed = () => composer.style.getPropertyValue('--librarian-closed-padding');
+		const frame = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
+		composer.style.paddingBottom = '86px';
+		await frame();
+		expect(closed()).toBe('86px');
+		// Up, or on its way: the padding is the keyboard's.
+		composer.style.paddingBottom = '312px';
+		document.body.classList.add('keyboard-animating');
+		keyboard(KEYBOARD);
+		await settled();
+		await frame();
+		document.body.classList.remove('keyboard-animating');
+		await settled();
+		await frame();
+		keyboard(0);
+		document.body.classList.add('keyboard-animating');
+		await settled();
+		await frame();
+		expect(closed()).toBe('86px');
+		// Closed again, on a screen that has turned meanwhile.
+		composer.style.paddingBottom = '73px';
+		document.body.classList.remove('keyboard-animating');
+		await settled();
+		await frame();
+		expect(closed()).toBe('73px');
+	});
+
 	it('stops measuring once stopped', async () => {
 		stop();
 		keyboard(KEYBOARD);

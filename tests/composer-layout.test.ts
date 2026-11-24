@@ -42,6 +42,38 @@ const CASES = [
 		under: 'view',
 		gap: MARGIN,
 	},
+	// Floating navigation turned off in Obsidian's settings: the navbar lies over the view's end, and
+	// Obsidian's spacing for it adds the bottom inset its height already has.
+	{
+		name: 'iPhone, docked navbar, tab',
+		...PHONE,
+		...IOS,
+		docked: true,
+		place: 'tab',
+		under: 'navbar',
+		gap: 34,
+	},
+	{
+		name: 'iPhone, docked navbar, sidebar',
+		...PHONE,
+		...IOS,
+		docked: true,
+		place: 'drawer',
+		under: 'view',
+		gap: MARGIN,
+	},
+	// Automatic full screen turned off too: the navbar sits under the view, and stays there over the
+	// keyboard.
+	{
+		name: 'iPhone, docked navbar, not full screen, tab',
+		...PHONE,
+		...IOS,
+		docked: true,
+		windowed: true,
+		place: 'tab',
+		under: 'view',
+		gap: MARGIN,
+	},
 	{ name: 'iPad, tab', ...TABLET, ...IOS, place: 'tab', under: 'view', gap: MARGIN },
 	{ name: 'iPad, sidebar', ...TABLET, ...IOS, place: 'drawer', under: 'view', gap: MARGIN },
 	{
@@ -131,6 +163,15 @@ describe.skipIf(!browserPath && !process.env.CI)('where the composer ends (LIB-T
 		};
 		expect(ends('iPhone, tab')).toEqual({ viewTop: 111, viewBottom: 780, navbarTop: 696 });
 		expect(ends('iPhone, sidebar')).toMatchObject({ viewTop: 59, viewBottom: 659 });
+		expect(ends('iPhone, docked navbar, tab')).toEqual({
+			viewTop: 111,
+			viewBottom: 780,
+			navbarTop: 700,
+		});
+		expect(ends('iPhone, docked navbar, not full screen, tab')).toMatchObject({
+			viewBottom: 700,
+			navbarTop: 700,
+		});
 		expect(ends('iPad, tab')).toEqual({ viewTop: 151, viewBottom: 1100, navbarTop: null });
 		expect(ends('iPad, sidebar')).toMatchObject({ viewTop: 143, viewBottom: 994 });
 	});
@@ -149,8 +190,9 @@ describe.skipIf(!browserPath && !process.env.CI)('where the composer ends (LIB-T
 		});
 
 		it('sits on the open keyboard', () => {
-			const { boxBottom, keyboardTop } = of(name).open;
-			expect(keyboardTop - boxBottom).toBe(MARGIN);
+			// Or on the view's edge, where a navbar under the view holds it above the keyboard.
+			const { boxBottom, keyboardTop, viewBottom } = of(name).open;
+			expect(Math.min(keyboardTop, viewBottom) - boxBottom).toBe(MARGIN);
 		});
 
 		it('stays inside the view while the keyboard is up', () => {

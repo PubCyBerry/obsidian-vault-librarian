@@ -41,10 +41,14 @@
 	let box;
 	function measure(keyboard) {
 		const r = box.getBoundingClientRect();
+		// What the box ends above: the keyboard, or the view's edge where a navbar under the view
+		// holds it higher still.
+		const view = box.closest('.view-content').getBoundingClientRect();
+		const edge = Math.min(window.innerHeight - keyboard, view.bottom);
 		return {
 			boxBottom: Math.round(r.bottom),
 			keyboardTop: window.innerHeight - keyboard,
-			gap: Math.round(window.innerHeight - keyboard - r.bottom),
+			gap: Math.round(edge - r.bottom),
 		};
 	}
 
@@ -57,17 +61,24 @@
 		box = leaf.view.contentEl.querySelector('.librarian-composer-box');
 		const margin = parseFloat(getComputedStyle(document.body).getPropertyValue('--size-4-3'));
 		const closed = measure(0);
-		// The floating navbar in a phone's tab, the view's own edge everywhere else.
+		// The navbar where it lies over a phone's tab, the view's own edge everywhere else.
 		const navbar = document.querySelector('.mobile-navbar');
-		const floats = where === 'tab' && navbar && getComputedStyle(navbar).display !== 'none';
-		const under = floats
+		const style = navbar && getComputedStyle(navbar);
+		const over = where === 'tab' && style?.display !== 'none' && style?.position === 'fixed';
+		const under = over
 			? navbar.getBoundingClientRect().top
 			: leaf.view.contentEl.getBoundingClientRect().bottom;
 		const gap = Math.round(under) - closed.boxBottom;
+		// Obsidian's spacing for a docked navbar adds the bottom inset the navbar's height already has.
+		const inset = document.body.hasClass('is-floating-nav')
+			? 0
+			: parseFloat(
+					getComputedStyle(document.body).getPropertyValue('--safe-area-inset-bottom'),
+				);
 		check(
 			`${where}: ends just above what is under it while the keyboard is closed`,
-			floats ? gap >= 0 && gap <= margin : gap === margin,
-			{ gap, under: floats ? 'navbar' : 'view', boxBottom: closed.boxBottom },
+			over ? gap >= 0 && gap <= margin + inset : gap === margin,
+			{ gap, under: over ? 'navbar' : 'view', boxBottom: closed.boxBottom },
 		);
 		const up = await moveKeyboard(keyboard);
 		// On the keyboard with the composer's own margin, neither behind it nor far above it.
