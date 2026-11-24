@@ -321,7 +321,10 @@ export class VaultFs implements IFileSystem {
 			// them /tmp/d was no folder to stat or ls after `mkdir -p /tmp/d/sub`.
 			if (rel === null) {
 				const parts = normalizeShellPath(path).split('/');
-				for (let n = 2; n <= parts.length; n++) this.dirs.add(parts.slice(0, n).join('/'));
+				const dirs = parts.slice(1).map((_, i) => parts.slice(0, i + 2).join('/'));
+				const file = dirs.find((dir) => this.mem.has(dir));
+				if (file) throw new Error(`EEXIST: file already exists, mkdir '${file}'`);
+				for (const dir of dirs) this.dirs.add(dir);
 			} else if (!(await this.app.vault.adapter.exists(rel)))
 				await this.app.vault.adapter.mkdir(rel);
 		});

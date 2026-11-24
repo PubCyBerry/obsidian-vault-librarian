@@ -817,6 +817,11 @@ describe('folders, which the mutation tests found without a test', () => {
 		expect(await run('find /tmp -type d | sort')).toBe('/tmp\n/tmp/d\n/tmp/d/sub\n');
 		expect(await run('find /tmp -type f | sort')).toBe('/tmp/d/f\n/tmp/d/sub/g\n/tmp/dd\n');
 		expect(await run('rmdir /tmp/d')).toMatch(/Exit code: 1/);
+		// A file on the way stays a file.
+		expect(await run('mkdir -p /tmp/dd/x; test -f /tmp/dd && cat /tmp/dd')).toMatch(
+			/^z\nmkdir: cannot create directory/,
+		);
+		expect(await run('test -d /tmp/dd || echo file')).toBe('file\n');
 		expect(await run('rm -r /tmp/d; ls /tmp; test -e /tmp/d/sub || echo gone')).toBe(
 			'dd\ngone\n',
 		);
