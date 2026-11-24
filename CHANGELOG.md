@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.23.2](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.1...2.23.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* pass by the plugin's own sessions and snapshots in a hidden folder ([#89](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/89)) ([3948df5](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/3948df5d7f0449a93ac263d2e052b50f54fa2879))
+* refuse paths that read as absolute or blank once their dots are dropped ([#92](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/92)) ([69d7e09](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/69d7e0939b5bb7ebd4c7fe6f82b97303888906f5))
+
 ## [2.23.1](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.0...2.23.1) (2026-11-19)
 
 
