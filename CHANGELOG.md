@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.4](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.3...2.23.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* close the gap under the composer in a phone's sidebar ([#98](https://github.com/PubCyBerry/obsidian-vault-librarian/issues/98)) ([45b471b](https://github.com/PubCyBerry/obsidian-vault-librarian/commit/45b471b3bf5c6d0c098d3e5b40be58c9066d5379))
+
 ## [2.23.3](https://github.com/PubCyBerry/obsidian-vault-librarian/compare/2.23.2...2.23.3) (2026-11-24)
 
 
